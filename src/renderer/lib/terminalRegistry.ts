@@ -15,8 +15,8 @@ import { useStatusStore } from '../stores/statusStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { terminalRestoreData, replayTerminalLog } from './session'
 import { awaitWorkspaceSync } from '../stores/appStore'
+import { scanTerminalChunkForUrls, clearTerminalUrlBuffer } from './terminalUrlAutoOpen'
 import { getResolvedTheme, subscribeTheme, type ResolvedTheme } from './themeManager'
-import { scanTerminalChunkForUrls } from './terminalUrlAutoOpen'
 
 /** Read the configured scrollback limit, clamped to a sane range. */
 function getScrollback(): number {
@@ -120,6 +120,123 @@ export function getTerminalTheme(resolved: ResolvedTheme): typeof TERMINAL_THEME
 }
 
 // ---------------------------------------------------------------------------
+// Per-terminal preset palettes — opt-in overrides selected via the terminal
+// tab's context menu. When a panel has no `themePreset`, it follows the app
+// theme via getTerminalTheme() above.
+// ---------------------------------------------------------------------------
+
+import type { TerminalThemeData } from '../../shared/types'
+
+export type TerminalPreset = TerminalThemeData
+
+const PRESET_SOLARIZED_DARK: TerminalPreset = {
+  id: 'solarized-dark',
+  label: 'Solarized Dark',
+  accent: '#268bd2',
+  theme: {
+    background: '#002b36', foreground: '#839496', cursor: '#93a1a1',
+    selectionBackground: '#073642', selectionForeground: '#93a1a1',
+    black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
+    blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
+    brightBlack: '#002b36', brightRed: '#cb4b16', brightGreen: '#586e75',
+    brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4',
+    brightCyan: '#93a1a1', brightWhite: '#fdf6e3',
+  },
+}
+
+const PRESET_DRACULA: TerminalPreset = {
+  id: 'dracula',
+  label: 'Dracula',
+  accent: '#bd93f9',
+  theme: {
+    background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f0',
+    selectionBackground: '#44475a', selectionForeground: '#f8f8f2',
+    black: '#21222c', red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c',
+    blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#f8f8f2',
+    brightBlack: '#6272a4', brightRed: '#ff6e6e', brightGreen: '#69ff94',
+    brightYellow: '#ffffa5', brightBlue: '#d6acff', brightMagenta: '#ff92df',
+    brightCyan: '#a4ffff', brightWhite: '#ffffff',
+  },
+}
+
+const PRESET_TOKYO_NIGHT: TerminalPreset = {
+  id: 'tokyo-night',
+  label: 'Tokyo Night',
+  accent: '#7aa2f7',
+  theme: {
+    background: '#1a1b26', foreground: '#a9b1d6', cursor: '#c0caf5',
+    selectionBackground: '#33467c', selectionForeground: '#c0caf5',
+    black: '#15161e', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
+    blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
+    brightBlack: '#414868', brightRed: '#f7768e', brightGreen: '#9ece6a',
+    brightYellow: '#e0af68', brightBlue: '#7aa2f7', brightMagenta: '#bb9af7',
+    brightCyan: '#7dcfff', brightWhite: '#c0caf5',
+  },
+}
+
+const PRESET_NORD: TerminalPreset = {
+  id: 'nord',
+  label: 'Nord',
+  accent: '#88c0d0',
+  theme: {
+    background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9',
+    selectionBackground: '#434c5e', selectionForeground: '#eceff4',
+    black: '#3b4252', red: '#bf616a', green: '#a3be8c', yellow: '#ebcb8b',
+    blue: '#81a1c1', magenta: '#b48ead', cyan: '#88c0d0', white: '#e5e9f0',
+    brightBlack: '#4c566a', brightRed: '#bf616a', brightGreen: '#a3be8c',
+    brightYellow: '#ebcb8b', brightBlue: '#81a1c1', brightMagenta: '#b48ead',
+    brightCyan: '#8fbcbb', brightWhite: '#eceff4',
+  },
+}
+
+export const TERMINAL_PRESETS: TerminalPreset[] = [
+  PRESET_SOLARIZED_DARK,
+  PRESET_DRACULA,
+  PRESET_TOKYO_NIGHT,
+  PRESET_NORD,
+]
+
+/** Returns built-in presets followed by user-imported custom themes from
+ *  settings. The Theme submenu and registry lookups both go through here. */
+export function getAllTerminalThemes(): TerminalPreset[] {
+  const custom = useSettingsStore.getState().terminalCustomThemes ?? []
+  return [...TERMINAL_PRESETS, ...custom]
+}
+
+export function getTerminalPreset(id: string | undefined): TerminalPreset | null {
+  if (!id) return null
+  return getAllTerminalThemes().find((p) => p.id === id) ?? null
+}
+
+/** Same fallback chain as resolveTerminalTheme but returns the full preset
+ *  (or null if no preset applies — e.g. "Follow App Theme" is selected). */
+export function resolveTerminalPreset(presetId: string | undefined): TerminalPreset | null {
+  const explicit = getTerminalPreset(presetId)
+  if (explicit) return explicit
+  const defaultId = useSettingsStore.getState().defaultTerminalTheme
+  return getTerminalPreset(defaultId)
+}
+
+/** Resolve the effective theme for a given panel.
+ *  Resolution order: per-panel preset → default-theme setting → app theme. */
+export function resolveTerminalTheme(presetId: string | undefined): typeof TERMINAL_THEME_DARK_WARM {
+  const explicit = getTerminalPreset(presetId)
+  if (explicit) return explicit.theme as typeof TERMINAL_THEME_DARK_WARM
+  const defaultId = useSettingsStore.getState().defaultTerminalTheme
+  const def = getTerminalPreset(defaultId)
+  if (def) return def.theme as typeof TERMINAL_THEME_DARK_WARM
+  return getTerminalTheme(getResolvedTheme())
+}
+
+/** Apply the resolved theme to every live terminal. Called when the app
+ *  theme changes OR when the user changes the default-theme setting. */
+function repaintAllTerminals(): void {
+  for (const entry of registry.values()) {
+    entry.terminal.options.theme = resolveTerminalTheme(entry.themePreset)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -135,12 +252,17 @@ export interface RegistryEntry {
   lastScrollTop: number
   /** True once a scroll listener has been attached — prevents duplicates across re-attach cycles. */
   hasScrollListener: boolean
+  /** Preset id (or undefined to follow the global theme). */
+  themePreset?: string
+  /** Owning workspace — used to route auto-detected URLs to the right browser panel. */
+  workspaceId: string
 }
 
 interface CreateOpts {
   workspaceId: string
   cwd?: string
   initialInput?: string
+  themePreset?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -154,80 +276,23 @@ const registry = new Map<string, RegistryEntry>()
 const pendingTransfers = new Map<string, { ptyId: string; scrollback?: string }>()
 
 // ---------------------------------------------------------------------------
-// Backgrounding: when document.hidden, route incoming PTY data into a ring
-// buffer instead of xterm.write(). xterm's renderer (especially WebGL) keeps
-// painting on hidden tabs and burns GPU; the terminal logger in main is the
-// canonical record, so dropping bytes from the visible buffer is safe as long
-// as we flush before the user sees the terminal again.
-//
-// Ring is per-panel and capped at HIDDEN_BUFFER_CAP — when the cap is hit we
-// keep only the tail (most-recent output). A "head" sentinel string is
-// emitted at flush time if we ever truncated, so the user knows output was
-// dropped.
-// ---------------------------------------------------------------------------
-
-const HIDDEN_BUFFER_CAP = 256 * 1024 // 256 KB per terminal
-const hiddenBuffers = new Map<string, { chunks: string[]; size: number; truncated: boolean }>()
-
-function appendHiddenChunk(panelId: string, data: string): void {
-  let buf = hiddenBuffers.get(panelId)
-  if (!buf) {
-    buf = { chunks: [], size: 0, truncated: false }
-    hiddenBuffers.set(panelId, buf)
-  }
-  buf.chunks.push(data)
-  buf.size += data.length
-  // Trim from the head while we're over the cap. Dropping whole chunks is
-  // coarse but cheap, and the visible result is "older output truncated"
-  // which we surface with a marker on flush.
-  while (buf.size > HIDDEN_BUFFER_CAP && buf.chunks.length > 1) {
-    const dropped = buf.chunks.shift()!
-    buf.size -= dropped.length
-    buf.truncated = true
-  }
-}
-
-function flushHiddenBuffer(panelId: string): void {
-  const buf = hiddenBuffers.get(panelId)
-  if (!buf || buf.chunks.length === 0) {
-    hiddenBuffers.delete(panelId)
-    return
-  }
-  const entry = registry.get(panelId)
-  hiddenBuffers.delete(panelId)
-  if (!entry) return
-  try {
-    if (buf.truncated) {
-      entry.terminal.write('\r\n\x1b[90m[output truncated while hidden]\x1b[0m\r\n')
-    }
-    // Single write — xterm internally chunks this for its parser, but we
-    // avoid N individual write() calls (each of which schedules a render).
-    entry.terminal.write(buf.chunks.join(''))
-  } catch { /* ignore */ }
-}
-
-function isDocumentHidden(): boolean {
-  return typeof document !== 'undefined' && document.hidden
-}
-
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return
-    // Flush every buffered terminal in one tick.
-    for (const panelId of Array.from(hiddenBuffers.keys())) {
-      flushHiddenBuffer(panelId)
-    }
-  })
-}
-
-// ---------------------------------------------------------------------------
 // Live theme swap — update all live terminals when the app theme changes
 // ---------------------------------------------------------------------------
 
-subscribeTheme((resolved) => {
-  const theme = getTerminalTheme(resolved)
-  for (const entry of registry.values()) {
-    entry.terminal.options.theme = theme
+subscribeTheme(() => {
+  repaintAllTerminals()
+})
+
+// When the user changes the default-theme setting (or imports/deletes a
+// custom palette), repaint any terminal without an explicit override.
+let lastDefault = useSettingsStore.getState().defaultTerminalTheme
+let lastCustomCount = useSettingsStore.getState().terminalCustomThemes?.length ?? 0
+useSettingsStore.subscribe((state) => {
+  const customCount = state.terminalCustomThemes?.length ?? 0
+  if (state.defaultTerminalTheme !== lastDefault || customCount !== lastCustomCount) {
+    lastDefault = state.defaultTerminalTheme
+    lastCustomCount = customCount
+    repaintAllTerminals()
   }
 })
 
@@ -257,7 +322,7 @@ async function getOrCreate(panelId: string, opts: CreateOpts): Promise<RegistryE
 
   // 1. Create xterm.js Terminal
   const terminal = new Terminal({
-    theme: getTerminalTheme(getResolvedTheme()),
+    theme: resolveTerminalTheme(opts.themePreset),
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontSize: 13,
     cursorBlink: true,
@@ -299,6 +364,8 @@ async function getOrCreate(panelId: string, opts: CreateOpts): Promise<RegistryE
     cleanupListeners,
     lastScrollTop: 0,
     hasScrollListener: false,
+    themePreset: opts.themePreset,
+    workspaceId: opts.workspaceId,
   }
 
   // Register entry immediately so concurrent calls return the same object
@@ -338,19 +405,12 @@ async function getOrCreate(panelId: string, opts: CreateOpts): Promise<RegistryE
 
     entry.ptyId = ptyId
 
-    // 6. PTY -> xterm: incoming data.
-    // When the window is hidden, divert into a ring buffer instead of
-    // writing to xterm — the renderer keeps painting on hidden tabs and
-    // burns GPU on terminals nobody can see. The main-side terminal log
-    // remains the canonical record, so dropping bytes here is safe.
+    // 6. PTY -> xterm: incoming data
     const removeDataListener = electronAPI.onTerminalData((id: string, data: string) => {
-      if (id !== ptyId) return
-      if (isDocumentHidden()) {
-        appendHiddenChunk(panelId, data)
-      } else {
+      if (id === ptyId) {
         terminal.write(data)
+        try { scanTerminalChunkForUrls(panelId, opts.workspaceId, data) } catch { /* ignore */ }
       }
-      scanTerminalChunkForUrls(panelId, opts.workspaceId, data)
     })
     cleanupListeners.push(removeDataListener)
 
@@ -458,7 +518,7 @@ async function reconnectTerminal(
 
   // 1. Create a fresh xterm Terminal (same config as getOrCreate)
   const terminal = new Terminal({
-    theme: getTerminalTheme(getResolvedTheme()),
+    theme: resolveTerminalTheme(opts.themePreset),
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontSize: 13,
     cursorBlink: true,
@@ -488,6 +548,8 @@ async function reconnectTerminal(
     cleanupListeners,
     lastScrollTop: 0,
     hasScrollListener: false,
+    themePreset: opts.themePreset,
+    workspaceId: opts.workspaceId,
   }
 
   registry.set(panelId, entry)
@@ -497,16 +559,12 @@ async function reconnectTerminal(
     terminal.write(scrollback + '\r\n')
   }
 
-  // 3. Wire up listeners to the EXISTING PTY (with hidden-buffer gating —
-  //    see getOrCreate() for rationale).
+  // 3. Wire up listeners to the EXISTING PTY
   const removeDataListener = electronAPI.onTerminalData((id: string, data: string) => {
-    if (id !== ptyId) return
-    if (isDocumentHidden()) {
-      appendHiddenChunk(panelId, data)
-    } else {
+    if (id === ptyId) {
       terminal.write(data)
+      try { scanTerminalChunkForUrls(panelId, opts.workspaceId, data) } catch { /* ignore */ }
     }
-    scanTerminalChunkForUrls(panelId, opts.workspaceId, data)
   })
   cleanupListeners.push(removeDataListener)
 
@@ -578,7 +636,7 @@ function release(panelId: string): void {
   if (!entry) return
 
   registry.delete(panelId)
-  hiddenBuffers.delete(panelId)
+  clearTerminalUrlBuffer(panelId)
 
   const { terminal, fitAddon, webglAddon, cleanupListeners } = entry
 
@@ -725,35 +783,22 @@ function attach(panelId: string, container: HTMLDivElement): void {
 
   // Reload the WebGL addon — its internal canvas buffers are tied to the old
   // container dimensions and cannot survive a DOM reparent reliably.
-  //
-  // We defer the load by one animation frame so the canvas-renderer
-  // fallback paints the first visible frame first; this avoids a measurable
-  // hitch when many terminals attach simultaneously (e.g. workspace
-  // restore), at the cost of one frame of slightly softer glyphs.
   if (entry.webglAddon) {
     try { entry.webglAddon.dispose() } catch { /* ignore */ }
     entry.webglAddon = null
   }
-  requestAnimationFrame(() => {
-    // Guard against disposal/reparent between scheduling and running.
-    const current = registry.get(panelId)
-    if (!current || current !== entry) return
-    if (entry.webglAddon) return
-    const stillAttached = (terminal as unknown as { element?: HTMLElement }).element?.parentElement === container
-    if (!stillAttached) return
-    try {
-      const newWebgl = new WebglAddon()
-      newWebgl.onContextLoss(() => {
-        newWebgl.dispose()
-        const e = registry.get(panelId)
-        if (e) e.webglAddon = null
-      })
-      terminal.loadAddon(newWebgl)
-      entry.webglAddon = newWebgl
-    } catch {
-      // Canvas renderer fallback — no action needed
-    }
-  })
+  try {
+    const newWebgl = new WebglAddon()
+    newWebgl.onContextLoss(() => {
+      newWebgl.dispose()
+      const e = registry.get(panelId)
+      if (e) e.webglAddon = null
+    })
+    terminal.loadAddon(newWebgl)
+    entry.webglAddon = newWebgl
+  } catch {
+    // Canvas renderer fallback — no action needed
+  }
 
   // Fit after the next frame — the container may still be mid-layout during
   // the sync DOM append (e.g. WebGL canvas initialization).  Retry up to 5
@@ -853,7 +898,7 @@ function dispose(panelId: string): void {
 
   // Remove from registry first so re-entrant calls are no-ops
   registry.delete(panelId)
-  hiddenBuffers.delete(panelId)
+  clearTerminalUrlBuffer(panelId)
 
   const { terminal, fitAddon, webglAddon, ptyId, cleanupListeners } = entry
   const { electronAPI } = window
@@ -925,6 +970,14 @@ function findPrevious(panelId: string, query: string): boolean {
   return entry.searchAddon.findPrevious(query)
 }
 
+/** Apply a preset (or clear it with undefined) to a live terminal. */
+function setThemePreset(panelId: string, presetId: string | undefined): void {
+  const entry = registry.get(panelId)
+  if (!entry) return
+  entry.themePreset = presetId
+  entry.terminal.options.theme = resolveTerminalTheme(presetId)
+}
+
 function clearSearch(panelId: string): void {
   const entry = registry.get(panelId)
   entry?.searchAddon?.clearDecorations()
@@ -949,4 +1002,5 @@ export const terminalRegistry = {
   findNext,
   findPrevious,
   clearSearch,
+  setThemePreset,
 } as const

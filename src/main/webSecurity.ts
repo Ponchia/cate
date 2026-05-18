@@ -52,6 +52,10 @@ function guestSessionFor(contents: WebContents, partition?: string): Session {
 
 export function installWebContentsSecurity(): void {
   app.on('web-contents-created', (_event, contents) => {
+    // Default: deny popups for every web-contents. Webview guests get a
+    // permissive handler installed below that allows popups but routes them
+    // through Cate's popup registry so the agent can drive them via the
+    // `cate portal` CLI.
     contents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
     if (contents.getType() === 'window') {
@@ -83,7 +87,11 @@ export function installWebContentsSecurity(): void {
       webPreferences.webSecurity = true
       ;(webPreferences as { allowRunningInsecureContent?: boolean }).allowRunningInsecureContent = false
 
-      params.allowpopups = 'false'
+      // Allow `window.open()` from webview content so we can track OAuth /
+      // Sign-In popups via Cate's popup registry. The setWindowOpenHandler
+      // installed when the guest's webContents is created strictly filters
+      // which URLs are actually allowed; this just removes the blanket veto.
+      params.allowpopups = 'true'
 
       const partition = typeof webPreferences.partition === 'string' ? webPreferences.partition : undefined
       const targetSession = guestSessionFor(contents, partition)

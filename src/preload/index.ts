@@ -49,7 +49,6 @@ import {
   SHELL_ACTIVITY_UPDATE,
   SHELL_PORTS_UPDATE,
   SHELL_CWD_UPDATE,
-  SHELL_KILL_PROCESS,
   SETTINGS_GET,
   SETTINGS_SET,
   SETTINGS_GET_ALL,
@@ -66,9 +65,12 @@ import {
   MENU_TRIGGER_ACTION,
   MENU_SHOW_CONTEXT,
   DIALOG_OPEN_FOLDER,
+  DIALOG_OPEN_IMAGE,
+  FS_READ_IMAGE,
   DIALOG_SAVE_FILE,
   DIALOG_CONFIRM_UNSAVED,
   DIALOG_CONFIRM_CLOSE_CANVAS,
+  DIALOG_CONFIRM_DELETE_REGION,
   RECENT_PROJECTS_GET,
   RECENT_PROJECTS_ADD,
   LAYOUT_SAVE,
@@ -83,11 +85,6 @@ import {
   FS_SEARCH,
   SHELL_SHOW_IN_FOLDER,
   HTTP_FETCH,
-  UPDATE_STATUS,
-  UPDATE_INSTALL,
-  UPDATE_DOWNLOAD,
-  UPDATE_OPEN_RELEASE,
-  UPDATE_DISMISS,
   NOTIFY_OS,
   NOTIFY_ACTION,
   WINDOW_CREATE,
@@ -121,6 +118,11 @@ import {
   WEBVIEW_SCREENSHOT,
   NATIVE_FILE_DRAG,
   CAPTURE_PAGE,
+  UPDATE_STATUS,
+  UPDATE_INSTALL,
+  UPDATE_DOWNLOAD,
+  UPDATE_OPEN_RELEASE,
+  UPDATE_DISMISS,
 } from '../shared/ipc-channels'
 
 // Cache native-fullscreen state so renderer drag handlers can synchronously
@@ -355,10 +357,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke(SHELL_UNREGISTER_TERMINAL, terminalId)
   },
 
-  shellKillProcess(terminalId: string): Promise<void> {
-    return ipcRenderer.invoke(SHELL_KILL_PROCESS, terminalId)
-  },
-
   onShellActivityUpdate(
     callback: (terminalId: string, activity: unknown, agentState: unknown, agentName: unknown) => void,
   ): () => void {
@@ -506,6 +504,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke(DIALOG_OPEN_FOLDER)
   },
 
+  openImageDialog(): Promise<string[] | null> {
+    return ipcRenderer.invoke(DIALOG_OPEN_IMAGE)
+  },
+
+  readImageAsDataUrl(filePath: string): Promise<{ mime: string; dataUrl: string } | null> {
+    return ipcRenderer.invoke(FS_READ_IMAGE, filePath)
+  },
+
   saveFileDialog(options: { defaultPath?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null> {
     return ipcRenderer.invoke(DIALOG_SAVE_FILE, options)
   },
@@ -516,6 +522,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   confirmCloseCanvas(payload: { panelCount: number; isLast: boolean }): Promise<'move' | 'delete' | 'close' | 'cancel'> {
     return ipcRenderer.invoke(DIALOG_CONFIRM_CLOSE_CANVAS, payload)
+  },
+
+  confirmDeleteRegion(payload: { panelCount: number }): Promise<'with-contents' | 'region-only' | 'cancel'> {
+    return ipcRenderer.invoke(DIALOG_CONFIRM_DELETE_REGION, payload)
   },
 
   // ---------------------------------------------------------------------------

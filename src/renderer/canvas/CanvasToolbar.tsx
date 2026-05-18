@@ -16,52 +16,14 @@ import {
   ArrowsOutSimple,
   DotsThree,
   SquaresFour,
+  MapTrifold,
   PencilSimple,
+  Image as ImageIcon,
 } from '@phosphor-icons/react'
+import Minimap from './Minimap'
 import { useCanvasStoreApi, useCanvasStoreContext } from '../stores/CanvasStoreContext'
-import { useShortcutStore } from '../stores/shortcutStore'
-import { ShortcutHintBadge } from '../ui/ShortcutHintBadge'
-import type { ShortcutAction, StoredShortcut } from '../../shared/types'
+import { useSettingsStore } from '../stores/settingsStore'
 import { UpdateButton } from './UpdateButton'
-
-// Format a shortcut into a badge label (modifiers other than ⌘ + key).
-// The ⌘ glyph is rendered by ShortcutHintBadge itself.
-function formatBadgeLabel(s: StoredShortcut): string {
-  let prefix = ''
-  if (s.control) prefix += '\u2303'
-  if (s.option) prefix += '\u2325'
-  if (s.shift) prefix += '\u21E7'
-  let key: string
-  switch (s.key) {
-    case '\t': key = 'Tab'; break
-    case ' ': key = 'Space'; break
-    case '=':
-    case '-':
-    case '\\': key = s.key; break
-    default: key = s.key.toUpperCase()
-  }
-  return prefix + key
-}
-
-const ToolbarHintBadge: React.FC<{ action: ShortcutAction }> = ({ action }) => {
-  const isShowingHints = useShortcutStore((s) => s.isShowingHints)
-  const active = useShortcutStore((s) => s.activeModifiers)
-  const shortcut = useShortcutStore((s) => s.shortcuts[action])
-  if (!isShowingHints || !shortcut) return null
-  if (
-    shortcut.command !== active.command ||
-    shortcut.shift !== active.shift ||
-    shortcut.option !== active.option ||
-    shortcut.control !== active.control
-  ) {
-    return null
-  }
-  return (
-    <span className="absolute left-1/2 -translate-x-1/2 -top-7 pointer-events-none whitespace-nowrap">
-      <ShortcutHintBadge label={formatBadgeLabel(shortcut)} />
-    </span>
-  )
-}
 
 interface CanvasToolbarProps {
   zoom: number
@@ -72,6 +34,7 @@ interface CanvasToolbarProps {
   onNewRegion: () => void
   onNewStickyNote: () => void
   onNewTextLabel: () => void
+  onAddImage: () => void
   onAutoLayout: () => void
   onZoomToFit: () => void
   onZoomIn: () => void
@@ -125,6 +88,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   onNewRegion,
   onNewStickyNote,
   onNewTextLabel,
+  onAddImage,
   onAutoLayout,
   onZoomToFit,
   onZoomIn,
@@ -132,7 +96,10 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
 }) => {
   const canvasApi = useCanvasStoreApi()
   const drawMode = useCanvasStoreContext((s) => s.drawMode)
+  const showMinimap = useSettingsStore((s) => s.showMinimap)
+  const saveSetting = useSettingsStore((s) => s.saveSetting)
   const zoomText = `${Math.round(zoom * 100)}%`
+
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
@@ -161,8 +128,8 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   }
 
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2">
-      <UpdateButton />
+    <>
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50">
       <div ref={menuRef} className="relative">
         {/* Drop-up menu */}
         {menuOpen && (
@@ -185,6 +152,11 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
               icon={<TextT size={16} />}
               label="New Text Label"
             />
+            <MenuItem
+              onClick={pick(onAddImage)}
+              icon={<ImageIcon size={16} />}
+              label="Add Image…"
+            />
             <div className="h-px bg-surface-5 my-1" />
             <MenuItem
               onClick={pick(onAutoLayout)}
@@ -202,33 +174,14 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
         <div className="rounded-full border border-strong bg-surface-6 shadow-[0_8px_24px_-6px_var(--shadow-node)]">
           <div className="flex items-center gap-1 px-3 py-1.5">
             {/* Basic panel buttons */}
-            <span className="relative inline-flex">
-              <ToolbarButton onClick={onNewTerminal} title="Terminal" size="panel">
-                <Terminal size={14} />
-              </ToolbarButton>
-              <ToolbarHintBadge action="newTerminal" />
-            </span>
-            <span className="relative inline-flex">
-              <ToolbarButton onClick={onNewBrowser} title="Browser" size="panel">
-                <Globe size={14} />
-              </ToolbarButton>
-              <ToolbarHintBadge action="newBrowser" />
-            </span>
-            <span className="relative inline-flex">
-              <ToolbarButton onClick={onNewEditor} title="Editor" size="panel">
-                <FileText size={14} />
-              </ToolbarButton>
-              <ToolbarHintBadge action="newEditor" />
-            </span>
-
-            {/* Draw mode toggle */}
-            <ToolbarButton
-              onClick={() => canvasApi.getState().setDrawMode(!drawMode)}
-              title={drawMode ? 'Draw: On (click to disable)' : 'Draw on canvas'}
-              size="panel"
-              active={drawMode}
-            >
-              <PencilSimple size={14} weight={drawMode ? 'fill' : 'regular'} />
+            <ToolbarButton onClick={onNewTerminal} title="Terminal" size="panel">
+              <Terminal size={14} />
+            </ToolbarButton>
+            <ToolbarButton onClick={onNewBrowser} title="Browser" size="panel">
+              <Globe size={14} />
+            </ToolbarButton>
+            <ToolbarButton onClick={onNewEditor} title="Editor" size="panel">
+              <FileText size={14} />
             </ToolbarButton>
 
             {/* Divider */}
@@ -244,38 +197,115 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
               <DotsThree size={14} />
             </ToolbarButton>
 
+            {/* Draw tool toggle — freehand pen strokes on the canvas */}
+            <ToolbarButton
+              onClick={() => canvasApi.getState().setDrawMode(!drawMode)}
+              title={drawMode ? 'Draw: On (click to disable)' : 'Draw on canvas'}
+              size="panel"
+              active={drawMode}
+            >
+              <PencilSimple size={14} weight={drawMode ? 'fill' : 'regular'} />
+            </ToolbarButton>
+
             {/* Divider */}
             <div className="w-px h-4 bg-surface-5 mx-0.5" />
 
             {/* Zoom controls */}
-            <span className="relative inline-flex">
-              <ToolbarButton onClick={onZoomOut} title="Zoom Out" size="zoom">
-                <Minus size={12} />
-              </ToolbarButton>
-              <ToolbarHintBadge action="zoomOut" />
-            </span>
-            <span className="relative inline-flex">
-              <button
-                type="button"
-                onClick={() => canvasApi.getState().animateZoomTo(1.0)}
-                title="Reset zoom to 100%"
-                style={{ WebkitTapHighlightColor: 'transparent' }}
-                className="text-[10px] font-mono text-primary min-w-[38px] text-center select-none rounded-full bg-transparent hover:bg-hover-strong active:bg-hover-strong cursor-pointer px-1 py-0.5 focus:outline-none focus-visible:outline-none transition-all duration-100"
-              >
-                {zoomText}
-              </button>
-              <ToolbarHintBadge action="zoomReset" />
-            </span>
-            <span className="relative inline-flex">
-              <ToolbarButton onClick={onZoomIn} title="Zoom In" size="zoom">
-                <Plus size={12} />
-              </ToolbarButton>
-              <ToolbarHintBadge action="zoomIn" />
-            </span>
+            <ToolbarButton onClick={onZoomOut} title="Zoom Out" size="zoom">
+              <Minus size={12} />
+            </ToolbarButton>
+            <button
+              type="button"
+              onClick={() => canvasApi.getState().animateZoomTo(1.0)}
+              title="Reset zoom to 100%"
+              style={{ WebkitTapHighlightColor: 'transparent' }}
+              className="text-[10px] font-mono text-primary min-w-[38px] text-center select-none rounded-full bg-transparent hover:bg-hover-strong active:bg-hover-strong cursor-pointer px-1 py-0.5 focus:outline-none focus-visible:outline-none transition-all duration-100"
+            >
+              {zoomText}
+            </button>
+            <ToolbarButton onClick={onZoomIn} title="Zoom In" size="zoom">
+              <Plus size={12} />
+            </ToolbarButton>
           </div>
         </div>
       </div>
+
     </div>
+
+    {/* Minimap — standalone pill button anchored to the bottom-right corner.
+        The right offset includes the right sidebar width so the button stays
+        visible when the overlay sidebar is expanded. */}
+    <div
+      className="absolute bottom-4 z-50 flex items-center gap-2"
+      style={{ right: 'calc(1rem + var(--cate-right-sidebar-width, 0px))' }}
+    >
+      <UpdateButton />
+      <div className="relative">
+        <div className="rounded-full border border-strong bg-surface-6 shadow-[0_8px_24px_-6px_var(--shadow-node)]">
+          <div className="flex items-center p-1.5">
+            <ToolbarButton
+              onClick={() => saveSetting('showMinimap', !showMinimap)}
+              title={showMinimap ? 'Hide minimap' : 'Show minimap'}
+              size="panel"
+              active={showMinimap}
+            >
+              <MapTrifold size={14} />
+            </ToolbarButton>
+          </div>
+        </div>
+        {showMinimap && (
+          <div
+            data-theme="dark-warm"
+            className="absolute right-0 bottom-full mb-2 rounded-lg overflow-hidden shadow-[0_18px_40px_-12px_var(--shadow-node)]"
+          >
+            <Minimap mode="popover" />
+          </div>
+        )}
+        {showMinimap && (
+          <>
+            {/* Border triangle (slightly larger, underneath) */}
+            <div
+              aria-hidden
+              className="absolute left-1/2 -translate-x-1/2 bottom-full"
+              style={{
+                marginBottom: 1,
+                width: 0,
+                height: 0,
+                borderLeft: '7px solid transparent',
+                borderRight: '7px solid transparent',
+                borderTop: '7px solid var(--border-subtle)',
+              }}
+            />
+            {/* Fill triangle (on top, 1px inset) */}
+            <div
+              aria-hidden
+              className="absolute left-1/2 -translate-x-1/2 bottom-full"
+              style={{
+                marginBottom: 2,
+                width: 0,
+                height: 0,
+                borderLeft: '6px solid transparent',
+                borderRight: '6px solid transparent',
+                borderTop: '6px solid var(--surface-2)',
+              }}
+            />
+            {/* Notch — covers the 1px popover border across the tail's width so
+                the tail visually connects to the popover without a seam line. */}
+            <div
+              aria-hidden
+              className="absolute left-1/2 -translate-x-1/2 bottom-full"
+              style={{
+                marginBottom: 8,
+                width: 12,
+                height: 1,
+                background: 'var(--surface-2)',
+              }}
+            />
+          </>
+        )}
+      </div>
+    </div>
+    </>
   )
 }
 

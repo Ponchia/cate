@@ -185,9 +185,6 @@ export interface ElectronAPI {
   /** Unregister a terminal from process monitoring. */
   shellUnregisterTerminal(terminalId: string): Promise<void>
 
-  /** Kill child processes of a terminal's shell without killing the terminal itself. */
-  shellKillProcess(terminalId: string): Promise<void>
-
   /** Subscribe to shell activity updates (main -> renderer). */
   onShellActivityUpdate(
     callback: (terminalId: string, activity: TerminalActivity, agentState: AgentState, agentName: string | null) => void,
@@ -255,11 +252,25 @@ export interface ElectronAPI {
   onOpenPath(callback: (filePath: string) => void): () => void
 
   // ---------------------------------------------------------------------------
+  // Crash reporting
+  // ---------------------------------------------------------------------------
+
+  /** Save a crash report from the renderer (shown on next launch with opt-in send). */
+  crashReportSave(error: { name?: string; message: string; stack?: string }): Promise<void>
+
+  // ---------------------------------------------------------------------------
   // Dialog
   // ---------------------------------------------------------------------------
 
   /** Open a native folder picker. Returns the selected path or null if canceled. */
   openFolderDialog(): Promise<string | null>
+
+  /** Open a native image file picker (multi-select). Returns selected paths or null if canceled. */
+  openImageDialog(): Promise<string[] | null>
+
+  /** Read a file and return a base64 data URL if its bytes sniff as an image
+   *  (PNG/JPEG/GIF/WebP/BMP/SVG). Returns null for non-image or oversized files. */
+  readImageAsDataUrl(filePath: string): Promise<{ mime: string; dataUrl: string } | null>
 
   /** Open a native save dialog. Returns the chosen file path or null if canceled. */
   saveFileDialog(options: { defaultPath?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null>
@@ -271,6 +282,11 @@ export interface ElectronAPI {
    *  not the last and has open panels, returns 'move' | 'delete' | 'cancel'.
    *  Otherwise returns 'close' | 'cancel'. */
   confirmCloseCanvas(payload: { panelCount: number; isLast: boolean }): Promise<'move' | 'delete' | 'close' | 'cancel'>
+
+  /** Native confirmation shown when deleting a region that has panels inside.
+   *  Returns 'with-contents' (delete region + contents), 'region-only' (keep
+   *  contents, just remove the region around them), or 'cancel'. */
+  confirmDeleteRegion(payload: { panelCount: number }): Promise<'with-contents' | 'region-only' | 'cancel'>
 
   // ---------------------------------------------------------------------------
   // Recent Projects
@@ -465,8 +481,34 @@ export interface ElectronAPI {
   showContextMenu(items: NativeContextMenuItem[]): Promise<string | null>
 
   // ---------------------------------------------------------------------------
-  // Auto-updater
+  // Orchestrator (cate CLI graph sync)
   // ---------------------------------------------------------------------------
+
+  /** Push a full snapshot of this window's terminals + canvas connections to
+   *  the main-process orchestrator. Called on every relevant store change. */
+  orchSyncRegistry(snapshot: {
+    terminals: Array<{ ptyId: string | null; panelId: string; nodeId: string | null; name: string }>
+    portals?: Array<{ panelId: string; nodeId: string | null; name: string }>
+    connections: Array<{ from: string; to: string }>
+  }): Promise<void>
+
+  /** Subscribe to "ask in flight" events emitted by the orchestrator so the
+   *  canvas can animate the connection line during a `cate ask`. Returns an
+   *  unsubscribe function. */
+  onOrchInflight(callback: (payload: { fromNodeId: string; toNodeId: string; active: boolean }) => void): () => void
+
+  /** Subscribe to orchestrator-driven UI commands (recruit/dismiss/connect/note/portal).
+   *  The handler is awaited; its return value is sent back to main as the response.
+   *  Throw to signal failure. Returns an unsubscribe function. */
+  onOrchCommand(handler: (req: { id: number; verb: string; args?: any }) => Promise<any>): () => void
+
+  /** Push a (panelId, webContentsId, alive) tuple to main so it can build a
+   *  webContents → portal-panel reverse map for popup parent resolution. */
+  orchRegisterPortalWc(payload: { panelId: string; webContentsId: number; alive: boolean }): void
+
+  // -------------------------------------------------------------------------
+  // Auto-updater
+  // -------------------------------------------------------------------------
 
   /** Subscribe to update-status broadcasts from the main process. */
   onUpdateStatus(callback: (status: unknown) => void): () => void
@@ -476,7 +518,7 @@ export interface ElectronAPI {
   updateDownload(): void
   /** Apply the downloaded update and restart the app. */
   updateInstall(): void
-  /** Open the GitHub release page for the available update. */
+  /** Open the GitHub release page when auto-install is unavailable. */
   updateOpenRelease(url?: string): void
   /** Dismiss the in-app update affordance (reverts status to idle). */
   updateDismiss(): void

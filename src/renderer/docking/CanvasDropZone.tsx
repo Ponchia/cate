@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { StoreApi } from 'zustand'
 import type { CanvasStore } from '../stores/canvasStore'
 import { findCanvasStoreForNode } from '../stores/canvasStore'
-import { useDockDragStore } from '../hooks/useDockDrag'
+import { useDockDragStore, getDropZoneEntries } from '../hooks/useDockDrag'
 import { useDockStore } from '../stores/dockStore'
 import type { PanelType } from '../../shared/types'
 import { PANEL_DEFAULT_SIZES } from '../../shared/types'
@@ -50,13 +50,19 @@ export default function CanvasDropZone({ canvasStoreApi }: CanvasDropZoneProps) 
 
 /** Outer strip (in px) reserved for the underlying DockTabStack's split-edge
  *  targets (top / bottom / left / right). When the cursor is inside this strip
- *  we deactivate the canvas drop so the dock's normal split indicator wins. */
-const EDGE_STRIP = 80
+ *  we deactivate the canvas drop so the dock's normal split indicator wins.
+ *  Kept tight so most of the canvas reads as drop-into-canvas territory. */
+const EDGE_STRIP = 32
 
 function CanvasDropZoneInner({ canvasStoreApi }: CanvasDropZoneProps) {
   const overlayRef = useRef<HTMLDivElement>(null)
+  const pillRef = useRef<HTMLDivElement>(null)
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
   const [inCenter, setInCenter] = useState(false)
+  // Mirror `inCenter` in a ref so the pointerUp handler reads the freshest
+  // value — React state may not have committed the last setInCenter from the
+  // preceding pointerMove before the release event fires.
+  const inCenterRef = useRef(false)
   const draggedPanelType = useDockDragStore((s) => s.draggedPanelType)
   const draggedPanelTitle = useDockDragStore((s) => s.draggedPanelTitle)
   const dragSource = useDockDragStore((s) => s.dragSource)
@@ -114,16 +120,37 @@ function CanvasDropZoneInner({ canvasStoreApi }: CanvasDropZoneProps) {
   const updateCursor = (clientX: number, clientY: number, rect: DOMRect) => {
     const x = clientX - rect.left
     const y = clientY - rect.top
-    const center =
-      x > EDGE_STRIP &&
-      y > EDGE_STRIP &&
-      x < rect.width - EDGE_STRIP &&
-      y < rect.height - EDGE_STRIP
+    const inEdgeStrip =
+      !(x > EDGE_STRIP &&
+        y > EDGE_STRIP &&
+        x < rect.width - EDGE_STRIP &&
+        y < rect.height - EDGE_STRIP)
+    // Pill-hover override: when the cursor is over the "Drop into canvas"
+    // pill itself, force center mode so the pill always wins regardless of
+    // a mini-dock underneath. The pill is a deliberate target — once the
+    // user lands on it, that's their intent.
+    const pillRect = pillRef.current?.getBoundingClientRect()
+    const overPill = !!pillRect &&
+      clientX >= pillRect.left && clientX <= pillRect.right &&
+      clientY >= pillRect.top && clientY <= pillRect.bottom
+    // Also yield to any registered mini-dock drop zone the cursor is sitting
+    // over — those are canvas-node mini-docks layered above the canvas, and
+    // we want their tab/split indicators to win over "Drop into canvas".
+    // Main-window dock zones (left/right/bottom) sit outside this overlay's
+    // rect so they're handled implicitly by onPointerLeave.
+    const overMiniDock = !overPill && getDropZoneEntries().some((entry) => {
+      if (!entry.dockStoreApi) return false
+      const r = entry.getRect()
+      if (!r) return false
+      return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom
+    })
+    const center = overPill || (!inEdgeStrip && !overMiniDock)
     setCursor({ x, y })
     setInCenter(center)
+    inCenterRef.current = center
     // The source's mousemove handler checks this flag to decide whether to
     // run its own hit-test. Only claim the cursor when we're in the center —
-    // otherwise let the dock's split-edge indicators fire.
+    // otherwise let the dock's split-edge / mini-dock indicators fire.
     canvasDropZoneHovered = center
     if (center) {
       useDockDragStore.getState().setDropTarget(null)
@@ -143,13 +170,18 @@ function CanvasDropZoneInner({ canvasStoreApi }: CanvasDropZoneProps) {
       }}
       onPointerLeave={() => {
         canvasDropZoneHovered = false
+        inCenterRef.current = false
         setCursor(null)
         setInCenter(false)
       }}
       onPointerUp={(e) => {
+        // Re-compute cursor position right before deciding so the drop is
+        // gated on the FINAL cursor location, not the last pointermove.
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+        updateCursor(e.clientX, e.clientY, rect)
         // Only handle drops that land in the center region — edge drops are
         // handled by the dock's normal split-target executeDrop path.
-        if (!inCenter) return
+        if (!inCenterRef.current) return
 
         const dragState = useDockDragStore.getState()
         const { draggedPanelId, draggedPanelType, dragSource, sourceDockStoreApi } = dragState
@@ -178,7 +210,6 @@ function CanvasDropZoneInner({ canvasStoreApi }: CanvasDropZoneProps) {
         }
 
         // --- Add to this canvas at the cursor position ------------------
-        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
         const localX = e.clientX - rect.left
         const localY = e.clientY - rect.top
         const cs = canvasStoreApi.getState()
@@ -267,30 +298,34 @@ function CanvasDropZoneInner({ canvasStoreApi }: CanvasDropZoneProps) {
         }}
       >
         <div
+          ref={pillRef}
           style={{
             position: 'relative',
             overflow: 'hidden',
             borderRadius: 20,
-            background: inCenter ? 'rgba(74, 158, 255, 0.15)' : 'var(--surface-3)',
+            background: inCenter ? 'rgba(74, 158, 255, 0.22)' : 'var(--surface-3)',
             border: inCenter
-              ? '1px solid rgba(74, 158, 255, 0.6)'
+              ? '1px solid rgba(74, 158, 255, 0.9)'
               : `1px solid var(--border-subtle)`,
+            boxShadow: inCenter
+              ? '0 0 0 4px rgba(74, 158, 255, 0.18), 0 12px 32px -8px rgba(74, 158, 255, 0.5)'
+              : 'none',
             backdropFilter: 'blur(12px)',
             padding: '10px 24px',
             minWidth: 200,
             textAlign: 'center',
             transition:
-              'background 200ms ease, border-color 200ms ease, transform 200ms cubic-bezier(0.16, 1, 0.3, 1)',
-            transform: inCenter ? 'scale(1.05)' : 'scale(1)',
+              'background 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 200ms cubic-bezier(0.16, 1, 0.3, 1)',
+            transform: inCenter ? 'scale(1.08)' : 'scale(1)',
             animation: inCenter ? 'canvasDropPulse 1.2s ease-in-out infinite' : 'none',
           }}
         >
           <span
             style={{
               fontSize: 12,
-              fontWeight: 500,
+              fontWeight: 600,
               color: inCenter ? 'var(--focus-blue)' : 'var(--text-secondary)',
-              transition: 'color 200ms ease',
+              transition: 'color 150ms ease',
               whiteSpace: 'nowrap',
               userSelect: 'none',
             }}

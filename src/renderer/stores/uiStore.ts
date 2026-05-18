@@ -16,11 +16,11 @@ export interface SidebarLayout {
   right: SidebarView[]
 }
 
-const LAYOUT_STORAGE_KEY = 'cate.sidebarLayout'
+const LAYOUT_STORAGE_KEY = 'cate.sidebarLayout.v3'
 const ALL_VIEWS: SidebarView[] = ['workspaces', 'explorer', 'git']
 const DEFAULT_LAYOUT: SidebarLayout = {
-  left: ['workspaces'],
-  right: ['explorer', 'git'],
+  left: ['workspaces', 'explorer'],
+  right: ['git'],
 }
 
 function loadLayout(): SidebarLayout {
@@ -53,6 +53,9 @@ interface UIStoreState {
   showPanelSwitcher: boolean
   showGlobalSearch: boolean
   showLayoutsDialog: boolean
+  showSettings: boolean
+  /** Optional initial settings tab to open when showSettings flips to true. */
+  settingsInitialTab: string | null
   fileExplorerVisible: boolean
   /** Pre-captured page screenshot for panel switcher previews. */
   panelSwitcherScreenshot: string | null
@@ -66,6 +69,8 @@ interface UIStoreState {
   activeRightSidebarView: SidebarView | null
   /** The view currently being dragged between/within sidebars, null when idle */
   draggingView: SidebarView | null
+  /** When set, the next left-click on empty canvas creates an item of this type at the click point. */
+  placementMode: 'textLabel' | null
 }
 
 interface UIStoreActions {
@@ -74,6 +79,8 @@ interface UIStoreActions {
   setShowPanelSwitcher: (show: boolean) => void
   setShowGlobalSearch: (show: boolean) => void
   setShowLayoutsDialog: (show: boolean) => void
+  openSettings: (initialTab?: string) => void
+  closeSettings: () => void
   toggleSidebar: () => void
   toggleFileExplorer: () => void
   setFileExplorerVisible: (visible: boolean) => void
@@ -82,6 +89,7 @@ interface UIStoreActions {
   setActiveRightSidebarView: (view: SidebarView | null) => void
   moveSidebarView: (view: SidebarView, targetSide: SidebarSide, targetIndex: number) => void
   setDraggingView: (view: SidebarView | null) => void
+  setPlacementMode: (mode: 'textLabel' | null) => void
 }
 
 export type UIStore = UIStoreState & UIStoreActions
@@ -98,12 +106,15 @@ export const useUIStore = create<UIStore>((set, get) => ({
   panelSwitcherScreenshot: null,
   showGlobalSearch: false,
   showLayoutsDialog: false,
+  showSettings: false,
+  settingsInitialTab: null,
   fileExplorerVisible: false,
   marquee: null,
   sidebarLayout: loadLayout(),
   activeLeftSidebarView: 'workspaces',
   activeRightSidebarView: null,
   draggingView: null,
+  placementMode: null,
 
   // --- Actions ---
 
@@ -125,6 +136,14 @@ export const useUIStore = create<UIStore>((set, get) => ({
 
   setShowLayoutsDialog(show) {
     set({ showLayoutsDialog: show })
+  },
+
+  openSettings(initialTab) {
+    set({ showSettings: true, settingsInitialTab: initialTab ?? null })
+  },
+
+  closeSettings() {
+    set({ showSettings: false, settingsInitialTab: null })
   },
 
   toggleSidebar() {
@@ -199,6 +218,10 @@ export const useUIStore = create<UIStore>((set, get) => ({
 
   setDraggingView(view) {
     set({ draggingView: view })
+  },
+
+  setPlacementMode(mode) {
+    set({ placementMode: mode })
   },
 
 }))

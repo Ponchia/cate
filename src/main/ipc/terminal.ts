@@ -26,7 +26,6 @@ import { sendToWindow, windowFromEvent } from '../windowRegistry'
 import { getShellEnv } from '../shellEnv'
 import { resolveShell, type ResolvedShell } from '../shellResolver'
 import log from '../logger'
-
 // Active terminal PTY instances keyed by terminal ID
 const terminals: Map<string, IPty> = new Map()
 

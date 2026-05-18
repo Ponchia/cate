@@ -51,6 +51,8 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   terminalFontFamily: 'string',
   terminalFontSize: 'number',
   terminalScrollback: 'number',
+  terminalCustomThemes: 'array',
+  defaultTerminalTheme: 'string',
   browserHomepage: 'string',
   browserSearchEngine: 'string',
   autoOpenUrlsFromTerminal: 'boolean',
@@ -60,6 +62,7 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   notificationMode: 'string',
   notifyOnTerminalHalt: 'boolean',
   notifyOnlyWhenUnfocused: 'boolean',
+  aiAssistEnabled: 'boolean',
   crashReportingEnabled: 'boolean',
 }
 

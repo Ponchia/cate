@@ -3,15 +3,15 @@
 // Ported from CanvasView.swift.
 // =============================================================================
 
-import React, { useRef, useCallback, useEffect, useMemo, useState, createContext, useContext } from 'react'
+import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { useCanvasStoreContext, useCanvasStoreApi, shallow } from '../stores/CanvasStoreContext'
 import { useAppStore } from '../stores/appStore'
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction'
 import { useAutoFocusLargestVisible } from '../hooks/useAutoFocusLargestVisible'
 import { useUIStore } from '../stores/uiStore'
-import { registerDropZone } from '../hooks/useDockDrag'
-import { viewToCanvas } from '../lib/coordinates'
+import { canvasToView, viewToCanvas } from '../lib/coordinates'
 import CanvasGrid from './CanvasGrid'
+import BulkActionChip from './BulkActionChip'
 import SnapGuides from './SnapGuides'
 import CanvasRegionComponent from './CanvasRegionComponent'
 import CanvasAnnotationComponent from './CanvasAnnotationComponent'
@@ -37,81 +37,38 @@ function injectCanvasInteractingStyle(): void {
     .canvas-interacting .xterm * {
       cursor: grabbing !important;
     }
-    /* Phase 2.4 — viewport culling: when a canvas node is marked off-screen,
-       let the browser skip rendering of its body content. Title bar / frame
-       stay visible because content-visibility only applies to this element. */
-    [data-node-id] [data-panel-content][data-culled="true"] {
-      content-visibility: auto;
-      contain-intrinsic-size: auto 400px;
-    }
-    /* Phase 2.6 — suppress shadow/border transitions during pan/zoom so the
-       browser doesn't tick interpolated styles for every node every frame. */
-    .canvas-interacting [data-node-id] {
-      transition: none !important;
-    }
   `
   document.head.appendChild(style)
 }
 
-const CanvasRegionItem: React.FC<{ id: string; zoomLevel: number }> = React.memo(({ id, zoomLevel }) => {
-  const region = useCanvasStoreContext((s) => s.regions[id])
-  if (!region) return null
-  return <CanvasRegionComponent region={region} zoomLevel={zoomLevel} />
-})
-
 const RegionsLayer: React.FC = React.memo(() => {
   const zoomLevel = useCanvasStoreContext((s) => s.zoomLevel)
-  const regionIds = useCanvasStoreContext((s) => s.regionIdList, shallow)
+  const regionList = useCanvasStoreContext(
+    (s) => Object.values(s.regions),
+    shallow,
+  )
   return (
     <>
-      {regionIds.map((id) => (
-        <CanvasRegionItem key={id} id={id} zoomLevel={zoomLevel} />
+      {regionList.map((region) => (
+        <CanvasRegionComponent key={region.id} region={region} zoomLevel={zoomLevel} />
       ))}
     </>
   )
-})
-
-const CanvasAnnotationItem: React.FC<{ id: string }> = React.memo(({ id }) => {
-  const annotation = useCanvasStoreContext((s) => s.annotations[id])
-  if (!annotation) return null
-  return <CanvasAnnotationComponent annotation={annotation} />
 })
 
 const AnnotationsLayer: React.FC = React.memo(() => {
-  const annotationIds = useCanvasStoreContext((s) => s.annotationIdList, shallow)
+  const annotationList = useCanvasStoreContext(
+    (s) => Object.values(s.annotations),
+    shallow,
+  )
   return (
     <>
-      {annotationIds.map((id) => (
-        <CanvasAnnotationItem key={id} id={id} />
+      {annotationList.map((ann) => (
+        <CanvasAnnotationComponent key={ann.id} annotation={ann} />
       ))}
     </>
   )
 })
-
-// -----------------------------------------------------------------------------
-// Viewport AABB context — exposes the visible canvas-space rect to nodes for
-// content-visibility culling. Updated imperatively from canvasApi.subscribe so
-// Canvas itself never re-renders during pan/zoom.
-// -----------------------------------------------------------------------------
-
-export interface ViewportAABB {
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
-
-interface ViewportAABBApi {
-  get: () => ViewportAABB | null
-  /** Subscribe to viewport AABB updates. Listener is called on every commit. */
-  subscribe: (listener: (aabb: ViewportAABB) => void) => () => void
-}
-
-const ViewportAABBContext = createContext<ViewportAABBApi | null>(null)
-
-export function useViewportAABBApi(): ViewportAABBApi | null {
-  return useContext(ViewportAABBContext)
-}
 
 interface CanvasProps {
   children?: React.ReactNode
@@ -125,81 +82,136 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
   const canvasApi = useCanvasStoreApi()
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
 
-  // Viewport AABB (canvas-space) — refs + listener list so nodes can subscribe
-  // imperatively. Updated on every zoom/offset change inside the same
-  // canvasApi.subscribe block that writes the world transform.
-  const viewportAABBRef = useRef<ViewportAABB | null>(null)
-  const viewportAABBListeners = useRef<Set<(aabb: ViewportAABB) => void>>(new Set())
-  const viewportAABBApi = useMemo<ViewportAABBApi>(() => ({
-    get: () => viewportAABBRef.current,
-    subscribe: (listener) => {
-      viewportAABBListeners.current.add(listener)
-      // Push current value immediately so subscribers don't have to wait for a
-      // pan/zoom to learn the initial AABB.
-      const cur = viewportAABBRef.current
-      if (cur) listener(cur)
-      return () => { viewportAABBListeners.current.delete(listener) }
-    },
-  }), [])
-
   const marquee = useUIStore((s) => s.marquee)
+  const placementMode = useUIStore((s) => s.placementMode)
   const drawMode = useCanvasStoreContext((s) => s.drawMode)
+
+  // Placement mode (e.g. "New Text Label") — the next left-click on empty
+  // canvas drops the requested annotation at the click point. We attach in
+  // capture so we run before pan/marquee in useCanvasInteraction.
+  const handlePlacementMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!placementMode) return
+    if (e.button !== 0) return
+    const target = e.target as HTMLElement
+    if (target.closest('[data-node-id], button, input, textarea, [contenteditable="true"]')) {
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) {
+      useUIStore.getState().setPlacementMode(null)
+      return
+    }
+    const { zoomLevel, viewportOffset } = canvasApi.getState()
+    const point = viewToCanvas(
+      { x: e.clientX - rect.left, y: e.clientY - rect.top },
+      zoomLevel,
+      viewportOffset,
+    )
+    if (placementMode === 'textLabel') {
+      canvasApi.getState().addAnnotation('textLabel', point)
+    }
+    useUIStore.getState().setPlacementMode(null)
+  }, [placementMode, canvasApi])
+
+  // Escape exits placement mode without creating anything.
+  useEffect(() => {
+    if (!placementMode) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') useUIStore.getState().setPlacementMode(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [placementMode])
+
+  // Draw tool — when active, left-mouse drag on the canvas surface captures
+  // a freehand stroke (canvas-space points) and commits it as a CanvasDrawing.
+  // We attach as a capture-phase handler on the container so we intercept
+  // ahead of the normal pan/marquee interaction in useCanvasInteraction.
+  const handleDrawMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!drawMode) return
+    if (e.button !== 0) return
+    const target = e.target as HTMLElement
+    // Allow interacting with the toolbar (and any other overlay UI) while in
+    // draw mode — only start a stroke when the press began on empty canvas.
+    if (target.closest('[data-node-id], [data-region-id], button, input, textarea, [contenteditable="true"]')) {
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const toCanvas = (clientX: number, clientY: number) => {
+      const { zoomLevel, viewportOffset } = canvasApi.getState()
+      return viewToCanvas(
+        { x: clientX - rect.left, y: clientY - rect.top },
+        zoomLevel,
+        viewportOffset,
+      )
+    }
+    const points: Point[] = [toCanvas(e.clientX, e.clientY)]
+    // Live preview overlay — screen-space SVG that follows the cursor while
+    // the user is still drawing. Avoids re-renders of the whole canvas during
+    // a stroke; commits to the store on mouseup.
+    const overlay = document.createElement('div')
+    overlay.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:100000;'
+    overlay.innerHTML = '<svg width="100%" height="100%" style="position:absolute;inset:0"><path id="cate-draw-ghost" d="" stroke="rgba(255,90,90,0.95)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'
+    document.body.appendChild(overlay)
+    const ghost = overlay.querySelector<SVGPathElement>('#cate-draw-ghost')!
+    const updateGhost = () => {
+      // Render the ghost from raw client coords (no zoom transform needed).
+      let d = `M ${e.clientX} ${e.clientY}`
+      // Iterate from the second client point onwards — store the most recent
+      // client coordinates alongside each canvas point we capture.
+      for (const cp of clientPoints) d += ` L ${cp.x} ${cp.y}`
+      ghost.setAttribute('d', d)
+    }
+    const clientPoints: Array<{ x: number; y: number }> = [{ x: e.clientX, y: e.clientY }]
+    const onMove = (ev: MouseEvent) => {
+      const last = points[points.length - 1]
+      const cp = toCanvas(ev.clientX, ev.clientY)
+      // Skip tiny segments to keep stroke data lean.
+      const dx = cp.x - last.x
+      const dy = cp.y - last.y
+      if (dx * dx + dy * dy < 1) return
+      points.push(cp)
+      clientPoints.push({ x: ev.clientX, y: ev.clientY })
+      updateGhost()
+    }
+    const cleanup = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('keydown', onKey)
+      overlay.remove()
+    }
+    const onUp = () => {
+      cleanup()
+      if (points.length >= 2) canvasApi.getState().addDrawing(points)
+    }
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') cleanup()
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('keydown', onKey)
+  }, [drawMode, canvasApi])
+
+  // Bulk-action chip subscriptions — re-render when the multi-selection or
+  // viewport changes (chip position is derived from node origin + zoom).
+  const selectedNodeCount = useCanvasStoreContext((s) => s.selectedNodeIds.size)
+  const zoomForChip = useCanvasStoreContext((s) => s.zoomLevel)
+  const viewportForChip = useCanvasStoreContext((s) => s.viewportOffset)
 
   const {
     handleWheel,
-    handleMouseDown: baseHandleMouseDown,
+    handleMouseDown,
     handleMouseMove,
     handleMouseUp,
     handleContextMenu,
     canvasContextMenu,
     closeCanvasContextMenu,
   } = useCanvasInteraction(canvasRef, canvasApi)
-
-  // Freehand drawing capture — when drawMode is on, mousedown on empty canvas
-  // begins a stroke. Points accumulate in a ref; mousemove appends; mouseup
-  // commits to the store as a CanvasDrawing. Suppresses pan/marquee while drawing.
-  const drawPointsRef = useRef<Point[] | null>(null)
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (drawMode && e.button === 0) {
-      const target = e.target as HTMLElement
-      // Only start drawing on the canvas background, not on a node/region/annotation.
-      const onNode = target.closest('[data-canvas-node],[data-region],[data-annotation]')
-      if (!onNode) {
-        const rect = canvasRef.current?.getBoundingClientRect()
-        if (rect) {
-          const state = canvasApi.getState()
-          const p = viewToCanvas({ x: e.clientX - rect.left, y: e.clientY - rect.top }, state.zoomLevel, state.viewportOffset)
-          drawPointsRef.current = [p]
-          e.preventDefault()
-          e.stopPropagation()
-          return
-        }
-      }
-    }
-    baseHandleMouseDown(e)
-  }, [drawMode, canvasApi, baseHandleMouseDown])
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!drawPointsRef.current) return
-      const rect = canvasRef.current?.getBoundingClientRect()
-      if (!rect) return
-      const state = canvasApi.getState()
-      const p = viewToCanvas({ x: e.clientX - rect.left, y: e.clientY - rect.top }, state.zoomLevel, state.viewportOffset)
-      drawPointsRef.current.push(p)
-    }
-    const onUp = () => {
-      const pts = drawPointsRef.current
-      drawPointsRef.current = null
-      if (pts && pts.length >= 2) canvasApi.getState().addDrawing(pts)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-  }, [canvasApi])
 
   // Inject the canvas-interacting style once at module level (not per mount)
   useEffect(injectCanvasInteractingStyle, [])
@@ -214,37 +226,14 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
       el.style.setProperty('--zoom', String(zoom))
     }
 
-    // Compute and dispatch the visible canvas-space AABB with a generous
-    // margin so scrolling in doesn't pop culled content.
-    const CULL_MARGIN_PX = 200
-    const dispatchAABB = (zoom: number, offset: { x: number; y: number }) => {
-      const cw = canvasRef.current?.clientWidth ?? 0
-      const ch = canvasRef.current?.clientHeight ?? 0
-      if (cw === 0 || ch === 0 || zoom <= 0) return
-      const marginX = CULL_MARGIN_PX / zoom
-      const marginY = CULL_MARGIN_PX / zoom
-      const aabb: ViewportAABB = {
-        left: -offset.x / zoom - marginX,
-        top: -offset.y / zoom - marginY,
-        right: (cw - offset.x) / zoom + marginX,
-        bottom: (ch - offset.y) / zoom + marginY,
-      }
-      viewportAABBRef.current = aabb
-      for (const l of viewportAABBListeners.current) l(aabb)
-    }
-
     // Apply current state immediately on mount
     const { zoomLevel, viewportOffset } = canvasApi.getState()
     applyTransform(zoomLevel, viewportOffset)
-    dispatchAABB(zoomLevel, viewportOffset)
 
     // Subscribe to future changes
     const unsubscribe = canvasApi.subscribe((state, prev) => {
       if (state.zoomLevel !== prev.zoomLevel || state.viewportOffset !== prev.viewportOffset) {
         applyTransform(state.zoomLevel, state.viewportOffset)
-        dispatchAABB(state.zoomLevel, state.viewportOffset)
-      } else if (state.containerSize !== prev.containerSize) {
-        dispatchAABB(state.zoomLevel, state.viewportOffset)
       }
     })
     return unsubscribe
@@ -253,15 +242,14 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
   // Auto-focus the node that occupies the most visible viewport area (opt-in).
   useAutoFocusLargestVisible(canvasApi)
 
-  // Register canvas as a drop zone for dock-aware drag-and-drop
-  // Canvases live in the center dock zone
-  useEffect(() => {
-    return registerDropZone({
-      id: 'canvas-main',
-      zone: 'center',
-      getRect: () => canvasRef.current?.getBoundingClientRect() ?? null,
-    })
-  }, [])
+  // NOTE: the canvas is intentionally NOT registered in the dock drop-zone
+  // hit-test registry. The `CanvasDropZone` overlay handles canvas drops via
+  // its own pointer-event handlers (which create a new canvas node at the
+  // cursor). Registering it here as well would let `hitTestDropTarget` return
+  // a `{ type: 'zone', zone: 'center' }` target on empty canvas, which the
+  // dock's `executeDrop` would interpret as "dock into the center zone's tab
+  // stack" — placing the dropped panel inside the canvas-host instead of
+  // creating a new canvas node.
 
   // Register wheel listener with { passive: false } so preventDefault works
   // React's onWheel is passive by default, which silently ignores preventDefault
@@ -320,14 +308,18 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
   )
 
   const handleFileDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    if (e.dataTransfer.types.includes('application/cate-file')) {
+    // Accept internal drag (file explorer) and OS-level file/folder drops.
+    if (
+      e.dataTransfer.types.includes('application/cate-file') ||
+      e.dataTransfer.types.includes('Files')
+    ) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
     }
   }, [])
 
   const handleFileDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
-    // Support multi-file drops
+    // Support internal multi-file drops…
     const multiData = e.dataTransfer.getData('application/cate-files')
     const singlePath = e.dataTransfer.getData('application/cate-file')
     let filePaths: string[] = []
@@ -336,6 +328,13 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
     }
     if (filePaths.length === 0 && singlePath) {
       filePaths = [singlePath]
+    }
+    // …and OS-level drops from Finder / Explorer (Electron exposes `path`).
+    if (filePaths.length === 0 && e.dataTransfer.files.length > 0) {
+      for (const f of Array.from(e.dataTransfer.files)) {
+        const p = (f as any).path as string | undefined
+        if (p) filePaths.push(p)
+      }
     }
     if (filePaths.length === 0) return
 
@@ -347,18 +346,35 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
     const canvasPoint = viewToCanvas(viewPoint, zoomLevel, viewportOffset)
     const wsId = useAppStore.getState().selectedWorkspaceId
 
-    // Open each file, staggering position so they don't stack exactly
+    const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
     let offsetX = 0
     for (const filePath of filePaths) {
-      // Don't create editors for directories
+      let isDir = false
       try {
         const stat = await window.electronAPI.fsStat(filePath)
-        if (stat?.isDirectory) continue
-      } catch { /* fall through */ }
-      useAppStore.getState().createEditor(wsId, filePath, {
-        x: canvasPoint.x + offsetX,
-        y: canvasPoint.y,
-      })
+        isDir = !!stat?.isDirectory
+      } catch { /* fall through; treat as file */ }
+      const pos = { x: canvasPoint.x + offsetX, y: canvasPoint.y }
+      if (isDir) {
+        // Drop of a folder → spawn a terminal scoped to that path.
+        useAppStore.getState().createTerminal(wsId, undefined, pos, undefined, filePath)
+      } else {
+        // Identify images by extension first (cheap), then by magic bytes
+        // (handles extensionless temp files like the macOS screenshot
+        // floating-thumbnail drag).
+        let isImage = IMAGE_EXT.test(filePath)
+        if (!isImage) {
+          try {
+            const probe = await window.electronAPI.readImageAsDataUrl(filePath)
+            isImage = !!probe
+          } catch { /* fall through */ }
+        }
+        if (isImage) {
+          canvasApi.getState().addImageAnnotation(pos, filePath)
+        } else {
+          useAppStore.getState().createEditor(wsId, filePath, pos)
+        }
+      }
       offsetX += 40
     }
   }, [canvasRef])
@@ -380,26 +396,67 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
     if (!canvasContextMenu || !window.electronAPI) return
     let cancelled = false
     const point = canvasContextMenu.canvasPoint
-    const items: Array<{ id?: string; label?: string; type?: 'separator' }> = []
+    const wsId = useAppStore.getState().selectedWorkspaceId
+    const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
+    const allRoots: string[] = []
+    if (ws?.rootPath) allRoots.push(ws.rootPath)
+    if (ws?.additionalRoots) allRoots.push(...ws.additionalRoots)
+    const hasMultipleRoots = allRoots.length > 1
+    const shortName = (p: string) => p.split('/').filter(Boolean).pop() || p
+    const items: Array<any> = []
     if (onCreateAtPoint) {
+      if (hasMultipleRoots) {
+        items.push({
+          label: 'New Terminal',
+          submenu: allRoots.map((r, i) => ({
+            id: `new-terminal:${i}`,
+            label: i === 0 ? `${shortName(r)} (primary)` : shortName(r),
+          })),
+        })
+      } else {
+        items.push({ id: 'new-terminal', label: 'New Terminal' })
+      }
       items.push(
-        { id: 'new-terminal', label: 'New Terminal' },
         { id: 'new-editor', label: 'New Editor' },
         { id: 'new-browser', label: 'New Browser' },
         { id: 'new-canvas', label: 'New Canvas' },
-        { type: 'separator' },
+        { type: 'separator' as const },
       )
     }
     items.push(
       { id: 'new-region', label: 'New Region' },
       { id: 'new-sticky', label: 'New Sticky Note' },
       { id: 'new-label', label: 'New Text Label' },
+      { id: 'add-image', label: 'Add Image…' },
     )
     window.electronAPI.showContextMenu(items).then((id) => {
       if (cancelled) return
       closeCanvasContextMenu()
+      if (id?.startsWith('new-terminal:')) {
+        const idx = parseInt(id.slice('new-terminal:'.length), 10)
+        const cwd = allRoots[idx]
+        const cwdToUse = idx === 0 ? undefined : cwd // primary root uses default flow
+        useAppStore.getState().createTerminal(wsId, undefined, point, undefined, cwdToUse)
+        return
+      }
+      // If the click point falls inside a Region that has a defaultCwd,
+      // a "New Terminal" inherits that cwd. Editors/browsers don't.
+      const regions = Object.values(canvasApi.getState().regions)
+      const containingRegion = regions.find(
+        (r) =>
+          point.x >= r.origin.x &&
+          point.x <= r.origin.x + r.size.width &&
+          point.y >= r.origin.y &&
+          point.y <= r.origin.y + r.size.height,
+      )
       switch (id) {
-        case 'new-terminal': onCreateAtPoint?.('terminal', point); break
+        case 'new-terminal':
+          if (containingRegion?.defaultCwd) {
+            useAppStore.getState().createTerminal(wsId, undefined, point, undefined, containingRegion.defaultCwd)
+          } else {
+            onCreateAtPoint?.('terminal', point)
+          }
+          break
         case 'new-editor': onCreateAtPoint?.('editor', point); break
         case 'new-browser': onCreateAtPoint?.('browser', point); break
         case 'new-canvas': onCreateAtPoint?.('canvas', point); break
@@ -412,24 +469,49 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
         case 'new-label':
           canvasApi.getState().addAnnotation('textLabel', point)
           break
+        case 'add-image': {
+          window.electronAPI.openImageDialog().then((paths) => {
+            if (!paths || paths.length === 0) return
+            let offset = 0
+            for (const p of paths) {
+              canvasApi.getState().addImageAnnotation({ x: point.x + offset, y: point.y + offset }, p)
+              offset += 32
+            }
+          })
+          break
+        }
       }
     })
     return () => { cancelled = true }
   }, [canvasContextMenu, onCreateAtPoint, canvasApi, closeCanvasContextMenu])
 
   return (
-    <ViewportAABBContext.Provider value={viewportAABBApi}>
     <div
       ref={canvasRef}
       data-canvas-container
       className="relative w-full h-full overflow-hidden bg-canvas-bg"
+      onMouseDownCapture={(e) => { handlePlacementMouseDown(e); if (!e.isPropagationStopped()) handleDrawMouseDown(e) }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onContextMenu={handleContextMenu}
+      style={
+        placementMode === 'textLabel'
+          ? { cursor: 'text' }
+          : drawMode
+            ? { cursor: 'crosshair' }
+            : undefined
+      }
       onDragOver={handleFileDragOver}
       onDrop={handleFileDrop}
     >
+      {/* Grid renders in screen-space (outside the world transform) so lines
+          land on whole device pixels at every zoom level. */}
+      <CanvasGrid
+        containerWidth={containerSize.width}
+        containerHeight={containerSize.height}
+      />
+
       {/* World div: transformed to implement pan/zoom */}
       <div
         ref={worldRef}
@@ -444,10 +526,6 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
         }}
         onClick={handleWorldClick}
       >
-        <CanvasGrid
-          containerWidth={containerSize.width}
-          containerHeight={containerSize.height}
-        />
         <RegionsLayer />
         <AnnotationsLayer />
         <CanvasDrawings />
@@ -471,8 +549,32 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint }) => {
         {children}
       </div>
 
+      {selectedNodeCount >= 2 && (() => {
+        // Compute selection AABB in canvas space, then convert to view space.
+        const state = canvasApi.getState()
+        const selected = Object.values(state.nodes).filter((n) => state.selectedNodeIds.has(n.id))
+        if (selected.length < 2) return null
+        const minX = Math.min(...selected.map((n) => n.origin.x))
+        const minY = Math.min(...selected.map((n) => n.origin.y))
+        const maxX = Math.max(...selected.map((n) => n.origin.x + n.size.width))
+        const maxY = Math.max(...selected.map((n) => n.origin.y + n.size.height))
+        const rect = canvasRef.current?.getBoundingClientRect()
+        const tl = canvasToView({ x: minX, y: minY }, zoomForChip, viewportForChip)
+        const br = canvasToView({ x: maxX, y: maxY }, zoomForChip, viewportForChip)
+        return (
+          <BulkActionChip
+            view={{
+              x: (rect?.left ?? 0) + tl.x,
+              y: (rect?.top ?? 0) + tl.y,
+              w: br.x - tl.x,
+              h: br.y - tl.y,
+            }}
+            count={selected.length}
+          />
+        )
+      })()}
+
     </div>
-    </ViewportAABBContext.Provider>
   )
 }
 
