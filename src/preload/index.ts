@@ -122,6 +122,8 @@ import {
   ANALYTICS_FEEDBACK_DISMISS,
   ANALYTICS_FEEDBACK_ENGAGED,
   ANALYTICS_FEEDBACK_GET_PENDING,
+  ANALYTICS_LINK_CLICK,
+  OPEN_EXTERNAL_URL,
   AGENT_CREATE,
   AGENT_PROMPT,
   AGENT_INTERRUPT,
@@ -936,6 +938,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   getPendingFeedback(): Promise<{ fromVersion: string; toVersion: string } | null> {
     return ipcRenderer.invoke(ANALYTICS_FEEDBACK_GET_PENDING)
+  },
+
+  trackLinkClick(link: string): void {
+    ipcRenderer.send(ANALYTICS_LINK_CLICK, link)
+  },
+
+  openExternalUrl(url: string): void {
+    ipcRenderer.send(OPEN_EXTERNAL_URL, url)
   },
 
   // ---------------------------------------------------------------------------

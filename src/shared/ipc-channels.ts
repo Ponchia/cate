@@ -113,6 +113,11 @@ export const ANALYTICS_FEEDBACK_DISMISS = 'analytics:feedbackDismiss'
 export const ANALYTICS_FEEDBACK_ENGAGED = 'analytics:feedbackEngaged'
 // Renderer -> main: pull-based check for pending feedback (returns payload or null).
 export const ANALYTICS_FEEDBACK_GET_PENDING = 'analytics:feedbackGetPending'
+// Renderer -> main: track a promo link click (Product Hunt, GitHub, newsletter).
+export const ANALYTICS_LINK_CLICK = 'analytics:linkClick'
+
+// Open an external URL in the user's default browser (renderer -> main).
+export const OPEN_EXTERNAL_URL = 'open:externalUrl'
 
 
 // Menu actions (main -> renderer)

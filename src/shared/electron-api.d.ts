@@ -544,6 +544,10 @@ export interface ElectronAPI {
   trackFeedbackEngagement(): void
   /** Pull-based check for pending feedback (renderer calls on mount). */
   getPendingFeedback(): Promise<{ fromVersion: string; toVersion: string } | null>
+  /** Track a promo link click (e.g. product_hunt, github_star, newsletter). */
+  trackLinkClick(link: string): void
+  /** Open an external URL in the user's default browser. */
+  openExternalUrl(url: string): void
 
   // ---------------------------------------------------------------------------
   // Pi agent

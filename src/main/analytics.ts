@@ -20,12 +20,12 @@
 // on next init / next successful send so feedback isn't lost when offline.
 // =============================================================================
 
-import { app, BrowserWindow, ipcMain, net } from 'electron'
+import { app, BrowserWindow, ipcMain, net, shell } from 'electron'
 import log from './logger'
 import { getSettingSync } from './store'
 import { getCommonContext } from './appContext'
 import { readJsonFile, writeJsonFile, readTextFile, writeTextFile, appendLine, removeFile } from './jsonFileStore'
-import { ANALYTICS_FEEDBACK_PROMPT, ANALYTICS_FEEDBACK_SUBMIT, ANALYTICS_FEEDBACK_DISMISS, ANALYTICS_FEEDBACK_GET_PENDING } from '../shared/ipc-channels'
+import { ANALYTICS_FEEDBACK_PROMPT, ANALYTICS_FEEDBACK_SUBMIT, ANALYTICS_FEEDBACK_DISMISS, ANALYTICS_FEEDBACK_GET_PENDING, ANALYTICS_LINK_CLICK, OPEN_EXTERNAL_URL } from '../shared/ipc-channels'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -254,6 +254,16 @@ export function initAnalytics(): void {
     return null
   })
 
+  ipcMain.on(ANALYTICS_LINK_CLICK, (_e, link: string) => {
+    void sendEvent('promo_link_clicked', { link })
+  })
+
+  ipcMain.on(OPEN_EXTERNAL_URL, (_e, url: string) => {
+    if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+      shell.openExternal(url)
+    }
+  })
+
   // Best-effort flush of anything left from a previous session.
   flushPending().catch(() => {})
 }
@@ -266,7 +276,7 @@ export function initAnalytics(): void {
 // ---------------------------------------------------------------------------
 
 export type UpdateAction =
-  | { kind: 'first_install'; emit: 'app_install'; nextState: AnalyticsState }
+  | { kind: 'first_install'; emit: 'app_install'; nextState: AnalyticsState; prompt: { from: string; to: string } }
   | { kind: 'no_change'; nextState: AnalyticsState; prompt?: { from: string; to: string } }
   | {
       kind: 'version_changed'
@@ -284,7 +294,13 @@ export function decideUpdateAction(current: string, state: AnalyticsState): Upda
     return {
       kind: 'first_install',
       emit: 'app_install',
-      nextState: { ...state, lastSeenVersion: current },
+      nextState: {
+        ...state,
+        lastSeenVersion: current,
+        pendingFeedbackForVersion: current,
+        pendingFeedbackFromVersion: '',
+      },
+      prompt: { from: '', to: current },
     }
   }
 
@@ -319,6 +335,11 @@ export function decideUpdateAction(current: string, state: AnalyticsState): Upda
  * actual behavior matrix.
  */
 export async function checkAndReportUpdate(mainWin: BrowserWindow): Promise<void> {
+  if (process.env.DEV_FORCE_DIALOG) {
+    promptFeedback(mainWin, app.getVersion(), '0.0.0')
+    return
+  }
+
   const current = app.getVersion()
   const state = readState()
   const action = decideUpdateAction(current, state)
@@ -327,6 +348,7 @@ export async function checkAndReportUpdate(mainWin: BrowserWindow): Promise<void
     case 'first_install':
       void sendEvent('app_install')
       writeState(action.nextState)
+      promptFeedback(mainWin, action.prompt.to, action.prompt.from)
       return
     case 'version_changed':
       void sendEvent('app_updated', { from_version: action.from, to_version: action.to })
