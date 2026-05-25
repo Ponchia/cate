@@ -25,6 +25,24 @@ function getScrollback(): number {
   return Math.max(100, Math.min(raw, 10000))
 }
 
+const isMacPlatform =
+  typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent)
+
+/**
+ * True for the Windows/Linux paste chord (Ctrl+V or Ctrl+Shift+V). xterm.js has
+ * no built-in Ctrl+V binding, so it would otherwise encode a literal ^V (0x16)
+ * to the PTY. The caller returns false for this chord, which makes xterm skip
+ * the key WITHOUT calling preventDefault — so the browser still fires its native
+ * paste event into xterm's textarea and xterm performs the paste exactly once
+ * (honouring bracketed-paste mode). macOS keeps Ctrl+V as the terminal "literal
+ * next" key and pastes with Cmd+V instead.
+ */
+export function isTerminalPasteChord(event: KeyboardEvent, isMac = isMacPlatform): boolean {
+  if (isMac) return false
+  if (event.type !== 'keydown' || !event.ctrlKey || event.altKey || event.metaKey) return false
+  return event.key === 'v' || event.key === 'V'
+}
+
 // ---------------------------------------------------------------------------
 // Themes — three palettes for dark-warm, light-subtle, dark-cold
 // ---------------------------------------------------------------------------
@@ -464,6 +482,12 @@ async function getOrCreate(panelId: string, opts: CreateOpts): Promise<RegistryE
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true
 
+      // Returning false makes xterm skip this key (no literal ^V) without
+      // calling preventDefault, so the browser still fires its paste event into
+      // xterm's textarea and xterm performs the paste once. Do NOT preventDefault
+      // here — that would also cancel the paste event and nothing would paste.
+      if (isTerminalPasteChord(event)) return false
+
       const keyCode = CSI_U_KEYS[event.key]
       if (keyCode === undefined) return true // let xterm handle all other keys
 
@@ -620,6 +644,7 @@ async function reconnectTerminal(
   }
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true
+    if (isTerminalPasteChord(event)) return false
     const keyCode = CSI_U_KEYS[event.key]
     if (keyCode === undefined) return true
     let mod = 1
