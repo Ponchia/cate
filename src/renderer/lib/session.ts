@@ -458,6 +458,23 @@ export async function restoreSession(snapshot: SessionSnapshot, canvasStoreApi?:
         }
         break
       }
+      case 'agent': {
+        const panelId = appStore.createAgent(wsId, position)
+        if (nodeSnap.title) appStore.updatePanelTitle(wsId, panelId, nodeSnap.title)
+        const canvasState = getCanvasState()
+        if (canvasState) {
+          const newNodeId = canvasState.nodeForPanel(panelId)
+          if (newNodeId) {
+            canvasState.moveNode(newNodeId, position)
+            canvasState.resizeNode(newNodeId, size)
+            if (nodeSnap.regionId) {
+              const mappedRegionId = regionIdMap.get(nodeSnap.regionId)
+              if (mappedRegionId) canvasState.setNodeRegion(newNodeId, mappedRegionId)
+            }
+          }
+        }
+        break
+      }
     }
   }
 
