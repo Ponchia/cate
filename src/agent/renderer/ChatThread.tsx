@@ -225,7 +225,7 @@ function MessageRow({
   if (msg.type === 'user') {
     return (
       <div className="flex flex-col items-end gap-1">
-        <div className="max-w-[85%] px-3.5 py-2 rounded-2xl rounded-br-md bg-agent/85 text-white text-[13px] whitespace-pre-wrap break-words shadow-sm">
+        <div className="max-w-[85%] px-3.5 py-2 rounded-2xl rounded-br-md bg-white/[0.08] text-primary text-[13px] whitespace-pre-wrap break-words">
           {msg.text}
         </div>
         <div className="flex items-center gap-0.5 text-muted">
@@ -312,7 +312,7 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
     <div className="text-[12px] cate-fade-in">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-1.5 text-left text-muted hover:text-primary"
+        className="w-full flex items-center gap-1.5 text-left text-muted"
       >
         <span className={streaming ? 'cate-notif-pulse' : ''}>Thinking</span>
       </button>
