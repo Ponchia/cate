@@ -21,10 +21,10 @@ import {
   TreeStructure,
   SquaresFour,
   List,
-  Sparkle,
   FileDoc,
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react'
+import { CateLogo } from '../ui/CateLogo'
 import type { PanelType, Point } from '../../shared/types'
 import type { PanelPlacement } from '../stores/appStore'
 import { useAppStore } from '../stores/appStore'
@@ -135,7 +135,7 @@ export const PANEL_REGISTRY: Record<PanelType, RendererPanelDefinition> = {
   },
   agent: {
     ...PANEL_DEFINITIONS.agent,
-    icon: Sparkle,
+    icon: CateLogo as unknown as PhosphorIcon,
     Component: AgentPanel,
     create: ({ workspaceId, canvasPoint, placement }) =>
       useAppStore.getState().createAgent(workspaceId, canvasPoint, placement) || null,

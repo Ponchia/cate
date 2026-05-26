@@ -5,6 +5,7 @@
 // =============================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CateLogo } from '../ui/CateLogo'
 import {
   ArrowsSplit,
   Plus,
@@ -14,7 +15,6 @@ import {
   X,
   Warning,
   Terminal as TerminalIcon,
-  Sparkle,
   GitMerge,
   Trash,
   CaretRight,
@@ -227,7 +227,7 @@ const WorktreeCard: React.FC<{
             onClick={onOpenTerminal}
           />
           <ChildAction
-            icon={<Sparkle size={12} weight="fill" />}
+            icon={<CateLogo size={12} />}
             label="Open agent here"
             onClick={onOpenAgent}
           />

@@ -56,20 +56,28 @@ interface ChatThreadProps {
 export function ChatThread({ messages, pendingApprovals, onApproval, running, forkMap, onFork, onEditResend, onImplementPlan, onRefinePlan, onClearAndImplement, retry, onAbortRetry }: ChatThreadProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Show the thinking indicator whenever the agent is busy and the tail of
-  // the list has no visible activity of its own. A streaming assistant
-  // message with text shows a cursor blink; a streaming reasoning block has
-  // its own spinner; a tool row has a header spinner — but a freshly-opened
-  // assistant message with no text and no thinking yet (common when the
-  // model jumps straight to a tool call — pi's toolcall_* deltas don't
-  // surface in the renderer) leaves a blank gap. Dots fill it.
   const last = messages[messages.length - 1]
-  const showThinking = running && (() => {
-    if (!last) return true
-    if (last.type !== 'assistant') return true
-    if (!last.streaming) return true
-    return !last.text && !last.thinking
-  })()
+
+  // Is the agent actively streaming text the user can see?
+  const streamingVisibleText =
+    last?.type === 'assistant' && last.streaming && !!last.text
+
+  // Has the current turn (after the last user message) produced any visible content?
+  let hasVisibleContent = false
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.type === 'user') break
+    if (m.type === 'tool' || (m.type === 'assistant' && (m.text || m.thinking))) {
+      hasVisibleContent = true
+      break
+    }
+  }
+
+  // "Loading" for the very first wait; shimmer on the last rendered item for
+  // every other gap. The only time nothing extra shows is when assistant text
+  // is actively streaming on screen.
+  const showLoading = running && !hasVisibleContent
+  const shimmerLast = running && !streamingVisibleText && !showLoading
 
   // Auto-scroll on new content unless the user has scrolled away from the
   // bottom — feels less like fighting the scroll position during long output.
@@ -77,8 +85,22 @@ export function ChatThread({ messages, pendingApprovals, onApproval, running, fo
     const el = scrollRef.current
     if (!el) return
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distance < 120) el.scrollTop = el.scrollHeight
-  }, [messages.length, last, showThinking])
+    if (distance < 120) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [messages.length, last])
+
+  // Find the last message that actually renders visible content — skip empty
+  // streaming assistant stubs so the *previous* real item gets the shimmer.
+  let lastVisibleIdx = messages.length - 1
+  while (lastVisibleIdx >= 0) {
+    const m = messages[lastVisibleIdx]
+    if (m.type === 'assistant' && !m.text && !m.thinking) {
+      lastVisibleIdx--
+    } else {
+      break
+    }
+  }
 
   return (
     <div
@@ -86,26 +108,35 @@ export function ChatThread({ messages, pendingApprovals, onApproval, running, fo
       className="flex-1 overflow-y-auto px-4 py-4 space-y-3 min-h-0"
     >
       {messages.map((m, idx) => {
+        // Don't render empty assistant stubs (no text, no thinking) — they add
+        // blank space. Content appears the moment the first token lands.
+        if (m.type === 'assistant' && !m.text && !m.thinking) return null
+
         let showModelTag = false
+        let isCurrentTurn = false
         if (m.type === 'assistant') {
           showModelTag = true
+          isCurrentTurn = true
           for (let j = idx + 1; j < messages.length; j++) {
-            if (messages[j].type === 'user') break
+            if (messages[j].type === 'user') { isCurrentTurn = false; break }
             if (messages[j].type === 'assistant') { showModelTag = false; break }
           }
         }
+        const isLast = idx === lastVisibleIdx
         return (
           <MessageRow
             key={m.id}
             msg={m}
+            shimmer={isLast && shimmerLast}
             forkEntryId={m.type === 'user' ? (m.entryId ?? forkMap?.[m.id]) : undefined}
             onFork={onFork}
             onEditResend={onEditResend}
             onImplementPlan={onImplementPlan}
             onRefinePlan={onRefinePlan}
             onClearAndImplement={onClearAndImplement}
-            isLast={idx === messages.length - 1}
+            isLast={isLast}
             showModelTag={showModelTag}
+            isCurrentTurn={isCurrentTurn}
             agentRunning={running}
           />
         )
@@ -117,20 +148,10 @@ export function ChatThread({ messages, pendingApprovals, onApproval, running, fo
           onDecide={(decision) => onApproval(req.toolCallId, decision)}
         />
       ))}
+      {showLoading && <LoadingIndicator />}
       {retry && (retry.active || retry.finalError) && (
         <RetryIndicator state={retry} onAbort={onAbortRetry} />
       )}
-      {showThinking && <ThinkingDots />}
-    </div>
-  )
-}
-
-function ThinkingDots() {
-  return (
-    <div className="flex items-center gap-1 py-1" aria-label="Agent is thinking">
-      <span className="w-1.5 h-1.5 rounded-full bg-agent-light/80 animate-thinking-dot [animation-delay:0ms]" />
-      <span className="w-1.5 h-1.5 rounded-full bg-agent-light/80 animate-thinking-dot [animation-delay:160ms]" />
-      <span className="w-1.5 h-1.5 rounded-full bg-agent-light/80 animate-thinking-dot [animation-delay:320ms]" />
     </div>
   )
 }
@@ -176,6 +197,7 @@ function RetryIndicator({ state, onAbort }: { state: RetryState; onAbort?: () =>
 
 function MessageRow({
   msg,
+  shimmer,
   forkEntryId,
   onFork,
   onEditResend,
@@ -184,9 +206,11 @@ function MessageRow({
   onClearAndImplement,
   isLast,
   showModelTag,
+  isCurrentTurn,
   agentRunning,
 }: {
   msg: AgentMessage
+  shimmer?: boolean
   forkEntryId?: string
   onFork?: (entryId: string) => void
   onEditResend?: (text: string) => void
@@ -195,6 +219,7 @@ function MessageRow({
   onClearAndImplement?: () => void
   isLast?: boolean
   showModelTag?: boolean
+  isCurrentTurn?: boolean
   agentRunning?: boolean
 }) {
   if (msg.type === 'user') {
@@ -220,13 +245,13 @@ function MessageRow({
   }
   if (msg.type === 'assistant') {
     return (
-      <div className="text-[13.5px] text-primary leading-relaxed space-y-1.5">
-        {msg.thinking && <ThinkingBlock text={msg.thinking} streaming={msg.streaming} />}
+      <div className={`text-[13.5px] text-primary leading-relaxed space-y-1.5 cate-fade-in ${shimmer ? 'cate-notif-pulse' : ''}`}>
+        {msg.thinking && <ThinkingBlock text={msg.thinking} streaming={msg.streaming && !msg.text} />}
         <div>
           <Markdown text={msg.text} />
           {msg.streaming && !msg.text && msg.thinking ? null : msg.streaming && <CursorBlink />}
         </div>
-        {!msg.streaming && showModelTag && !agentRunning && (
+        {!msg.streaming && showModelTag && msg.stopReason === 'stop' && !(agentRunning && isCurrentTurn) && (
           <div className="flex items-center gap-0.5 text-muted">
             <button
               onClick={() => { void navigator.clipboard.writeText(msg.text) }}
@@ -257,7 +282,7 @@ function MessageRow({
     return <div className={`text-center text-[11px] italic ${tone}`}>{msg.text}</div>
   }
   if (msg.type === 'tool' && msg.name === 'subagent') {
-    return <SubagentCard msg={msg} />
+    return <SubagentCard msg={msg} shimmer={shimmer} />
   }
   if (msg.type === 'tool' && msg.name === 'plan_complete') {
     return (
@@ -270,7 +295,7 @@ function MessageRow({
       />
     )
   }
-  return <ToolCard msg={msg} />
+  return <ToolCard msg={msg} shimmer={shimmer} />
 }
 
 function formatTime(ms: number): string {
@@ -284,12 +309,12 @@ function formatTime(ms: number): string {
 function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="text-[12px]">
+    <div className="text-[12px] cate-fade-in">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className={`w-full flex items-center gap-1.5 text-left text-muted hover:text-primary ${streaming ? 'cate-notif-pulse' : ''}`}
+        className="w-full flex items-center gap-1.5 text-left text-muted hover:text-primary"
       >
-        <span>Thinking</span>
+        <span className={streaming ? 'cate-notif-pulse' : ''}>Thinking</span>
       </button>
       {expanded && (
         <pre className="mt-1 pl-4 text-[11px] text-primary/70 whitespace-pre-wrap break-words font-mono leading-snug max-h-[280px] overflow-auto">
@@ -373,6 +398,14 @@ function Markdown({ text }: { text: string }) {
 function CursorBlink() {
   return (
     <span className="inline-block w-[2px] h-[1em] align-middle bg-primary/80 ml-0.5 animate-pulse" />
+  )
+}
+
+function LoadingIndicator() {
+  return (
+    <div className="text-[12px] cate-fade-in">
+      <span className="cate-notif-pulse">Loading</span>
+    </div>
   )
 }
 
@@ -474,7 +507,7 @@ function toolVerb(msg: ToolMessage): string {
   }
 }
 
-function ToolCard({ msg }: { msg: ToolMessage }) {
+function ToolCard({ msg, shimmer }: { msg: ToolMessage; shimmer?: boolean }) {
   const isBash = msg.name === 'bash' || msg.name === 'shell'
   const isRead = msg.name === 'read' || msg.name === 'view'
   const isWrite = msg.name === 'write'
@@ -509,10 +542,10 @@ function ToolCard({ msg }: { msg: ToolMessage }) {
     const output = liveOutput ?? msg.result ?? ''
     const hasOutput = !!output || !!msg.error
     return (
-      <div className="text-[12px]">
+      <div className="text-[12px] cate-fade-in">
         <button
           onClick={() => hasOutput && setExpanded((v) => !v)}
-          className={`w-full flex items-center gap-1.5 text-left ${isRunning ? 'cate-notif-pulse' : ''} ${hasOutput ? 'hover:text-primary' : 'cursor-default'}`}
+          className={`w-full flex items-center gap-1.5 text-left ${isRunning || shimmer ? 'cate-notif-pulse' : ''} ${hasOutput ? 'hover:text-primary' : 'cursor-default'}`}
         >
           <span className="text-muted shrink-0">{verb}</span>
           <span className="truncate text-primary/90 font-mono flex-1">{cmd}</span>
@@ -535,10 +568,10 @@ function ToolCard({ msg }: { msg: ToolMessage }) {
   }
 
   return (
-    <div className="text-[12px]">
+    <div className="text-[12px] cate-fade-in">
       <button
         onClick={() => hasExtras && setExpanded((v) => !v)}
-        className={`w-full flex items-center gap-1.5 text-left ${isRunning ? 'cate-notif-pulse' : ''} ${hasExtras ? 'hover:text-primary' : 'cursor-default'}`}
+        className={`w-full flex items-center gap-1.5 text-left ${isRunning || shimmer ? 'cate-notif-pulse' : ''} ${hasExtras ? 'hover:text-primary' : 'cursor-default'}`}
       >
         <span className="text-muted shrink-0">{verb}</span>
         <span className="truncate text-primary/90 font-mono flex-1">{summary}</span>
@@ -591,7 +624,7 @@ function formatTokensShort(n: number): string {
 // stream (streaming text + nested tool calls).
 // -----------------------------------------------------------------------------
 
-function SubagentCard({ msg }: { msg: ToolMessage }) {
+function SubagentCard({ msg, shimmer }: { msg: ToolMessage; shimmer?: boolean }) {
   const [expanded, setExpanded] = useState(true)
   const args = (msg.args ?? {}) as Record<string, unknown>
   const fallbackResults: SubagentResult[] = useMemo(() => {
@@ -626,10 +659,10 @@ function SubagentCard({ msg }: { msg: ToolMessage }) {
   const running = msg.status === 'running' || msg.status === 'pending'
 
   return (
-    <div className="text-[12px]">
+    <div className="text-[12px] cate-fade-in">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className={`w-full flex items-center gap-1.5 text-left hover:text-primary ${running ? 'cate-notif-pulse' : ''}`}
+        className={`w-full flex items-center gap-1.5 text-left hover:text-primary ${running || shimmer ? 'cate-notif-pulse' : ''}`}
       >
         <span className="text-muted shrink-0">subagent</span>
         <span className="truncate text-primary/90 font-mono flex-1">
@@ -691,13 +724,13 @@ function SubagentResultRow({
     <div className="text-[12px]">
       <button
         onClick={toggle}
-        className={`w-full flex items-center gap-1.5 text-left ${isRunning ? 'cate-notif-pulse' : ''} ${hasExtras ? 'hover:text-primary' : 'cursor-default'}`}
+        className={`w-full flex items-center gap-1.5 text-left ${hasExtras ? 'hover:text-primary' : 'cursor-default'}`}
       >
-        <span className="font-mono text-[11px] text-muted shrink-0">{result.agent}</span>
+        <span className={`font-mono text-[11px] shrink-0 ${isRunning ? 'cate-notif-pulse' : 'text-muted'}`}>{result.agent}</span>
         {result.step != null && (
-          <span className="text-[10px] text-muted shrink-0">#{result.step}</span>
+          <span className={`text-[10px] shrink-0 ${isRunning ? 'cate-notif-pulse' : 'text-muted'}`}>#{result.step}</span>
         )}
-        <span className="truncate text-primary/90 flex-1">{summary}</span>
+        <span className="truncate text-primary font-mono flex-1">{summary}</span>
         {usageBits.length > 0 && (
           <span
             className="relative shrink-0 group/info"

@@ -281,24 +281,30 @@
 }
 
 @keyframes cate-notif-sweep {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0%   { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 .cate-notif-pulse {
-  background-image: linear-gradient(
+  background: linear-gradient(
     90deg,
-    var(--text-muted, #8a8479) 0%,
-    var(--text-muted, #8a8479) 35%,
+    var(--text-muted, #8a8479) 40%,
     var(--text-primary, #e8e6e1) 50%,
-    var(--text-muted, #8a8479) 65%,
-    var(--text-muted, #8a8479) 100%
+    var(--text-muted, #8a8479) 60%
   );
-  background-size: 200% 100%;
+  background-size: 300% 100%;
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: cate-notif-sweep 2.4s linear infinite;
+  animation: cate-notif-sweep 2s ease-in-out infinite;
+}
+
+@keyframes cate-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cate-fade-in {
+  animation: cate-fade-in 0.35s ease-out both;
 }
 
 /* Awaiting-input indicator — pulsing dot with expanding ring.

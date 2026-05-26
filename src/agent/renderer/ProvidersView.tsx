@@ -23,8 +23,8 @@ import {
   CaretRight,
   CaretDown,
   MagnifyingGlass,
-  Sparkle,
 } from '@phosphor-icons/react'
+import { CateLogo } from '../../renderer/ui/CateLogo'
 import log from '../../renderer/lib/logger'
 import type {
   AgentModelRef,
@@ -628,7 +628,7 @@ function DefaultModelSection({ models }: { models: Array<{ provider: string; mod
           onClick={() => setOpen((v) => !v)}
           className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-white/[0.04] border border-white/10 text-[12.5px] text-primary hover:bg-white/[0.06] focus:outline-none focus:border-agent-light/50"
         >
-          <Sparkle size={12} weight="fill" className="text-agent-light shrink-0" />
+          <CateLogo size={12} className="text-agent-light shrink-0" />
           <span className="truncate flex-1 text-left">
             {current
               ? (models.find((m) => m.provider === current.provider && m.model === current.model)?.label ?? current.model)

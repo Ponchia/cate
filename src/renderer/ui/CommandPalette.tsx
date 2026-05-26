@@ -17,8 +17,8 @@ import {
   ArrowsOutSimple,
   Square,
   FloppyDisk,
-  Sparkle,
 } from '@phosphor-icons/react'
+import { CateLogo } from './CateLogo'
 import { useUIStore } from '../stores/uiStore'
 import { useAppStore } from '../stores/appStore'
 import { useCanvasStoreContext, useCanvasStoreApi } from '../stores/CanvasStoreContext'
@@ -49,7 +49,7 @@ const ZoomResetIcon = () => <MagnifyingGlass size={ICON_SIZE} />
 const ZoomToFitIcon = () => <ArrowsOutSimple size={ICON_SIZE} />
 const RectangleIcon = () => <Square size={ICON_SIZE} />
 const SaveIcon = () => <FloppyDisk size={ICON_SIZE} />
-const AgentIcon = () => <Sparkle size={ICON_SIZE} />
+const AgentIcon = () => <CateLogo size={ICON_SIZE} />
 
 // -----------------------------------------------------------------------------
 // Component

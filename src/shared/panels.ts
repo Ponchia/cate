@@ -131,7 +131,7 @@ export const PANEL_DEFINITIONS: Record<PanelType, SharedPanelDefinition> = {
   },
   agent: {
     type: 'agent',
-    label: 'Agent',
+    label: 'Cate Agent',
     brandColor: '#4A9EFF',
     switcherColor: '#4A9EFF',
     mutedColor: '#3a7acc',

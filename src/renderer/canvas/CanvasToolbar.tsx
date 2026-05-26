@@ -10,7 +10,6 @@ import {
   FileText,
   Minus,
   Plus,
-  Sparkle,
   Square,
   ArrowsOutSimple,
   DotsThree,
@@ -18,6 +17,7 @@ import {
   MapTrifold,
   X,
 } from '@phosphor-icons/react'
+import { CateLogo } from '../ui/CateLogo'
 import Minimap from './Minimap'
 import { useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import { useUIStore } from '../stores/uiStore'
@@ -168,7 +168,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
               <FileText size={14} />
             </ToolbarButton>
             <ToolbarButton onClick={onNewAgent} title="Pi Agent" size="panel">
-              <Sparkle size={14} weight="fill" />
+              <CateLogo size={14} />
             </ToolbarButton>
 
             {/* Divider */}
