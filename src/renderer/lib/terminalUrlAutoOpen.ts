@@ -103,7 +103,12 @@ function findBrowserPanelId(workspaceId: string): string | null {
 }
 
 export function openTerminalUrl(workspaceId: string, url: string): void {
+  OPENED.add(url)
   openInBrowser(workspaceId, url)
+}
+
+export function markUrlHandled(url: string): void {
+  OPENED.add(url)
 }
 
 function openInBrowser(workspaceId: string, url: string): void {
