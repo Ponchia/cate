@@ -217,12 +217,7 @@ export function DockTabBar(props: DockTabBarProps) {
               />
             ) : (
               <span
-                className="truncate flex-1 min-w-0 cursor-text"
-                onDoubleClick={(e) => {
-                  if (!panel) return
-                  e.stopPropagation()
-                  beginRename(panelId, panel.title)
-                }}
+                className="truncate flex-1 min-w-0"
               >{getPanelTitle(panelId)}</span>
             )}
             {onClosePanel && (
