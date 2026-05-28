@@ -12,46 +12,9 @@ import { X } from '@phosphor-icons/react'
 import { useDragStore, useTabSourceVisibility } from '../drag'
 import { PANEL_REGISTRY, getPanelDef } from '../panels/registry'
 import { useAppStore } from '../stores/appStore'
-import { useStatusStore } from '../stores/statusStore'
-import { terminalRegistry } from '../lib/terminalRegistry'
-import { getAgentLogo } from '../lib/agentLogos'
+import { useAgentInfoByPanel } from '../hooks/useAgentPanelInfo'
 
 const AWAIT_COLOR = '#c08a5a'
-
-// Map terminal/agent panelId → agentState (using the same ptyId→panelId
-// lookup as WorkspaceTab). Two separate selectors so `useShallow` can do a
-// flat-record comparison and avoid re-rendering when no entries changed.
-function useAgentStateByPanel(): Record<string, import('../../shared/types').AgentState> {
-  return useStatusStore(useShallow((s) => {
-    const out: Record<string, import('../../shared/types').AgentState> = {}
-    for (const ws of Object.values(s.workspaces)) {
-      for (const [key, state] of Object.entries(ws.agentState)) {
-        const pid = terminalRegistry.panelIdForPty(key) ?? key
-        out[pid] = state
-      }
-    }
-    return out
-  }))
-}
-
-function useAgentNameByPanel(): Record<string, string> {
-  return useStatusStore(useShallow((s) => {
-    const out: Record<string, string> = {}
-    for (const ws of Object.values(s.workspaces)) {
-      for (const [key, name] of Object.entries(ws.agentName)) {
-        if (!name) continue
-        // shell.ts keeps `agentName` populated after the agent exits so the
-        // status footer can still say "Finished (Claude Code)". Gate on
-        // `agentPresent` so the tab logo flips back to the terminal icon
-        // the moment the agent process is gone.
-        if (!ws.agentPresent[key]) continue
-        const pid = terminalRegistry.panelIdForPty(key) ?? key
-        out[pid] = name
-      }
-    }
-    return out
-  }))
-}
 
 // Lookup: panelId → worktree color. Only returns a color when the panel's
 // workspace has 2+ worktrees (matches WorktreePill's visibility rule, so the
@@ -79,18 +42,18 @@ export const PANEL_TYPE_TINT: Record<PanelType, string> = Object.fromEntries(
   (Object.keys(PANEL_REGISTRY) as PanelType[]).map((t) => [t, PANEL_REGISTRY[t].tintClass]),
 ) as Record<PanelType, string>
 
-export function TabIcon({ type, size, agentName }: { type: PanelType; size: number; agentName?: string | null }) {
+export function TabIcon({ type, size, logo, agentName }: { type: PanelType; size: number; logo?: string | null; agentName?: string | null }) {
   // Terminal panels with a detected agent CLI swap the generic Terminal
   // icon for the agent's logo. Fallback path stays Phosphor.
-  const logo = type === 'terminal' && agentName ? getAgentLogo(agentName) : null
+  const useLogo = type === 'terminal' ? logo : null
   const [imgFailed, setImgFailed] = React.useState(false)
   // Reset error flag when the logo source actually changes so a once-failed
   // image can recover after an HMR or agent swap.
-  React.useEffect(() => { setImgFailed(false) }, [logo])
-  if (logo && !imgFailed) {
+  React.useEffect(() => { setImgFailed(false) }, [useLogo])
+  if (useLogo && !imgFailed) {
     return (
       <img
-        src={logo}
+        src={useLogo}
         alt={agentName ?? ''}
         width={size}
         height={size}
@@ -164,8 +127,7 @@ export function DockTabBar(props: DockTabBarProps) {
   } = props
 
   const worktreeColorByPanel = useWorktreeColorByPanel()
-  const agentStateByPanel = useAgentStateByPanel()
-  const agentNameByPanel = useAgentNameByPanel()
+  const agentInfoByPanel = useAgentInfoByPanel()
 
   // Build the visible tab list (skip the in-flight tab when source === this
   // stack) and choose where to slot the placeholder. Clamp to >=1 so a
@@ -262,7 +224,8 @@ export function DockTabBar(props: DockTabBarProps) {
               <TabIcon
                 type={panelType}
                 size={compact ? 11 : 13}
-                agentName={agentNameByPanel[panelId]}
+                logo={agentInfoByPanel[panelId]?.logo}
+                agentName={agentInfoByPanel[panelId]?.name}
               />
             </span>
             {renameId === panelId ? (
@@ -291,7 +254,7 @@ export function DockTabBar(props: DockTabBarProps) {
                 }}
               >{getPanelTitle(panelId)}</span>
             )}
-            {agentStateByPanel[panelId] === 'waitingForInput' && (
+            {agentInfoByPanel[panelId]?.state === 'waitingForInput' && (
               <span className="cate-await-indicator shrink-0" aria-label="awaiting input">
                 <span className="cate-await-ring" style={{ borderColor: AWAIT_COLOR }} />
                 <span className="cate-await-dot" style={{ backgroundColor: AWAIT_COLOR }} />

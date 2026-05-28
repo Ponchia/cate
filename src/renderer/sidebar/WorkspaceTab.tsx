@@ -12,7 +12,7 @@ import type { NativeContextMenuItem } from '../../shared/electron-api'
 import type { AgentState } from '../../shared/types'
 import { terminalRegistry } from '../lib/terminalRegistry'
 import { PANEL_REGISTRY } from '../panels/registry'
-import { getAgentLogo } from '../lib/agentLogos'
+import { useAgentInfoByPanel } from '../hooks/useAgentPanelInfo'
 
 // -----------------------------------------------------------------------------
 // Panel jump helper — focus a panel inside a workspace, switching workspace
@@ -126,7 +126,7 @@ export interface TerminalPanelRowProps {
   panel: { id: string; type: PanelType; title?: string; filePath?: string; url?: string }
   indent: boolean
   agentState: AgentState | undefined
-  agentName?: string | null
+  agentLogo?: string | null
   hasPorts: boolean
   worktreeColor?: string
   onClick: (e: React.MouseEvent) => void
@@ -134,13 +134,13 @@ export interface TerminalPanelRowProps {
 
 const AWAIT_COLOR = '#c08a5a'
 
-export const TerminalPanelRow: React.FC<TerminalPanelRowProps> = ({ panel, indent, agentState, agentName, hasPorts, worktreeColor, onClick }) => {
+export const TerminalPanelRow: React.FC<TerminalPanelRowProps> = ({ panel, indent, agentState, agentLogo: agentLogoProp, hasPorts, worktreeColor, onClick }) => {
   const Icon = PANEL_ICONS[panel.type] ?? TerminalIcon
   const label = panel.title || panel.filePath?.split('/').pop() || panel.url || panel.type
 
   const isRunning = agentState === 'running'
   const isAwaiting = agentState === 'waitingForInput'
-  const agentLogo = panel.type === 'terminal' ? getAgentLogo(agentName) : null
+  const agentLogo = panel.type === 'terminal' ? agentLogoProp : null
 
   return (
     <button
@@ -153,7 +153,7 @@ export const TerminalPanelRow: React.FC<TerminalPanelRowProps> = ({ panel, inden
       {agentLogo ? (
         <img
           src={agentLogo}
-          alt={agentName ?? ''}
+          alt=""
           width={11}
           height={11}
           draggable={false}
@@ -218,11 +218,9 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     if (!ws) return null
     return {
       listeningPorts: ws.listeningPorts,
-      agentState: ws.agentState,
-      agentName: ws.agentName,
-      agentPresent: ws.agentPresent,
     }
   }))
+  const agentInfoByPanel = useAgentInfoByPanel()
 
   const liveLocations = useDockStore((s) => s.panelLocations)
   const panelLocations = isSelected ? liveLocations : workspace.dockState?.locations
@@ -261,40 +259,11 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     return ids
   }, [liveCanvasPanelIds, workspace.canvasNodes])
 
-  // Agent state in the status store is keyed by ptyId, but panel rows are
-  // keyed by panelId. Translate via terminalRegistry so the awaiting/running
-  // indicators on the workspace overview actually light up.
-  const agentStateByPty = wsStatus?.agentState ?? {}
-  const agentNameByPty = wsStatus?.agentName ?? {}
-  const agentPresentByPty = wsStatus?.agentPresent ?? {}
+  // Ports in the status store are keyed by ptyId, but panel rows are keyed by
+  // panelId. Translate via terminalRegistry so the indicators on the workspace
+  // overview line up. (Agent state/name/logo come pre-mapped from
+  // useAgentInfoByPanel.)
   const portsByPty = wsStatus?.listeningPorts ?? {}
-  const agentStateByPanel = useMemo(() => {
-    const out: Record<string, AgentState> = {}
-    for (const [key, state] of Object.entries(agentStateByPty)) {
-      const pid = terminalRegistry.panelIdForPty(key)
-      if (pid) {
-        out[pid] = state
-      } else {
-        // Key may already be a panelId (e.g. agent panels register state
-        // directly by panelId instead of ptyId).
-        out[key] = state
-      }
-    }
-    return out
-  }, [agentStateByPty])
-  const agentNameByPanel = useMemo(() => {
-    const out: Record<string, string | null> = {}
-    for (const [key, name] of Object.entries(agentNameByPty)) {
-      // Only surface the name while the agent is still running — shell.ts
-      // keeps the previous name around after exit so the status footer can
-      // say "Finished (Claude Code)", but for the sidebar logo we want the
-      // terminal icon back the moment the process is gone.
-      if (!agentPresentByPty[key]) continue
-      const pid = terminalRegistry.panelIdForPty(key) ?? key
-      out[pid] = name
-    }
-    return out
-  }, [agentNameByPty, agentPresentByPty])
   const portsByPanel = useMemo(() => {
     const out: Record<string, number[]> = {}
     for (const [ptyId, ports] of Object.entries(portsByPty)) {
@@ -500,14 +469,14 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
 
   const renderPanelRow = (p: typeof panelList[number], indent = false) => {
     if (p.type === 'terminal' || p.type === 'agent') {
-      const resolvedState = agentStateByPanel[p.id]
+      const info = agentInfoByPanel[p.id]
       return (
         <TerminalPanelRow
           key={p.id}
           panel={p}
           indent={indent}
-          agentState={resolvedState}
-          agentName={agentNameByPanel[p.id]}
+          agentState={info?.state}
+          agentLogo={info?.logo}
           hasPorts={(portsByPanel[p.id]?.length ?? 0) > 0}
           worktreeColor={worktreeColorFor(p.id)}
           onClick={(e) => handlePanelClick(e, p.id)}
