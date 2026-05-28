@@ -11,6 +11,13 @@ import { useAppStore } from '../stores/appStore'
 import { minimumSize, findSharedBorders } from '../canvas/layoutEngine'
 import type { SharedBorder } from '../canvas/layoutEngine'
 import type { PanelType, Point, Size } from '../../shared/types'
+import { detectEdge, getCursorForEdge } from './resizeEdge'
+import type { ResizeEdge } from './resizeEdge'
+
+// Re-exported so existing importers (CanvasNode, useNodeResizeCursor,
+// NodeResizeOverlay) keep importing from this module unchanged.
+export { detectEdge, getCursorForEdge } from './resizeEdge'
+export type { ResizeEdge } from './resizeEdge'
 
 interface PendingResize {
   origin: Point
@@ -21,16 +28,6 @@ interface PendingResize {
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
-
-export type ResizeEdge =
-  | 'top'
-  | 'bottom'
-  | 'left'
-  | 'right'
-  | 'topLeft'
-  | 'topRight'
-  | 'bottomLeft'
-  | 'bottomRight'
 
 interface ResizeState {
   edge: ResizeEdge
@@ -52,66 +49,6 @@ interface UseNodeResizeReturn {
   resizeEdge: ResizeEdge | null
   handleResizeStart: (e: React.MouseEvent, edge: ResizeEdge) => void
   getCursor: (edge: ResizeEdge | null) => string
-}
-
-// -----------------------------------------------------------------------------
-// Edge detection (exported for use by CanvasNode)
-// -----------------------------------------------------------------------------
-
-const RESIZE_THRESHOLD = 6
-
-/**
- * Detect if a mouse position (relative to the node's top-left) is near an
- * edge or corner. Returns the ResizeEdge or null.
- */
-export function detectEdge(
-  mouseX: number,
-  mouseY: number,
-  nodeWidth: number,
-  nodeHeight: number,
-  zoom: number,
-): ResizeEdge | null {
-  const t = RESIZE_THRESHOLD / Math.max(zoom, 0.1)
-
-  // Shift the bare top edge detection rightward to avoid conflicting with the
-  // title bar drag handle. Corners still work at the full width.
-  const TOP_RESIZE_OFFSET = 60
-  const nearTop = mouseY < t
-  const nearBottom = mouseY > nodeHeight - t
-  const nearLeft = mouseX < t
-  const nearRight = mouseX > nodeWidth - t
-
-  // Corners take priority over edges
-  if (nearTop && nearLeft) return 'topLeft'
-  if (nearTop && nearRight) return 'topRight'
-  if (nearBottom && nearLeft) return 'bottomLeft'
-  if (nearBottom && nearRight) return 'bottomRight'
-  if (nearTop && mouseX > TOP_RESIZE_OFFSET) return 'top'
-  if (nearBottom) return 'bottom'
-  if (nearLeft) return 'left'
-  if (nearRight) return 'right'
-  return null
-}
-
-/**
- * Return the CSS cursor string for a given resize edge.
- */
-export function getCursorForEdge(edge: ResizeEdge | null): string {
-  if (!edge) return 'default'
-  switch (edge) {
-    case 'top':
-    case 'bottom':
-      return 'ns-resize'
-    case 'left':
-    case 'right':
-      return 'ew-resize'
-    case 'topLeft':
-    case 'bottomRight':
-      return 'nwse-resize'
-    case 'topRight':
-    case 'bottomLeft':
-      return 'nesw-resize'
-  }
 }
 
 /** Whether the edge is a cardinal (non-corner) edge. */

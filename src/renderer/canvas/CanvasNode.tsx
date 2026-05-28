@@ -17,6 +17,7 @@ import { useNodeResize } from '../hooks/useNodeResize'
 import { useCanvasNodeStyle } from './useCanvasNodeStyle'
 import { useCanvasNodeDrag, countPanels } from './useCanvasNodeDrag'
 import { useNodeResizeCursor } from './useNodeResizeCursor'
+import { NodeResizeOverlay } from './NodeResizeOverlay'
 import type { DockStore } from '../stores/dockStore'
 import { DockStoreProvider } from '../stores/DockStoreContext'
 import DockTabStack from '../docking/DockTabStack'
@@ -618,6 +619,13 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
           </div>
         </DockStoreProvider>
       </div>
+
+      {/* Resize hotspots — invisible overlays so `<webview>` and other
+          OOP children don't swallow the mousedown at the panel border. */}
+      <NodeResizeOverlay
+        onResizeStart={handleResizeStart}
+        topInset={rootIsTabs ? 26 : GRAB_STRIP_HEIGHT}
+      />
 
     </div>
     </>
