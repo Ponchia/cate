@@ -216,7 +216,7 @@ export function DockTabBar(props: DockTabBarProps) {
             {isActive && (
               <span
                 className="absolute left-0 right-0 top-0 h-[2px]"
-                style={{ backgroundColor: 'var(--node-chrome-accent, #3b82f6)' }}
+                style={{ backgroundColor: 'var(--workspace-accent, var(--node-chrome-accent, #3b82f6))' }}
               />
             )}
             <span
@@ -248,12 +248,7 @@ export function DockTabBar(props: DockTabBarProps) {
               />
             ) : (
               <span
-                className={`truncate flex-1 min-w-0 ${panel?.type === 'terminal' ? 'cursor-text' : ''}`}
-                onDoubleClick={(e) => {
-                  if (panel?.type !== 'terminal') return
-                  e.stopPropagation()
-                  beginRename(panelId, panel.title)
-                }}
+                className="truncate flex-1 min-w-0"
               >{getPanelTitle(panelId)}</span>
             )}
             {agentInfoByPanel[panelId]?.state === 'waitingForInput' && (

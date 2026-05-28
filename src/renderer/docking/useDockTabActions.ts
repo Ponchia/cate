@@ -23,6 +23,7 @@ export interface DockTabActionsParams {
   getPanelProp?: (panelId: string) => PanelState | undefined
   onClosePanel?: (panelId: string) => void
   onPanelRemoved?: (panelId: string) => void
+  onPanelRenamed?: (panelId: string, title: string) => void
   excludePanelTypes?: PanelType[]
   localOnly?: boolean
   activePanel: PanelState | undefined
@@ -31,7 +32,7 @@ export interface DockTabActionsParams {
 export function useDockTabActions(params: DockTabActionsParams) {
   const {
     stack, zone, dockStoreApi, workspaceId, getPanelProp,
-    onClosePanel, onPanelRemoved, excludePanelTypes, localOnly, activePanel,
+    onClosePanel, onPanelRemoved, onPanelRenamed, excludePanelTypes, localOnly, activePanel,
   } = params
 
   const setActiveTab = useCallback((stackId: string, index: number) => {
@@ -52,7 +53,11 @@ export function useDockTabActions(params: DockTabActionsParams) {
     const trimmed = renameValue.trim()
     if (trimmed) {
       const wsId = workspaceId ?? useAppStore.getState().selectedWorkspaceId
+      // renamePanelByUser sets titleUserOverridden so the agent-name tab title
+      // (terminalRegistry) won't clobber a manual rename; onPanelRenamed keeps
+      // detached dock windows in sync (main's rename feature).
       if (wsId) useAppStore.getState().renamePanelByUser(wsId, panelId, trimmed)
+      onPanelRenamed?.(panelId, trimmed)
     }
     setRenameId(null)
   }
@@ -171,6 +176,8 @@ export function useDockTabActions(params: DockTabActionsParams) {
           ]
         : []
       const id = await window.electronAPI.showContextMenu([
+        { id: 'rename', label: 'Rename' },
+        { type: 'separator' as const },
         { id: 'close', label: 'Close', accelerator: 'Cmd+W' },
         { id: 'close-others', label: 'Close Others', enabled: hasOthers },
         { id: 'close-right', label: 'Close to the Right', enabled: hasRight },
@@ -194,6 +201,9 @@ export function useDockTabActions(params: DockTabActionsParams) {
         return
       }
       switch (id) {
+        case 'rename':
+          if (panel) beginRename(panelId, panel.title)
+          break
         case 'close':
           onClosePanel?.(panelId)
           break
