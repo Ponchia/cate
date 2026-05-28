@@ -30,6 +30,7 @@ interface DockTabStackProps {
   getPanel?: (panelId: string) => PanelState | undefined
   workspaceId?: string
   onPanelRemoved?: (panelId: string) => void
+  onPanelRenamed?: (panelId: string, title: string) => void
   /** Panel types this stack will refuse from new-tab / split menus and from
    *  drag-and-drop. */
   excludePanelTypes?: PanelType[]
@@ -49,7 +50,7 @@ interface DockTabStackProps {
   dropDisabled?: boolean
 }
 
-export default function DockTabStack({ stack, zone: zoneProp, renderPanel, getPanelTitle, onClosePanel, getPanel: getPanelProp, workspaceId: workspaceIdProp, onPanelRemoved, excludePanelTypes, trailingControls, onTabBarMouseDown, localOnly, compact, leftEdge, rightEdge, dropDisabled }: DockTabStackProps) {
+export default function DockTabStack({ stack, zone: zoneProp, renderPanel, getPanelTitle, onClosePanel, getPanel: getPanelProp, workspaceId: workspaceIdProp, onPanelRemoved, onPanelRenamed, excludePanelTypes, trailingControls, onTabBarMouseDown, localOnly, compact, leftEdge, rightEdge, dropDisabled }: DockTabStackProps) {
   const dockStoreApi = useDockStoreApi()
   const stackRef = useRef<HTMLDivElement>(null)
 
@@ -78,6 +79,12 @@ export default function DockTabStack({ stack, zone: zoneProp, renderPanel, getPa
 
   const activePanelId = stack.panelIds[stack.activeIndex]
 
+  // Effective workspace for status lookups: explicit prop, else the selected
+  // workspace (matches resolvePanel's fallback). Subscribed so a workspace
+  // switch re-scopes the tab agent indicators.
+  const selectedWorkspaceId = useAppStore((s) => s.selectedWorkspaceId)
+  const effectiveWorkspaceId = workspaceIdProp ?? selectedWorkspaceId
+
   const resolvePanel = useCallback(
     (panelId: string): PanelState | undefined => {
       if (getPanelProp) return getPanelProp(panelId)
@@ -99,6 +106,7 @@ export default function DockTabStack({ stack, zone: zoneProp, renderPanel, getPa
     getPanelProp,
     onClosePanel,
     onPanelRemoved,
+    onPanelRenamed,
     excludePanelTypes,
     localOnly,
     activePanel,
@@ -225,6 +233,7 @@ export default function DockTabStack({ stack, zone: zoneProp, renderPanel, getPa
         <DockTabBar
           stack={stack}
           compact={compact}
+          workspaceId={effectiveWorkspaceId}
           getPanel={resolvePanel}
           getPanelTitle={getPanelTitle}
           onClosePanel={onClosePanel}

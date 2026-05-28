@@ -113,6 +113,10 @@ export interface PanelState {
    *  associated with. Drives the per-panel color accent and the title-bar
    *  "switch worktree" pill. Applies to terminal + agent panels. */
   worktreeId?: string
+  /** Terminal panels only. Set to true the first time the user renames the
+   *  tab so that subsequent OSC-0/1/2 title escapes from the running agent
+   *  no longer overwrite the chosen name. */
+  titleUserOverridden?: boolean
 }
 
 // -----------------------------------------------------------------------------
@@ -424,7 +428,6 @@ export type ShortcutAction =
   | 'saveFile'
   | 'zoomToFit'
   | 'autoLayout'
-  | 'globalSearch'
   | 'undo'
   | 'redo'
   | 'deleteNode'
@@ -452,7 +455,6 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   'saveFile',
   'zoomToFit',
   'autoLayout',
-  'globalSearch',
   'undo',
   'redo',
   'deleteNode',
@@ -476,7 +478,6 @@ export const SHORTCUT_DISPLAY_NAMES: Record<ShortcutAction, string> = {
   saveFile: 'Save File',
   zoomToFit: 'Zoom to Fit',
   autoLayout: 'Auto Layout Canvas',
-  globalSearch: 'Global Search',
   undo: 'Undo',
   redo: 'Redo',
   deleteNode: 'Delete Focused Panel',
@@ -488,8 +489,6 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, StoredShortcut> = {
   newEditor: storedShortcut('e', { command: true, shift: true }),
   closePanel: storedShortcut('w', { command: true }),
   toggleSidebar: storedShortcut('\\', { command: true }),
-  // Moved from Cmd+Shift+F so `globalSearch` can take the find-in-files
-  // standard binding without a collision.
   toggleFileExplorer: storedShortcut('x', { command: true, shift: true }),
   toggleMinimap: storedShortcut('m', { command: true, shift: true }),
   nodeSwitcher: storedShortcut(' ', { control: true }),
@@ -502,7 +501,6 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, StoredShortcut> = {
   saveFile: storedShortcut('s', { command: true }),
   zoomToFit: storedShortcut('1', { command: true }),
   autoLayout: storedShortcut('l', { command: true, shift: true }),
-  globalSearch: storedShortcut('f', { command: true, shift: true }),
   undo: storedShortcut('z', { command: true }),
   redo: storedShortcut('z', { command: true, shift: true }),
   deleteNode: storedShortcut('Backspace', { command: true }),
@@ -620,6 +618,76 @@ export interface MultiWorkspaceSession {
   panelWindows?: PanelWindowSnapshot[]
   /** Detached dock windows with full dock layout. Missing = no dock windows (migration). */
   dockWindows?: DetachedDockWindowSnapshot[]
+}
+
+// -----------------------------------------------------------------------------
+// Project-local workspace file (.cate/workspace.json) — VCS-friendly, shareable
+// -----------------------------------------------------------------------------
+
+export interface ProjectWorkspaceFile {
+  version: 1
+  name: string
+  color: string
+  canvas: {
+    nodes: ProjectCanvasNode[]
+    regions: ProjectCanvasRegion[]
+    zoomLevel: number
+    viewportOffset: Point
+  }
+  dockState?: DockStateSnapshot
+  dockPanels?: Record<string, ProjectPanelRef>
+}
+
+export interface ProjectCanvasNode {
+  panelId: string
+  panelType: string
+  title: string
+  origin: Point
+  size: Size
+  filePath?: string
+  url?: string
+  regionId?: string
+  documentType?: 'pdf' | 'docx' | 'image'
+  dockLayout?: DockLayoutNode | null
+}
+
+export interface ProjectCanvasRegion {
+  id: string
+  origin: Point
+  size: Size
+  label: string
+  color: string
+  zOrder: number
+}
+
+export interface ProjectPanelRef {
+  type: string
+  title: string
+  filePath?: string
+  url?: string
+}
+
+// -----------------------------------------------------------------------------
+// Project-local session file (.cate/session.json) — ephemeral, gitignored
+// -----------------------------------------------------------------------------
+
+export interface ProjectSessionFile {
+  version: 1
+  focusedNodeId: string | null
+  nodes: Record<string, ProjectSessionNode>
+  /** Detached panel windows (machine-local, not committed). */
+  panelWindows?: PanelWindowSnapshot[]
+  /** Detached dock windows (machine-local, not committed). */
+  dockWindows?: DetachedDockWindowSnapshot[]
+}
+
+export interface ProjectSessionNode {
+  panelId: string
+  zOrder: number
+  creationIndex: number
+  ptyId?: string
+  workingDirectory?: string
+  unsavedContent?: string
 }
 
 // -----------------------------------------------------------------------------
