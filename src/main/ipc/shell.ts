@@ -200,7 +200,9 @@ const AGENT_DEFINITIONS: { displayName: string; match: (name: string) => boolean
     match: (n) => n === 'antigravity',
   },
   {
-    // Kept for legacy installs; Google's coding CLI moved to Antigravity.
+    // Deprecated in favor of Antigravity CLI:
+    // https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/
+    // Kept for legacy installs.
     displayName: 'Gemini CLI',
     match: (n) => n === 'gemini',
   },
