@@ -27,15 +27,15 @@ interface TerminalRegistration {
 }
 
 interface PreviousState {
+  /** Last agent name seen — carried across transient scan misses so the tab
+   *  name doesn't flicker when a single `ps` cycle fails to spot the agent. */
   previousAgentName: string | null
-  previouslyHadAgent: boolean
 }
 
 interface ScanResult {
   terminalActivity: TerminalActivity
   agentName: string | null
   agentPresent: boolean
-  previouslyHadAgent: boolean
 }
 
 // Concurrency limiter — caps simultaneous execFile calls across all terminals
@@ -119,44 +119,6 @@ function getProcessName(pid: number): Promise<string | null> {
   }))
 }
 
-/** Full command line for a PID via `ps -o args=`. Used to identify agents
- *  that ship as `#!/usr/bin/env node` scripts where `comm=` returns `node`. */
-function getProcessArgs(pid: number): Promise<string | null> {
-  if (!pid || pid <= 0) return Promise.resolve(null)
-  return limit(() => new Promise((resolve) => {
-    execFile('ps', ['-o', 'args=', '-p', `${pid}`], {
-      encoding: 'utf-8',
-      timeout: 2000,
-    }, (err, stdout) => {
-      if (err || !stdout) { resolve(null); return }
-      const out = stdout.trim()
-      resolve(out.length === 0 ? null : out)
-    })
-  }))
-}
-
-/** Interpreter names that frequently host an agent CLI as a script. When
- *  `getProcessName()` returns one of these we fall back to args-based
- *  matching on the script basename. */
-const INTERPRETER_NAMES = new Set(['node', 'bun', 'deno', 'python', 'python3'])
-
-/** Extract a likely script basename from a `ps -o args=` line. Skips flags
- *  (`-`/`--`-prefixed tokens) and the interpreter itself. Returns the
- *  basename of the first plausible script-path argument. */
-function scriptBasenameFromArgs(args: string): string | null {
-  // Split on whitespace; the first token is the interpreter path.
-  const tokens = args.split(/\s+/).filter(Boolean)
-  for (let i = 1; i < tokens.length; i++) {
-    const tok = tokens[i]
-    if (tok.startsWith('-')) continue
-    const slash = tok.lastIndexOf('/')
-    const base = slash === -1 ? tok : tok.slice(slash + 1)
-    if (!base) continue
-    return base.toLowerCase()
-  }
-  return null
-}
-
 /**
  * Agent CLI definitions. Each entry maps process name patterns to a display name.
  * The matcher checks if the process basename (lowercased) matches any pattern.
@@ -186,7 +148,8 @@ const AGENT_DEFINITIONS: { displayName: string; match: (name: string) => boolean
     match: (n) => n === 'opencode',
   },
   {
-    // @mariozechner/pi-coding-agent — installs as the `pi` binary.
+    // @earendil-works/pi-coding-agent — runs as the `pi` binary (sets its own
+    // process title to `pi`).
     displayName: 'PI Agent',
     match: (n) => n === 'pi',
   },
@@ -307,10 +270,7 @@ async function scanTerminal(
   terminalId: string,
   info: TerminalRegistration,
 ): Promise<ScanResult> {
-  const prev = previousStates.get(terminalId) || {
-    previousAgentName: null,
-    previouslyHadAgent: false,
-  }
+  const prev = previousStates.get(terminalId) || { previousAgentName: null }
 
   const childrenToScan = await getChildPids(info.shellPid)
 
@@ -324,16 +284,7 @@ async function scanTerminal(
         firstChildName = name
       }
       if (!foundAgentName) {
-        let agentMatch = matchAgentProcess(name)
-        // Node/bun/deno scripts: comm= returns the interpreter, so probe the
-        // arg vector for the script basename (node-script agents).
-        if (!agentMatch && INTERPRETER_NAMES.has(name.toLowerCase())) {
-          const args = await getProcessArgs(childPid)
-          if (args) {
-            const script = scriptBasenameFromArgs(args)
-            if (script) agentMatch = matchAgentProcess(script)
-          }
-        }
+        const agentMatch = matchAgentProcess(name)
         if (agentMatch) foundAgentName = agentMatch
       }
     }
@@ -347,18 +298,11 @@ async function scanTerminal(
       : { type: 'idle' }
 
   const agentName = foundAgentName ?? prev.previousAgentName
-  let previouslyHadAgent = prev.previouslyHadAgent
-  if (agentPresent) {
-    previouslyHadAgent = true
-  } else if (previouslyHadAgent) {
-    previouslyHadAgent = false
-  }
 
   return {
     terminalActivity,
     agentName,
     agentPresent,
-    previouslyHadAgent,
   }
 }
 
@@ -396,10 +340,7 @@ function startPolling(): void {
       for (const entry of scanResults) {
         if (!entry) continue
         const { terminalId, info, result } = entry
-        previousStates.set(terminalId, {
-          previousAgentName: result.agentName,
-          previouslyHadAgent: result.previouslyHadAgent,
-        })
+        previousStates.set(terminalId, { previousAgentName: result.agentName })
 
         sendToWindow(
           info.ownerWindowId,
@@ -496,10 +437,7 @@ export function registerHandlers(): void {
         ownerWindowId,
       })
 
-      previousStates.set(terminalId, {
-        previousAgentName: null,
-        previouslyHadAgent: false,
-      })
+      previousStates.set(terminalId, { previousAgentName: null })
 
       // Start polling on first registration
       startPolling()
