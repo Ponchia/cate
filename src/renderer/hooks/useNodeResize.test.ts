@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectEdge } from './useNodeResize'
+import { detectEdge } from './resizeEdge'
 
 // Hitbox tuning (zoom = 1):
 // - edge band  =  8 px
