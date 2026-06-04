@@ -8,9 +8,11 @@
 
 import { watch } from 'chokidar'
 import { existsSync } from 'fs'
+import path from 'path'
 import * as fileLeaf from './file'
+import { runRipgrepSearch } from '../search/engine'
 import { createVcsCapability } from './vcs'
-import { createProcessCapability } from './process'
+import { createProcessCapability, type ProcessCapability } from './process'
 import { createAgentCapability } from './agent'
 import { ensurePiOnHost, piCliPath } from '../ensurePi'
 import {
@@ -18,8 +20,14 @@ import {
   validatePathStrict,
   validatePathForCreation,
   validateCwd,
+  addAllowedRoot as addRoot,
+  removeAllowedRoot as removeRoot,
+  grantFileAccess as grantFile,
+  registerScopedWriteAllowance as registerWriteAllowance,
+  clearFileGrantsForWindow as clearFileGrants,
+  clearScopedWriteAllowancesForWindow as clearWriteAllowances,
 } from '../../main/ipc/pathValidation'
-import type { Companion, FileHost, ProcessHost } from '../../main/companion/types'
+import type { Companion, FileHost, FsChangeType } from '../../main/companion/types'
 
 export interface DaemonCompanionConfig {
   id: string
@@ -27,10 +35,62 @@ export interface DaemonCompanionConfig {
   exclusions?: string[]
   /** Env for git/gh subprocesses. Defaults to process.env. */
   env?: () => NodeJS.ProcessEnv
+  /** POSIX-only idle-suspend of backgrounded local terminals (off for remote
+   *  daemons — only the local-workspace daemon sets it, mirroring the in-process
+   *  local host's setting). Passed through to the process capability. */
+  idleSuspend?: boolean
+  /** Override the ripgrep binary path for content search. Defaults to the rg
+   *  shipped beside the daemon's node runtime (runtime/bin/rg). Tests inject a
+   *  real rg here since they don't run under the bundled runtime layout. */
+  rgPath?: string
 }
 
-export function buildDaemonCompanion(config: DaemonCompanionConfig): Companion {
+/** A built daemon Companion plus the concrete process capability, so the daemon
+ *  entry can call killAllGroups() on shutdown (not part of the ProcessHost interface). */
+export interface DaemonCompanion {
+  companion: Companion
+  process: ProcessCapability
+}
+
+/** The ripgrep binary shipped in the companion tarball, staged next to the
+ *  bundled node runtime. The daemon runs as `runtime/bin/node[.exe] companion.cjs`,
+ *  so process.execPath is runtime/bin/node[.exe] and `rg[.exe]` is its sibling.
+ *  Unified layout: only the filename differs on win32. */
+function daemonRgPath(): string {
+  return path.join(path.dirname(process.execPath), process.platform === 'win32' ? 'rg.exe' : 'rg')
+}
+
+export function buildDaemonCompanion(config: DaemonCompanionConfig): DaemonCompanion {
   const exclusionSet = new Set(config.exclusions ?? [])
+  const rgPath = config.rgPath ?? daemonRgPath()
+
+  // The chokidar ignore list: hidden dotfiles + the daemon's live exclusionSet
+  // (two globs per name). Rebuilt from the CURRENT set each time a watcher is
+  // (re)created, so setExclusions takes effect on active watchers too.
+  const buildIgnored = (): Array<RegExp | string> => [
+    /(^|[/\\])\../, // hidden files
+    ...[...exclusionSet].flatMap((name) => [`**/${name}`, `**/${name}/**`]),
+  ]
+
+  // Registry of active fs-watch subscriptions, so setExclusions can rebuild each
+  // with the new ignore list. Keyed by a unique handle (an object identity) so a
+  // concurrent unsub during a rebuild removes exactly its own entry.
+  interface WatchEntry {
+    prefix: string
+    onChange: (changedPath: string, type: FsChangeType) => void
+    watcher: ReturnType<typeof watch>
+  }
+  const activeWatches = new Set<WatchEntry>()
+
+  // Create a chokidar watcher for `prefix` with the CURRENT ignore list, wiring
+  // its add/change/unlink to onChange. Used on first watch and on every rebuild.
+  const spawnWatcher = (prefix: string, onChange: (changedPath: string, type: FsChangeType) => void) => {
+    const w = watch(validatePath(prefix), { ignoreInitial: true, depth: 1, ignored: buildIgnored() })
+    w.on('add', (fp) => onChange(fp, 'create'))
+    w.on('change', (fp) => onChange(fp, 'update'))
+    w.on('unlink', (fp) => onChange(fp, 'delete'))
+    return w
+  }
 
   // The daemon is the AUTHORITATIVE path check: only it can realpath its own
   // filesystem, and RemoteCompanion's client-side validate* are pass-throughs.
@@ -54,26 +114,56 @@ export function buildDaemonCompanion(config: DaemonCompanionConfig): Companion {
       fileLeaf.importEntriesInto(sources, await validatePathStrict(destDir), mode, winId, () => { /* errors counted, not logged */ }),
     search: async (root, query, opts) =>
       fileLeaf.searchFiles(await validatePathStrict(root), query, exclusionSet, opts),
+    // Content search spawns the ripgrep shipped beside the daemon's node
+    // runtime (runtime/bin/rg, sibling of process.execPath = runtime/bin/node).
+    // Uses the sync lexical root check, like watch — it returns a handle, not a
+    // promise, and the spawn root must be authoritative-validated here.
+    searchContent: (root, opts, cbs) =>
+      runRipgrepSearch(rgPath, opts, validatePath(root), [...exclusionSet], cbs),
     watch: (prefix, onChange) => {
       // watch returns its unsub synchronously; use the cheap lexical check.
       // Map chokidar's events to the real change type so the client can prune
       // removed entries (not just re-read on every event).
-      const w = watch(validatePath(prefix), { ignoreInitial: true })
-      w.on('add', (fp) => onChange(fp, 'create'))
-      w.on('change', (fp) => onChange(fp, 'update'))
-      w.on('unlink', (fp) => onChange(fp, 'delete'))
-      return () => { void w.close() }
+      // Mirror the in-process createWatcher: hidden dotfiles + the daemon's
+      // exclusionSet (two globs per name) and a depth cap, so the watcher never
+      // floods with node_modules/.git events. Electron-free (no getSettingSync).
+      //
+      // The watcher is tracked in activeWatches so setExclusions can rebuild it
+      // with a fresh ignore list — the chokidar `ignored` is fixed at creation,
+      // so a live exclusion change must recreate the watcher.
+      const entry: WatchEntry = { prefix, onChange, watcher: spawnWatcher(prefix, onChange) }
+      activeWatches.add(entry)
+      return () => {
+        // Remove from the registry FIRST so a concurrent setExclusions rebuild
+        // never resurrects a just-unsubscribed watcher.
+        activeWatches.delete(entry)
+        void entry.watcher.close()
+      }
     },
   }
 
   const env = config.env ?? (() => process.env)
   const vcs = createVcsCapability({ env })
 
-  // Daemon shell resolution: first existing of [requested, $SHELL, bash, sh].
-  // Verifying existence avoids an execvp ENOENT (e.g. a stale $SHELL, or a shell
-  // path forwarded from a different-OS client) — we fall back with a notice.
+  // Daemon shell resolution: first existing of [requested, $SHELL, bash, sh]
+  // (or, on Windows, [requested, %COMSPEC%, powershell.exe, cmd.exe]). Verifying
+  // existence avoids an execvp ENOENT (e.g. a stale $SHELL, or a shell path
+  // forwarded from a different-OS client) — we fall back with a notice.
   const innerProc = createProcessCapability({
     resolveShell: (requested) => {
+      if (process.platform === 'win32') {
+        const candidates = [requested, process.env.COMSPEC, 'powershell.exe', 'cmd.exe'].filter(Boolean) as string[]
+        // COMSPEC/cmd.exe are absolute (existsSync works); powershell.exe is on
+        // PATH (existsSync on a bare name is false), so it's a sensible default
+        // rather than something we can stat — fall back to cmd.exe if nothing
+        // absolute exists, letting CreateProcess resolve it via PATH.
+        const found = candidates.find((p) => existsSync(p))
+        if (found) {
+          const notice = requested && found !== requested ? `Shell "${requested}" not found; using ${found}\r\n` : undefined
+          return { path: found, args: [], notice }
+        }
+        return { path: 'cmd.exe', args: [] }
+      }
       const candidates = [requested, process.env.SHELL, '/bin/bash', '/bin/sh'].filter(Boolean) as string[]
       const found = candidates.find((p) => existsSync(p))
       if (found) {
@@ -84,12 +174,15 @@ export function buildDaemonCompanion(config: DaemonCompanionConfig): Companion {
       return { path: 'sh', args: [] }
     },
     getEnv: () => Object.fromEntries(Object.entries(env()).filter(([, v]) => v !== undefined)) as Record<string, string>,
+    idleSuspend: config.idleSuspend,
   })
 
   // The daemon is the AUTHORITATIVE cwd check (RemoteCompanion.validateCwd is a
   // client-side pass-through), so validate the terminal cwd here before spawning,
   // matching what terminal.ts does for a local companion. Throwing rejects create.
-  const proc: ProcessHost = {
+  // Keep it a ProcessCapability (spread carries killAllGroups) so the daemon
+  // entry can reap process groups on shutdown.
+  const proc: ProcessCapability = {
     ...innerProc,
     create: async (opts, onData, onExit) => {
       if (opts.cwd) validateCwd(opts.cwd) // throws -> rejects create, matching local
@@ -106,7 +199,7 @@ export function buildDaemonCompanion(config: DaemonCompanionConfig): Companion {
     baseEnv: () => Object.fromEntries(Object.entries(env()).filter(([, v]) => v !== undefined)) as Record<string, string>,
   })
 
-  return {
+  const companion: Companion = {
     id: config.id,
     process: proc,
     agent,
@@ -116,5 +209,40 @@ export function buildDaemonCompanion(config: DaemonCompanionConfig): Companion {
     validatePathStrict,
     validatePathForCreation,
     validateCwd,
+    addAllowedRoot: async (root, scopeId) => { addRoot(root, scopeId) },
+    removeAllowedRoot: async (root, scopeId) => { removeRoot(root, scopeId) },
+    // Mutate the existing Set IN PLACE so the readDir/search closures that
+    // captured this reference see the new exclusions live (do NOT reassign).
+    // Active chokidar watchers fixed their `ignored` list at creation time, so
+    // rebuild each one against the new set: close the old watcher and spawn a
+    // fresh one (same prefix + onChange), swapping it into the registry entry.
+    setExclusions: async (names) => {
+      exclusionSet.clear()
+      for (const name of names) exclusionSet.add(name)
+      // Snapshot first: rebuilding mutates nothing in activeWatches (we swap the
+      // watcher field in place), but an unsub during this loop deletes its entry,
+      // so iterating a snapshot + re-checking membership avoids reviving it.
+      // Close the OLD watcher fully before the swap is considered done, so it
+      // can't keep emitting events for newly-excluded names during the overlap.
+      await Promise.all(
+        [...activeWatches].map(async (entry) => {
+          if (!activeWatches.has(entry)) return // unsubscribed concurrently
+          const old = entry.watcher
+          entry.watcher = spawnWatcher(entry.prefix, entry.onChange)
+          // The entry may have been unsubscribed while we were swapping; if so its
+          // new watcher must also be closed (the unsub already closed the old one).
+          if (!activeWatches.has(entry)) void entry.watcher.close()
+          await old.close()
+        }),
+      )
+    },
+    setIdleSuspend: async (enabled) => { proc.setIdleSuspend(enabled) },
+    // pathValidation's functions take (windowId, path); the Companion contract
+    // (and the wire) is (path, windowId) — swap here.
+    grantFileAccess: async (filePath, ownerWindowId) => { await grantFile(ownerWindowId, filePath) },
+    registerScopedWriteAllowance: async (safePath, ownerWindowId) => { await registerWriteAllowance(ownerWindowId, safePath) },
+    clearFileGrantsForWindow: async (windowId) => { clearFileGrants(windowId) },
+    clearScopedWriteAllowancesForWindow: async (windowId) => { clearWriteAllowances(windowId) },
   }
+  return { companion, process: proc }
 }

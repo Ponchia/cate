@@ -6,18 +6,19 @@
 import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useCanvasStoreContext, useCanvasStoreApi, shallow } from '../stores/CanvasStoreContext'
-import { useAppStore } from '../stores/appStore'
+import { useAppStore, type PanelPlacement } from '../stores/appStore'
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction'
 import { useAutoFocusLargestVisible } from '../hooks/useAutoFocusLargestVisible'
 import { useUIStore, effectiveCanvasTool } from '../stores/uiStore'
-import { canvasToView, viewToCanvas } from '../lib/coordinates'
+import { canvasToView, viewToCanvas } from '../lib/canvas/coordinates'
 import CanvasGrid from './CanvasGrid'
 import CanvasBackgroundImage from './CanvasBackgroundImage'
 import SnapGuides from './SnapGuides'
 import CanvasRegionComponent from './CanvasRegionComponent'
 import GhostPlacementLayer from './GhostPlacementLayer'
 import type { Point, PanelType } from '../../shared/types'
-import { openFileAsPanel } from '../lib/fileRouting'
+import { openFileAsPanel } from '../lib/fs/fileRouting'
+import { setPendingReveal } from '../lib/editor/editorReveal'
 
 // Module-level style injection — shared across all Canvas instances
 let canvasStyleInjected = false
@@ -183,6 +184,14 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
   const worldRef = useRef<HTMLDivElement>(null)
   const canvasApi = useCanvasStoreApi()
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
+
+  // Pin positioned creates (drops, right-click "new here") to THIS canvas so the
+  // node lands where the user aimed rather than on the workspace's primary
+  // canvas. Undefined for a context-less canvas → falls back to primary routing.
+  const here = useCallback(
+    (): PanelPlacement | undefined => (panelId ? { target: 'canvas', canvasPanelId: panelId } : undefined),
+    [panelId],
+  )
 
   const marquee = useUIStore((s) => s.marquee)
   // Idle cursor reflects the active tool (React owns idle; useCanvasInteraction
@@ -367,8 +376,8 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
       const store = useAppStore.getState()
       const panelId =
         spec.panelType === 'terminal'
-          ? store.createTerminal(wsId, undefined, pos, undefined, spec.cwd)
-          : store.createAgent(wsId, pos)
+          ? store.createTerminal(wsId, undefined, pos, here(), spec.cwd)
+          : store.createAgent(wsId, pos, here())
       if (panelId && spec.worktreeId) {
         store.setPanelWorktreeId(wsId, panelId, spec.worktreeId)
       }
@@ -378,6 +387,12 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
     // Support internal multi-file drops…
     const multiData = e.dataTransfer.getData('application/cate-files')
     const singlePath = e.dataTransfer.getData('application/cate-file')
+    // Optional open-at-line payload (dragging a specific search-result line).
+    let lineReveal: { path: string; line: number; column?: number } | null = null
+    const lineRaw = e.dataTransfer.getData('application/cate-file-line')
+    if (lineRaw) {
+      try { lineReveal = JSON.parse(lineRaw) } catch { /* ignore */ }
+    }
     let filePaths: string[] = []
     if (multiData) {
       try { filePaths = JSON.parse(multiData) } catch { /* ignore */ }
@@ -395,6 +410,7 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
     if (filePaths.length === 0) return
 
     e.preventDefault()
+    e.stopPropagation()
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
     const viewPoint = { x: e.clientX - rect.left, y: e.clientY - rect.top }
@@ -406,19 +422,22 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
     for (const filePath of filePaths) {
       let isDir = false
       try {
-        const stat = await window.electronAPI.fsStat(filePath)
+        const stat = await window.electronAPI.fsStat(filePath, wsId)
         isDir = !!stat?.isDirectory
       } catch { /* fall through; treat as file */ }
       const pos = { x: canvasPoint.x + offsetX, y: canvasPoint.y }
       if (isDir) {
         // Drop of a folder → spawn a terminal scoped to that path.
-        useAppStore.getState().createTerminal(wsId, undefined, pos, undefined, filePath)
+        useAppStore.getState().createTerminal(wsId, undefined, pos, here(), filePath)
       } else {
-        openFileAsPanel(wsId, filePath, pos)
+        const panelId = openFileAsPanel(wsId, filePath, pos, here())
+        if (panelId && lineReveal && lineReveal.path === filePath) {
+          setPendingReveal(panelId, { line: lineReveal.line, column: lineReveal.column })
+        }
       }
       offsetX += 40
     }
-  }, [canvasRef])
+  }, [canvasRef, here])
 
   // Memoize marquee rect to avoid recalculation in render
   const marqueeRect = useMemo(() => {
@@ -482,7 +501,7 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
         const g = gitWorktrees.find((w) => w.path === wtPath)
         if (g) {
           const cwdToUse = g.isCurrent ? undefined : g.path
-          const panelId = useAppStore.getState().createTerminal(wsId, undefined, point, undefined, cwdToUse)
+          const panelId = useAppStore.getState().createTerminal(wsId, undefined, point, here(), cwdToUse)
           const storedWt = (useAppStore.getState().workspaces.find((w) => w.id === wsId)?.worktrees ?? [])
             .find((w) => w.path === g.path)
           if (storedWt) {
@@ -504,7 +523,7 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
       switch (id) {
         case 'new-terminal':
           if (containingRegion?.defaultCwd) {
-            useAppStore.getState().createTerminal(wsId, undefined, point, undefined, containingRegion.defaultCwd)
+            useAppStore.getState().createTerminal(wsId, undefined, point, here(), containingRegion.defaultCwd)
           } else {
             onCreateAtPoint?.('terminal', point)
           }
@@ -520,13 +539,15 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
     }
     void buildAndShow()
     return () => { cancelled = true }
-  }, [canvasContextMenu, onCreateAtPoint, canvasApi, closeCanvasContextMenu])
+  }, [canvasContextMenu, onCreateAtPoint, canvasApi, closeCanvasContextMenu, here])
 
   return (
     <div
       ref={canvasRef}
       data-canvas-container
       data-canvas-panel-id={panelId}
+      data-filedrop="canvas"
+      data-filedrop-id={panelId}
       className="relative w-full h-full overflow-hidden bg-canvas-bg"
       style={{ cursor: idleCursor }}
       onMouseDown={handleMouseDown}

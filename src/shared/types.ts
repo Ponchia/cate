@@ -532,6 +532,7 @@ export type ShortcutAction =
   | 'closePanel'
   | 'toggleSidebar'
   | 'toggleFileExplorer'
+  | 'toggleSearch'
   | 'toggleMinimap'
   | 'nodeSwitcher'
   | 'commandPalette'
@@ -576,6 +577,7 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   'closePanel',
   'toggleSidebar',
   'toggleFileExplorer',
+  'toggleSearch',
   'toggleMinimap',
   'nodeSwitcher',
   'commandPalette',
@@ -611,6 +613,7 @@ export const SHORTCUT_DISPLAY_NAMES: Record<ShortcutAction, string> = {
   closePanel: 'Close Panel',
   toggleSidebar: 'Toggle Sidebar',
   toggleFileExplorer: 'Toggle File Explorer',
+  toggleSearch: 'Toggle Search',
   toggleMinimap: 'Toggle Minimap',
   nodeSwitcher: 'Panel Switcher',
   commandPalette: 'Command Palette',
@@ -646,6 +649,7 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, StoredShortcut> = {
   closePanel: storedShortcut('w', { command: true }),
   toggleSidebar: storedShortcut('b', { command: true }),
   toggleFileExplorer: storedShortcut('x', { command: true, shift: true }),
+  toggleSearch: storedShortcut('f', { command: true, shift: true }),
   toggleMinimap: storedShortcut('m', { command: true, shift: true }),
   nodeSwitcher: storedShortcut(' ', { control: true }),
   commandPalette: storedShortcut('k', { command: true }),
@@ -725,6 +729,86 @@ export interface FileSearchOptions {
   maxResults?: number
   /** Skip files larger than this many bytes for content search (default 1 MB). */
   maxFileBytes?: number
+}
+
+// -----------------------------------------------------------------------------
+// Content search (ripgrep-backed, VS Code-style Search view)
+// -----------------------------------------------------------------------------
+
+export interface SearchOptions {
+  /** The search query (literal text, or a regex when isRegex is set). */
+  query: string
+  /** Treat the query as a regular expression (ripgrep/Rust regex syntax). */
+  isRegex?: boolean
+  /** Case-sensitive match. When false, search is case-insensitive (VS Code default). */
+  matchCase?: boolean
+  /** Match whole words only. */
+  wholeWord?: boolean
+  /** Glob patterns to include (e.g. "src/**", "*.ts"). Empty = all files. */
+  includes?: string[]
+  /** Glob patterns to exclude (e.g. "*.lock", "dist/**"). */
+  excludes?: string[]
+  /** When true (default), respect .gitignore/.ignore and the project exclusion
+   *  set. When false, also search ignored and hidden files (ripgrep
+   *  --no-ignore --hidden), like VS Code's "Use Exclude Settings and Ignore
+   *  Files" toggle turned off. */
+  respectIgnore?: boolean
+  /** Hard cap on total matches before the search is truncated (default 5000). */
+  maxResults?: number
+}
+
+/** Character offset range of a single match within a line's text. */
+export interface SearchMatchRange {
+  /** 0-based character index where the match starts. */
+  start: number
+  /** 0-based character index where the match ends (exclusive). */
+  end: number
+}
+
+/** One rendered line of a search result — either a match line or context line. */
+export interface SearchResultLine {
+  /** 1-based line number in the file. */
+  line: number
+  /** The line text (trailing newline stripped, long lines truncated). */
+  text: string
+  /** Highlight ranges within `text`. Empty array means this is a context line. */
+  ranges: SearchMatchRange[]
+}
+
+/** All matches (and surrounding context) for a single file. */
+export interface SearchFileResult {
+  /** Absolute file path. */
+  path: string
+  /** Path relative to the search root, with forward slashes. */
+  relativePath: string
+  /** Match + context lines in ascending line order. */
+  lines: SearchResultLine[]
+  /** Number of individual matches (submatches) in this file. */
+  matchCount: number
+}
+
+/** A streamed batch of completed file results for an in-flight search. */
+export interface SearchResultBatch {
+  searchId: string
+  files: SearchFileResult[]
+}
+
+/** Final stats for a content search. */
+export interface SearchStats {
+  /** Total matches found (capped at maxResults). */
+  matches: number
+  /** Number of files with at least one match. */
+  files: number
+  /** True if the search stopped early at the result cap. */
+  truncated: boolean
+}
+
+/** Terminal event for a search — carries final stats and any engine error. */
+export interface SearchDoneEvent {
+  searchId: string
+  stats: SearchStats
+  /** Set when the search failed (e.g. invalid regex); results are then empty. */
+  error?: string
 }
 
 // -----------------------------------------------------------------------------

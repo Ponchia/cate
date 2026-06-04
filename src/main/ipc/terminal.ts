@@ -31,7 +31,6 @@ import { sendToWindow, windowFromEvent } from '../windowRegistry'
 import { countTerminalData } from '../perf/perfMonitor'
 import { parseLocator, type CompanionId } from '../companion/locator'
 import { companions } from '../companion/companionManager'
-import { localProcessHost } from '../companion/localProcessHost'
 import type { Companion } from '../companion/types'
 
 // Set true during app shutdown so PTY data/exit callbacks no-op instead of
@@ -121,7 +120,7 @@ function cleanupTerminal(id: string): void {
 }
 
 async function spawnTerminal(
-  options: { cols: number; rows: number; cwd?: string; shell?: string },
+  options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string },
   ownerWindowId: number,
 ): Promise<string> {
   const { companionId, path: cwdPath } = parseLocator(options.cwd ?? '')
@@ -130,8 +129,9 @@ async function spawnTerminal(
   // Resolve the cwd through the companion: the local one validates against its
   // allowed roots, the remote one trusts the locator path (its daemon validates).
   // An empty cwd is defaulted to the host's home dir inside the ProcessHost, so
-  // there's nothing host-specific to decide here.
-  const cwd = options.cwd ? companion.validateCwd(cwdPath) : ''
+  // there's nothing host-specific to decide here. The owning workspace id scopes
+  // validation to that workspace's roots when supplied.
+  const cwd = options.cwd ? companion.validateCwd(cwdPath, ownerWindowId, options.workspaceId) : ''
 
   // Per-terminal output coalescing (16ms) → owner window. Owner is read at flush
   // time so a cross-window transfer reroutes in-flight output.
@@ -264,14 +264,16 @@ export function registerHandlers(): void {
 }
 
 /**
- * Kill all LOCAL PTY process groups on app quit (remote daemons are torn down
- * by companions.disposeAll). Must run while the JS env is alive so node-pty's
- * exit callback doesn't fire into a torn-down context.
+ * Tear down all terminals on app quit. Local terminals now live in the local
+ * companion daemon subprocess, so disposing the companion connections sends each
+ * daemon SIGTERM and closes its stdin — its ProcessHost then group-kills its ptys
+ * (reaping dev servers/watchers) and exits. Remote daemons are torn down the same
+ * way. Fire-and-forget: quit must not block on a remote socket.
  */
 export function killAllTerminals(): void {
   shuttingDown = true
   disposeAllLoggers()
-  localProcessHost.killAll()
+  void companions.disposeAll()
   terminalOwners.clear()
   terminalCompanion.clear()
 }

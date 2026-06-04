@@ -7,7 +7,7 @@
 // =============================================================================
 
 import type { PanelState } from '../../shared/types'
-import { terminalRegistry } from './terminalRegistry'
+import { terminalRegistry } from './terminal/terminalRegistry'
 import { useStatusStore } from '../stores/statusStore'
 
 interface RunningTerminal {

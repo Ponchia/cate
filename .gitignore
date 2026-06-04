@@ -1,5 +1,6 @@
 node_modules/
 bun.lock
+pnpm-lock.yaml
 dist/
 dist-companion/
 .DS_Store
@@ -9,6 +10,11 @@ dist-companion/
 # Build artifacts
 build/
 !build/entitlements.mac.plist
+# src/companion/build/ is hand-authored source (the companion esbuild config used
+# by `build:companion` and the tarball build), NOT a build-output dir — re-include
+# it so a clean checkout / CI can build the companion daemon + its ripgrep.
+!src/companion/build/
+!src/companion/build/**
 release/
 test-results/
 
@@ -20,3 +26,9 @@ test-results/
 
 # Local logo scratch dir
 _logos/
+
+# Temp dirs from companion daemon tests (deleted on teardown; ignored here in
+# case a run is interrupted before afterAll fires)
+cate-local-ws-*/
+cate-local-install-*/
+cate-daemon-ws-*/

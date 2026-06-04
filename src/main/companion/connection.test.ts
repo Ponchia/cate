@@ -1,13 +1,18 @@
 import os from 'node:os'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { CompanionManager } from './companionManager'
-import { localCompanion } from './LocalCompanion'
 import { LOCAL_COMPANION_ID } from './locator'
+import { buildDaemonCompanion } from '../../companion/capabilities'
 import { RpcServer, type RpcServerOptions } from '../../companion/rpcServer'
+import type { Companion } from './types'
 import type { CompanionChannel, CompanionTransport } from './transports/transport'
 
+// The real daemon capability set, hosted by the fake transport's in-process
+// RpcServer — same api the local/remote workspace daemons serve.
+const daemonApi: Companion = buildDaemonCompanion({ id: 'srv_test' }).companion
+
 // A transport whose "daemon" is an in-process RpcServer backed by the real
-// LocalCompanion — exercises the full connect/handshake/version lifecycle in
+// daemon capabilities — exercises the full connect/handshake/version lifecycle in
 // CompanionManager without a real host. The server is started only once a data
 // listener attaches, so the hello frame is never dropped.
 class FakeTransport implements CompanionTransport {
@@ -39,7 +44,7 @@ class FakeTransport implements CompanionTransport {
   }
 
   async launch(): Promise<CompanionChannel> {
-    const server = new RpcServer(localCompanion, (line) => this.dataCb?.(line), this.serverOpts)
+    const server = new RpcServer(daemonApi, (line) => this.dataCb?.(line), this.serverOpts)
     this.server = server
     return {
       write: (line) => server.handleChunk(line),
@@ -121,6 +126,20 @@ describe('CompanionManager connection lifecycle', () => {
       mgr.connect('wsl_test', transport),
     ])
     expect(a).toBe(b)
+  })
+
+  test('connect registers synchronously (a deferred) and resolves to the real companion', () => {
+    // The local and remote paths share this: connect() registers a companion the
+    // instant it is called (so resolve() works / the window paints before the
+    // daemon is online), while only reporting `isConnected` once fully connected.
+    const mgr = new CompanionManager()
+    const p = mgr.connect('wsl_test', new FakeTransport())
+    expect(mgr.has('wsl_test')).toBe(true) // registered synchronously…
+    expect(mgr.isConnected('wsl_test')).toBe(false) // …but not yet fully connected
+    return p.then((companion) => {
+      expect(mgr.isConnected('wsl_test')).toBe(true)
+      expect(mgr.resolve('wsl_test')).toBe(companion) // deferred replaced by the real one
+    })
   })
 
   test('a version mismatch reports missing, rejects, and disposes (no auto-upgrade)', async () => {
@@ -216,9 +235,102 @@ describe('CompanionManager connection lifecycle', () => {
     expect(mgr.has('wsl_test')).toBe(false)
   })
 
-  test('the local companion is always present and never connects over a transport', () => {
+  test('the local companion is NOT registered until ensureLocalCompanion brings it online', () => {
     const mgr = new CompanionManager()
-    expect(mgr.resolve(LOCAL_COMPANION_ID)).toBe(localCompanion)
-    expect(() => mgr.connect(LOCAL_COMPANION_ID, new FakeTransport())).toThrow(/does not connect/)
+    // The LOCAL workspace runs as the daemon subprocess, provisioned by
+    // ensureLocalCompanion. Until then it's unregistered and resolve() throws.
+    expect(mgr.has(LOCAL_COMPANION_ID)).toBe(false)
+    expect(() => mgr.resolve(LOCAL_COMPANION_ID)).toThrow(/No companion registered/)
+  })
+
+  test('the LOCAL companion connects over a transport like any other (no special guard)', async () => {
+    const mgr = new CompanionManager()
+    const companion = await mgr.connect(LOCAL_COMPANION_ID, new FakeTransport(), { install: true })
+    expect(companion.id).toBe(LOCAL_COMPANION_ID)
+    expect(mgr.resolve(LOCAL_COMPANION_ID)).toBe(companion)
+  })
+
+  test('localStatus() tracks the last LOCAL phase and ignores remote connects', async () => {
+    // Seeds the renderer's startup loading blocker, so it must be readable before
+    // any connect and reflect LOCAL transitions only.
+    const mgr = new CompanionManager()
+    expect(mgr.localStatus().phase).toBe('connecting') // default: LOCAL always comes up at launch
+    await mgr.connect('wsl_remote', new FakeTransport())
+    expect(mgr.localStatus().phase).toBe('connecting') // a remote connect doesn't touch it
+    await mgr.connect(LOCAL_COMPANION_ID, new FakeTransport(), { install: true })
+    expect(mgr.localStatus().phase).toBe('connected')
+  })
+})
+
+// FIX [4]: a LOCAL daemon crash auto-reconnects (the whole workspace is dead
+// otherwise), while REMOTE drops stay the user's to reconnect.
+describe('CompanionManager LOCAL auto-reconnect (FIX 4)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  /** Prime localOpts the way ensureLocalCompanion would, then connect LOCAL over
+   *  a fake transport so we have a live connection to drop. */
+  async function connectLocal(mgr: CompanionManager): Promise<FakeTransport> {
+    ;(mgr as unknown as { localOpts: unknown }).localOpts = { root: os.homedir() }
+    const transport = new FakeTransport()
+    await mgr.connect(LOCAL_COMPANION_ID, transport, { install: true })
+    return transport
+  }
+
+  test('a LOCAL crash schedules a reconnect (connecting, not disconnected)', async () => {
+    vi.useFakeTimers()
+    const mgr = new CompanionManager()
+    const transport = await connectLocal(mgr)
+    // Spy on the relaunch entry point. Stub the body so the test doesn't depend on
+    // whether a real tarball happens to exist in the env — we only assert the
+    // reconnect FIRES with the original opts.
+    const ensureSpy = vi
+      .spyOn(mgr, 'ensureLocalCompanion')
+      .mockResolvedValue(undefined)
+    const seen: string[] = []
+    mgr.setStatusListener((_id, state) => seen.push(state))
+
+    transport.triggerClose() // daemon crash on the live connection
+    // Reconnect path: emits 'connecting' immediately, NOT 'disconnected'.
+    expect(seen).toContain('connecting')
+    expect(seen).not.toContain('disconnected')
+    expect(mgr.has(LOCAL_COMPANION_ID)).toBe(false) // dropped, awaiting relaunch
+
+    // A second close while a reconnect is pending must NOT stack a second timer.
+    seen.length = 0
+    transport.triggerClose()
+    expect(seen).not.toContain('connecting')
+
+    // Let the backoff fire: ensureLocalCompanion re-runs once with the same opts.
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(ensureSpy).toHaveBeenCalledTimes(1)
+    expect(ensureSpy).toHaveBeenCalledWith({ root: os.homedir() })
+  })
+
+  test('an intentional LOCAL teardown does NOT reconnect', async () => {
+    vi.useFakeTimers()
+    const mgr = new CompanionManager()
+    await connectLocal(mgr)
+    const seen: string[] = []
+    mgr.setStatusListener((_id, state) => seen.push(state))
+
+    await mgr.disposeConnection(LOCAL_COMPANION_ID)
+    // disposeConnection removes the connection first, so the late close event is
+    // ignored — no reconnect 'connecting' is emitted.
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(seen).not.toContain('connecting')
+  })
+
+  test('a REMOTE drop still reports disconnected (no reconnect)', async () => {
+    vi.useFakeTimers()
+    const mgr = new CompanionManager()
+    const transport = new FakeTransport()
+    await mgr.connect('wsl_remote', transport)
+    const seen: string[] = []
+    mgr.setStatusListener((_id, state) => seen.push(state))
+
+    transport.triggerClose()
+    expect(seen).toContain('disconnected')
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(seen).not.toContain('connecting') // REMOTE never auto-reconnects
   })
 })

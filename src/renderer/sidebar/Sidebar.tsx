@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { ProjectList } from './ProjectList'
 import { FileExplorer } from './FileExplorer'
+import { SearchView } from './SearchView'
 import { SourceControlView } from './SourceControlView'
 import { ParallelWorkTab } from './ParallelWorkTab'
 import { useAppStore } from '../stores/appStore'
@@ -25,6 +26,7 @@ import pkg from '../../../package.json'
 const VIEW_META: Record<SidebarView, { icon: PhosphorIcon; title: string }> = {
   workspaces: { icon: Stack, title: 'Workspaces' },
   explorer: { icon: FolderOpen, title: 'Explorer' },
+  search: { icon: MagnifyingGlass, title: 'Search' },
   git: { icon: GitBranch, title: 'Source Control' },
   parallelWork: { icon: ArrowsSplit, title: 'Parallel Work' },
 }
@@ -63,6 +65,8 @@ const SidebarViewContent: React.FC<{ view: SidebarView; rootPath: string }> = ({
           </button>
         </div>
       )
+    case 'search':
+      return <SearchView rootPath={rootPath} workspaceId={selectedWorkspaceId} />
     case 'git':
       return <SourceControlView rootPath={rootPath} />
     case 'parallelWork':
@@ -314,14 +318,8 @@ const ActivityBarSidebar: React.FC<ActivityBarSidebarProps> = ({ side, defaultWi
       </div>
       {side === 'left' && (
         <div className="mt-auto flex flex-col items-center pb-1 w-full">
-          <button
-            type="button"
-            className="flex items-center justify-center w-8 h-8 my-1 rounded text-muted hover:text-secondary transition-colors"
-            onClick={() => useUIStore.getState().setShowCommandPalette(true)}
-            title="Search (⌘K)"
-          >
-            <MagnifyingGlass size={16} className="pointer-events-none" />
-          </button>
+          {/* The standalone ⌘K search icon was removed now that the dedicated
+              Search view exists; ⌘K still opens the command palette via keyboard. */}
           <button
             type="button"
             className="flex items-center justify-center w-8 h-8 my-1 rounded text-muted hover:text-secondary transition-colors"

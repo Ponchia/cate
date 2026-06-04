@@ -6,10 +6,36 @@
 // the UI for setup is brittle; reaching into stores is reliable.
 
 import { useAppStore } from '../stores/appStore'
+import { useUIStore, type SidebarView } from '../stores/uiStore'
 import { getOrCreateCanvasStoreForPanel } from '../stores/canvasStore'
 import { useDragStore } from '../drag/store'
-import { terminalRegistry } from './terminalRegistry'
+import { useSearchStore } from '../stores/searchStore'
+import { getLastReveal } from './editor/editorReveal'
+import { applyTheme } from './themeManager'
+import { BUILT_IN_THEMES } from '../../shared/themes'
+import { terminalRegistry } from './terminal/terminalRegistry'
 import type { Point } from '../../shared/types'
+
+/** Serializable snapshot of the search store for e2e assertions. */
+export interface SearchSnapshot {
+  query: string
+  isRegex: boolean
+  matchCase: boolean
+  wholeWord: boolean
+  includes: string
+  excludes: string
+  respectIgnore: boolean
+  optionsExpanded: boolean
+  status: string
+  searchId: string | null
+  truncated: boolean
+  error: string | null
+  fileCount: number
+  filePaths: string[]
+  totalMatches: number
+  dismissedFiles: number
+  dismissedLines: number
+}
 
 declare global {
   interface Window {
@@ -29,6 +55,21 @@ declare global {
       terminalPtyId(nodeId: string): string | null
       /** Write raw data to a terminal node's PTY (e.g. a flooding command). */
       writeTerminal(nodeId: string, data: string): boolean
+      /** Point the selected workspace at a real directory (registers it as an
+       *  allowed root) so content search has files to scan. */
+      setWorkspaceRoot(rootPath: string): Promise<boolean>
+      /** Activate a sidebar view (e.g. 'search') on the left activity bar. */
+      openSidebarView(view: SidebarView): void
+      /** File paths of currently-open editor panels (for open-at-match asserts). */
+      editorPaths(): string[]
+      /** Serializable snapshot of the search store (query, options, results). */
+      getSearchSnapshot(): SearchSnapshot
+      /** The most recent editor reveal request (panelId + line/column), or null. */
+      lastEditorReveal(): { panelId: string; line: number; column?: number } | null
+      /** Apply a theme by id (for cross-theme visual checks). */
+      setTheme(id: string): void
+      /** All available theme ids + their light/dark type. */
+      themeIds(): { id: string; type: string }[]
       dragSnapshot(): {
         isDragging: boolean
         sourceKind: string | null
@@ -143,6 +184,53 @@ export function installE2EHarness(): void {
     return true
   }
 
+  const setWorkspaceRoot = (rootPath: string): Promise<boolean> => {
+    const wsId = useAppStore.getState().selectedWorkspaceId
+    return useAppStore.getState().setWorkspaceRootPath(wsId, rootPath)
+  }
+
+  const openSidebarView = (view: SidebarView): void => {
+    useUIStore.getState().setActiveLeftSidebarView(view)
+  }
+
+  const editorPaths = (): string[] => {
+    const s = useAppStore.getState()
+    const ws = s.workspaces.find((w) => w.id === s.selectedWorkspaceId)
+    if (!ws) return []
+    return Object.values(ws.panels)
+      .filter((p) => p.type === 'editor' && !!p.filePath)
+      .map((p) => p.filePath as string)
+  }
+
+  const getSearchSnapshot = (): SearchSnapshot => {
+    const s = useSearchStore.getState()
+    return {
+      query: s.query,
+      isRegex: s.isRegex,
+      matchCase: s.matchCase,
+      wholeWord: s.wholeWord,
+      includes: s.includes,
+      excludes: s.excludes,
+      respectIgnore: s.respectIgnore,
+      optionsExpanded: s.optionsExpanded,
+      status: s.status,
+      searchId: s.currentSearchId,
+      truncated: s.truncated,
+      error: s.error,
+      fileCount: s.files.length,
+      filePaths: s.files.map((f) => f.relativePath),
+      totalMatches: s.files.reduce((n, f) => n + f.matchCount, 0),
+      dismissedFiles: s.dismissedFiles.size,
+      dismissedLines: s.dismissedLines.size,
+    }
+  }
+
+  const lastEditorReveal = () => getLastReveal()
+
+  const setTheme = (id: string): void => applyTheme(id)
+  const themeIds = (): { id: string; type: string }[] =>
+    BUILT_IN_THEMES.map((t) => ({ id: t.id, type: t.type }))
+
   const dragSnapshot = () => {
     const s = useDragStore.getState()
     return {
@@ -168,6 +256,13 @@ export function installE2EHarness(): void {
     selectWorkspace,
     terminalPtyId,
     writeTerminal,
+    setWorkspaceRoot,
+    openSidebarView,
+    editorPaths,
+    getSearchSnapshot,
+    lastEditorReveal,
+    setTheme,
+    themeIds,
     dragSnapshot,
   }
 }

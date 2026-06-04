@@ -6,9 +6,8 @@
 //
 // Capability types are imported type-only from the main process module so the
 // companion bundle carries no runtime dependency on main (the import is erased
-// by esbuild). The hosted object is a plain Companion — locally that is the
-// in-process LocalCompanion (used by the loopback test); in a real deployment
-// it is an electron-free capability set built inside the daemon (see index.ts).
+// by esbuild). The hosted object is a plain Companion — the electron-free
+// capability set built inside the daemon (see index.ts / buildDaemonCompanion).
 // =============================================================================
 
 import { FrameDecoder, serializeFrame } from './jsonl'
@@ -18,9 +17,11 @@ import {
   type ReqFrame,
   type HelloFrame,
   type FsWatchEvtPayload,
+  type SearchEvtPayload,
 } from './protocol'
 import { COMPANION_VERSION } from './version'
 import type { Companion } from '../main/companion/types'
+import type { SearchOptions } from '../shared/types'
 
 export interface RpcServerOptions {
   /** Override hello fields (tests / version-skew simulation). */
@@ -30,6 +31,7 @@ export interface RpcServerOptions {
 export class RpcServer {
   private readonly decoder: FrameDecoder
   private readonly watchUnsubs = new Map<string, () => void>()
+  private readonly searchCancels = new Map<string, () => void>()
   private streamSeq = 0
 
   constructor(
@@ -75,6 +77,10 @@ export class RpcServer {
       try { unsub() } catch { /* ignore */ }
     }
     this.watchUnsubs.clear()
+    for (const cancel of this.searchCancels.values()) {
+      try { cancel() } catch { /* ignore */ }
+    }
+    this.searchCancels.clear()
   }
 
   private async dispatch(req: ReqFrame): Promise<void> {
@@ -103,10 +109,20 @@ export class RpcServer {
         return 'pong'
 
       // --- validation ---
-      case Methods.validatePath: return api.validatePath(s(0), n(1))
-      case Methods.validatePathStrict: return api.validatePathStrict(s(0), n(1))
-      case Methods.validatePathForCreation: return api.validatePathForCreation(s(0), n(1))
-      case Methods.validateCwd: return api.validateCwd(s(0), n(1))
+      // scopeId is the trailing optional positional arg; inline the cast since
+      // the value may be undefined (older clients omit it).
+      case Methods.validatePath: return api.validatePath(s(0), n(1), p[2] as string | undefined)
+      case Methods.validatePathStrict: return api.validatePathStrict(s(0), n(1), p[2] as string | undefined)
+      case Methods.validatePathForCreation: return api.validatePathForCreation(s(0), n(1), p[2] as string | undefined)
+      case Methods.validateCwd: return api.validateCwd(s(0), n(1), p[2] as string | undefined)
+      case Methods.addAllowedRoot: return api.addAllowedRoot(s(0), p[1] as string | undefined)
+      case Methods.removeAllowedRoot: return api.removeAllowedRoot(s(0), p[1] as string | undefined)
+      case Methods.setExclusions: return api.setExclusions(p[0] as string[])
+      case Methods.setIdleSuspend: return api.setIdleSuspend(p[0] as boolean)
+      case Methods.grantFileAccess: return api.grantFileAccess(s(0), n(1) as number)
+      case Methods.registerScopedWriteAllowance: return api.registerScopedWriteAllowance(s(0), n(1) as number)
+      case Methods.clearFileGrantsForWindow: return api.clearFileGrantsForWindow(n(0) as number)
+      case Methods.clearScopedWriteAllowancesForWindow: return api.clearScopedWriteAllowancesForWindow(n(0) as number)
 
       // --- file ---
       case Methods.fileReadFile: return api.file.readFile(s(0))
@@ -125,6 +141,8 @@ export class RpcServer {
         // JSON turns a trailing `undefined` arg into `null`; restore undefined
         // so search's default-parameter ({}) applies.
         return api.file.search(s(0), s(1), (p[2] ?? undefined) as never)
+      case Methods.fileSearchContentStart: return this.startSearch(s(0), p[1] as SearchOptions)
+      case Methods.fileSearchContentStop: return this.stopSearch(s(0))
       case Methods.fileWatchStart: return this.startWatch(s(0))
       case Methods.fileWatchStop: return this.stopWatch(s(0))
 
@@ -191,6 +209,30 @@ export class RpcServer {
 
       default:
         throw new Error(`Unknown companion method: ${method}`)
+    }
+  }
+
+  private startSearch(root: string, opts: SearchOptions): string {
+    const streamId = `s${++this.streamSeq}`
+    const handle = this.api.file.searchContent(root, opts, {
+      onBatch: (files) => {
+        const payload: SearchEvtPayload = { kind: 'batch', files }
+        this.write(serializeFrame({ t: 'evt', streamId, payload }))
+      },
+      onDone: (stats, error) => {
+        const payload: SearchEvtPayload = { kind: 'done', stats, error }
+        this.write(serializeFrame({ t: 'evt', streamId, payload }))
+        this.searchCancels.delete(streamId)
+      },
+    })
+    this.searchCancels.set(streamId, handle.cancel)
+    return streamId
+  }
+
+  private stopSearch(streamId: string): void {
+    const cancel = this.searchCancels.get(streamId)
+    if (cancel) {
+      try { cancel() } finally { this.searchCancels.delete(streamId) }
     }
   }
 

@@ -21,7 +21,7 @@ import {
   setActiveCanvasPanelId,
 } from '../stores/appStore'
 import { useUIStore } from '../stores/uiStore'
-import { openFileAsPanel } from './fileRouting'
+import { openFileAsPanel } from './fs/fileRouting'
 import log from './logger'
 
 interface LayoutNode {

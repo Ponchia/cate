@@ -1,23 +1,20 @@
 // =============================================================================
-// Companion capability interfaces — the contract every backend implements,
-// whether it runs in-process (LocalCompanion, today's code) or behind a
-// transport (RemoteCompanion, over stdio JSON-RPC to a server/WSL daemon).
+// Companion capability interfaces — the contract every backend implements. Every
+// host (local machine, server, WSL) runs the standalone companion daemon and is
+// reached as a RemoteCompanion over stdio JSON-RPC; there is no in-process
+// implementation.
 //
 // These interfaces are the seam the IPC handlers in terminal.ts / filesystem.ts
 // / git.ts delegate to. They are intentionally shaped so the SAME capability
-// implementation can run inside the Electron main process and inside the
-// standalone companion bundle:
+// implementation can run inside the standalone companion bundle:
 //   - methods are async and take/return JSON-serializable values
 //   - streaming (PTY output, fs-watch events) is delivered via callbacks, so
 //     the IPC layer keeps ownership of WHERE a stream is forwarded (e.g. which
 //     window a terminal currently belongs to — see terminalOwners in
 //     terminal.ts, which must stay in the IPC layer for cross-window transfer).
-//
-// Phase 0: these are declarations only — nothing imports them yet. Phase 1
-// implements them with a LocalCompanion that wraps the existing functions.
 // =============================================================================
 
-import type { FileTreeNode, FileSearchResult, FileSearchOptions, TerminalActivity } from '../../shared/types'
+import type { FileTreeNode, FileSearchResult, FileSearchOptions, SearchOptions, SearchFileResult, SearchStats, TerminalActivity } from '../../shared/types'
 import type { CompanionId } from './locator'
 
 // ---------------------------------------------------------------------------
@@ -174,6 +171,23 @@ export interface FileHost {
   ): Promise<{ created: string[]; failed: number }>
   search(safeRoot: string, query: string, opts?: FileSearchOptions): Promise<FileSearchResult[]>
   /**
+   * Streaming ripgrep content search (the VS Code-style Search view). Runs on
+   * whichever host owns the files — the local machine spawns its bundled
+   * ripgrep, a remote daemon spawns the ripgrep shipped in its tarball — so a
+   * remote workspace is searched on the remote, not the client. `onBatch` fires
+   * per completed-file batch with host-absolute paths (the IPC layer re-encodes
+   * them as companion locators); `onDone` fires exactly once. The returned
+   * `cancel()` kills the search. Mirrors `watch`'s synchronous-handle shape.
+   */
+  searchContent(
+    safeRoot: string,
+    opts: SearchOptions,
+    callbacks: {
+      onBatch: (files: SearchFileResult[]) => void
+      onDone: (stats: SearchStats, error?: string) => void
+    },
+  ): { cancel: () => void }
+  /**
    * Subscribe to filesystem changes under `prefix`. Returns an unsubscribe fn.
    * Matches the in-process `subscribeFsChanges` semantics (one call per event,
    * no coalescing — the caller debounces). `type` carries the real change kind
@@ -324,9 +338,9 @@ export interface VcsHost {
 
 // ---------------------------------------------------------------------------
 // Companion — the resolved backend for one location. Path validation is a
-// method (not a free function) so each companion enforces its own root set:
-// LocalCompanion delegates to pathValidation.ts unchanged; a RemoteCompanion
-// validates against the daemon's roots, authoritatively on the daemon side.
+// method (not a free function) so each companion enforces its own root set: a
+// RemoteCompanion validates against its daemon's roots, authoritatively on the
+// daemon side.
 // ---------------------------------------------------------------------------
 
 export interface Companion {
@@ -335,12 +349,43 @@ export interface Companion {
   readonly agent: AgentHost
   readonly file: FileHost
   readonly vcs: VcsHost
-  /** Lexical + allowed-root check; returns the normalized path. */
-  validatePath(filePath: string, ownerWindowId?: number): string
+  /** Lexical + allowed-root check; returns the normalized path. The optional
+   *  scopeId restricts the check to one workspace's roots (per-workspace
+   *  isolation); when omitted, validation falls back to the union of all roots. */
+  validatePath(filePath: string, ownerWindowId?: number, scopeId?: string): string
   /** Strict (symlink-resolving) read validation; returns the real path. */
-  validatePathStrict(filePath: string, ownerWindowId?: number): Promise<string>
+  validatePathStrict(filePath: string, ownerWindowId?: number, scopeId?: string): Promise<string>
   /** Validate a target whose parent must exist; returns the safe path. */
-  validatePathForCreation(filePath: string, ownerWindowId?: number): Promise<string>
+  validatePathForCreation(filePath: string, ownerWindowId?: number, scopeId?: string): Promise<string>
   /** Directory validation for cwd parameters. */
-  validateCwd(cwd: string, ownerWindowId?: number): string
+  validateCwd(cwd: string, ownerWindowId?: number, scopeId?: string): string
+  /** Add/remove a path from this companion's allowed-roots set. For the local
+   *  daemon (and remote daemons), workspace roots are forwarded here so the
+   *  daemon's authoritative path checks allow them. The optional scopeId keys the
+   *  root under one workspace's scope (per-workspace isolation). */
+  addAllowedRoot(root: string, scopeId?: string): Promise<void>
+  removeAllowedRoot(root: string, scopeId?: string): Promise<void>
+  /** Replace this companion's readDir/search exclusion basenames live (the
+   *  daemon's mirror of the fileExclusions setting). For the LOCAL daemon the
+   *  main process forwards this when the setting changes, so the file tree /
+   *  file-name search hide the new set without an app restart. */
+  setExclusions(names: string[]): Promise<void>
+  /** Toggle POSIX idle-suspend of backgrounded terminals live (the daemon's
+   *  mirror of autoSuspendIdleTerminals). Forwarded to the LOCAL daemon when the
+   *  setting changes, so toggling takes effect without an app restart. */
+  setIdleSuspend(enabled: boolean): Promise<void>
+  /** Forward a persistent per-window file grant (Save-As / open dialogs /
+   *  restored grants) to this companion, so its authoritative path checks allow
+   *  the granted out-of-root file. Mirrors pathValidation.grantFileAccess. */
+  grantFileAccess(filePath: string, ownerWindowId: number): Promise<void>
+  /** Forward a one-shot scoped write allowance to this companion. Mirrors
+   *  pathValidation.registerScopedWriteAllowance. */
+  registerScopedWriteAllowance(safePath: string, ownerWindowId: number): Promise<void>
+  /** Drop all persistent per-window file grants for a closing window, so the
+   *  daemon doesn't accumulate stale grants. Mirrors
+   *  pathValidation.clearFileGrantsForWindow. */
+  clearFileGrantsForWindow(windowId: number): Promise<void>
+  /** Drop all one-shot scoped write allowances for a closing window. Mirrors
+   *  pathValidation.clearScopedWriteAllowancesForWindow. */
+  clearScopedWriteAllowancesForWindow(windowId: number): Promise<void>
 }

@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 // Heavy renderer modules whose import-time side effects explode under jsdom,
 // pulled in transitively via the canvas/app stores. Mirrors the other hook tests.
-vi.mock('../lib/terminalRegistry', () => ({
+vi.mock('../lib/terminal/terminalRegistry', () => ({
   terminalRegistry: { release: vi.fn(), setPendingTransfer: vi.fn() },
 }))
 vi.mock('../lib/logger', () => ({
@@ -39,7 +39,7 @@ import {
   unregisterCanvasOps,
   setActiveCanvasPanelId,
 } from '../stores/appStore'
-import { createCanvasOps } from '../lib/canvasBridge'
+import { createCanvasOps } from '../lib/canvas/canvasBridge'
 
 // Tell React this is an act() environment (silences the act warning + flushes effects).
 ;(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true

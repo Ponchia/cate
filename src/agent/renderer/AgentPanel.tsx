@@ -31,6 +31,7 @@ import type { PanelProps } from '../../renderer/panels/types'
 import { useAppStore } from '../../renderer/stores/appStore'
 import { useStatusStore } from '../../renderer/stores/statusStore'
 import { useAgentStore } from './agentStore'
+import { buildFileMentions, type LineRef } from './agentDrop'
 import { ChatThread } from './ChatThread'
 import { AgentSidebar } from './AgentSidebar'
 import { ChatInput } from './AgentChatInput'
@@ -772,6 +773,18 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
     if (any) e.preventDefault()
   }, [handleAddImage])
 
+  // Whole-panel file drop. The drop indicator is rendered globally by
+  // <FileDropOverlay/> (the root is marked data-filedrop="agent"); the chat
+  // input also forwards drops here and handleDrop stops propagation so a drop
+  // never fires twice.
+  const handlePanelDragOver = useCallback((e: React.DragEvent) => {
+    const t = e.dataTransfer?.types
+    if (t && (t.includes('application/cate-files') || t.includes('application/cate-file') || t.includes('Files'))) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+    }
+  }, [])
+
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     // Files dragged from Cate's own Explorer come through as a JSON payload of
     // absolute paths under `application/cate-files`. Insert them into the draft
@@ -779,10 +792,18 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
     const cateRaw = e.dataTransfer?.getData('application/cate-files')
     if (cateRaw) {
       e.preventDefault()
+      e.stopPropagation()
       try {
         const paths = JSON.parse(cateRaw) as string[]
         if (Array.isArray(paths) && paths.length > 0) {
-          const mentions = paths.map((p) => `@${p}`).join(' ')
+          // A search-line drag carries the line number — mention it as
+          // @path:line so the agent gets the exact location.
+          let lineRef: LineRef | null = null
+          const lineRaw = e.dataTransfer.getData('application/cate-file-line')
+          if (lineRaw) {
+            try { lineRef = JSON.parse(lineRaw) } catch { /* ignore */ }
+          }
+          const mentions = buildFileMentions(paths, lineRef)
           setDraft((prev) => (prev ? `${prev}${prev.endsWith(' ') ? '' : ' '}${mentions} ` : `${mentions} `))
         }
       } catch { /* ignore malformed payload */ }
@@ -790,6 +811,7 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
     }
     if (!e.dataTransfer?.files?.length) return
     e.preventDefault()
+    e.stopPropagation()
     for (const file of Array.from(e.dataTransfer.files)) {
       const img = await readFileAsImage(file)
       if (img) handleAddImage(img)
@@ -801,7 +823,12 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="w-full h-full flex bg-surface-4 text-primary min-h-0 overflow-hidden">
+    <div
+      className="relative w-full h-full flex bg-surface-4 text-primary min-h-0 overflow-hidden"
+      data-filedrop="agent"
+      onDragOver={handlePanelDragOver}
+      onDrop={handleDrop}
+    >
       {sidebarOpen && (
         <AgentSidebar
           chats={filteredChats}

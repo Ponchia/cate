@@ -5,13 +5,15 @@
 
 import React, { useEffect, useRef, useState, useCallback, Suspense } from 'react'
 import log from './lib/logger'
-import { useAppStore, useSelectedWorkspace, setupWorkspaceSync } from './stores/appStore'
+import { useAppStore, useSelectedWorkspace, setupWorkspaceSync, getWorkspaceCanvasStore } from './stores/appStore'
 import { useCanvasStore, getOrCreateCanvasStoreForPanel } from './stores/canvasStore'
 import { CanvasStoreProvider } from './stores/CanvasStoreContext'
-import { setCanvasOperations } from './stores/appStore'
-import { createCanvasOps } from './lib/canvasBridge'
+import { DockStoreProvider } from './stores/DockStoreContext'
+import { getOrCreateWorkspaceDockStore } from './stores/workspaceStores'
+import { useStore } from 'zustand'
 import { useSettingsStore } from './stores/settingsStore'
 import { useUIStore } from './stores/uiStore'
+import { useFileDropTracker, FileDropOverlay } from './drag/fileDropTarget'
 import { useUpdateStore, type UpdateStatus } from './stores/updateStore'
 import { useShortcuts } from './hooks/useShortcuts'
 import { useProcessMonitor } from './hooks/useProcessMonitor'
@@ -19,7 +21,7 @@ import {
   startAgentScreenDetector,
   stopAgentScreenDetector,
   applyRemoteAgentScreenState,
-} from './lib/agentScreenDetector'
+} from './lib/agent/agentScreenDetector'
 import type { AgentState } from '../shared/types'
 import { Sidebar, RightSidebar } from './sidebar/Sidebar'
 import { renderPanelComponent, PANEL_REGISTRY } from './panels/registry'
@@ -34,7 +36,7 @@ import { WelcomeDialog } from './dialogs/WelcomeDialog'
 import { OnboardingTour } from './onboarding/OnboardingTour'
 import PerfHud from './ui/PerfHud'
 import { initPerfClient } from './lib/perf/perfClient'
-import { loadSession, restoreSession, restoreMultiWorkspaceSession, restoreDetachedWindows, setupAutoSave, saveSession } from './lib/session'
+import { loadSession, restoreSession, restoreMultiWorkspaceSession, restoreDetachedWindows, setupAutoSave, saveSession } from './lib/workspace/session'
 import type { MultiWorkspaceSession } from '../shared/types'
 import { useDockStore } from './stores/dockStore'
 import MainWindowShell from './shells/MainWindowShell'
@@ -43,13 +45,13 @@ import DockWindowShell from './shells/DockWindowShell'
 import TitlebarStrip from './shells/TitlebarStrip'
 import { WindowTypeContext } from './stores/WindowTypeContext'
 import { setupCrossWindowDragListeners } from './drag'
-import { terminalRegistry } from './lib/terminalRegistry'
-import { applyCanvasChildPanels } from './lib/applyCanvasChildPanels'
+import { terminalRegistry } from './lib/terminal/terminalRegistry'
+import { applyCanvasChildPanels } from './lib/canvas/applyCanvasChildPanels'
 import { applyTheme } from './lib/themeManager'
 import { confirmCloseDirtyPanels } from './lib/confirmCloseDirty'
-import { confirmCloseCanvas } from './lib/confirmCloseCanvas'
+import { confirmCloseCanvas } from './lib/canvas/confirmCloseCanvas'
 import { confirmCloseRunningTerminals } from './lib/confirmCloseTerminal'
-import { isExternalFileDrag } from './lib/importExternalEntries'
+import { isExternalFileDrag } from './lib/fs/importExternalEntries'
 import pkg from '../../package.json'
 
 // -----------------------------------------------------------------------------
@@ -123,10 +125,23 @@ function MainApp() {
   // Guards against stacking reload-confirm dialogs when the detector re-fires.
   const reloadPromptOpenRef = useRef(false)
 
+  // Track the active file-drag drop target (canvas / dock / agent) for the
+  // single shared drop indicator (<FileDropOverlay/> below).
+  useFileDropTracker()
+
 
   // Store state
   const currentWorkspace = useSelectedWorkspace()
   const selectedWorkspaceId = useAppStore((s) => s.selectedWorkspaceId)
+  // The active workspace's OWN dock + canvas stores. The shell is keyed by
+  // selectedWorkspaceId so it remounts on switch and reads these — no shared
+  // store is ever swapped, so content can't bleed across workspaces. These
+  // re-resolve whenever MainApp re-renders (selection or `currentWorkspace`
+  // panel changes), so a freshly-created center canvas is picked up.
+  const activeDockStore = selectedWorkspaceId
+    ? getOrCreateWorkspaceDockStore(selectedWorkspaceId)
+    : useDockStore
+  const activeCanvasStore = getWorkspaceCanvasStore(selectedWorkspaceId) ?? useCanvasStore
   const showNodeSwitcher = useUIStore((s) => s.showNodeSwitcher)
   const showCommandPalette = useUIStore((s) => s.showCommandPalette)
 
@@ -201,7 +216,7 @@ function MainApp() {
       try {
         const choice = await window.electronAPI.confirmReloadWorkspace?.({ name: active.name })
         if (choice === 'reload') {
-          const { reloadActiveWorkspaceFromDisk } = await import('./lib/session')
+          const { reloadActiveWorkspaceFromDisk } = await import('./lib/workspace/session')
           await reloadActiveWorkspaceFromDisk()
         } else {
           // Declined — resume normal saving so the current canvas overwrites the
@@ -224,9 +239,6 @@ function MainApp() {
     const init = async () => {
       log.info('Initializing main window...')
 
-      // Wire canvas operations bridge before any workspace/panel creation
-      setCanvasOperations(createCanvasOps(useCanvasStore))
-
       await useSettingsStore.getState().loadSettings()
       log.info('Settings loaded')
 
@@ -239,10 +251,10 @@ function MainApp() {
       if (session) {
         if ((session as MultiWorkspaceSession).version === 2) {
           restoredSession = session as MultiWorkspaceSession
-          await restoreMultiWorkspaceSession(restoredSession, useCanvasStore)
+          await restoreMultiWorkspaceSession(restoredSession)
           restored = true
         } else {
-          await restoreSession(session as any, useCanvasStore)
+          await restoreSession(session as any, useAppStore.getState().selectedWorkspaceId)
           restored = true
         }
       }
@@ -259,12 +271,9 @@ function MainApp() {
         useAppStore.getState().selectWorkspace(wsId)
       }
 
-      // Ensure the center dock zone has a canvas panel
-      const centerZone = useDockStore.getState().zones.center
-      if (!centerZone.layout) {
-        const wsId = useAppStore.getState().selectedWorkspaceId
-        useAppStore.getState().createCanvas(wsId)
-      }
+      // Ensure the selected workspace's center dock zone has a canvas panel.
+      const wsId = useAppStore.getState().selectedWorkspaceId
+      if (wsId) useAppStore.getState().ensureCenterCanvas(wsId)
 
       // Paint the UI now — everything below this point is non-critical and
       // runs in the background so the first colorful frame lands ASAP.
@@ -281,7 +290,7 @@ function MainApp() {
         if (restoredSession) {
           restoreDetachedWindows(restoredSession).catch((err) => log.warn('[session] detached restore failed:', err))
         }
-        setupAutoSave(useCanvasStore)
+        setupAutoSave()
         setupWorkspaceSync()
         log.info('Background init complete')
       })
@@ -292,7 +301,7 @@ function MainApp() {
   // ---------------------------------------------------------------------------
   // Auto-recreate canvas when center dock zone empties (e.g. canvas tab dragged out)
   // ---------------------------------------------------------------------------
-  const centerLayout = useDockStore((s) => s.zones.center.layout)
+  const centerLayout = useStore(activeDockStore, (s) => s.zones.center.layout)
 
   useEffect(() => {
     if (!centerLayout && selectedWorkspaceId) {
@@ -514,7 +523,7 @@ function MainApp() {
   )
 
   return (
-    <CanvasStoreProvider store={useCanvasStore}>
+    <CanvasStoreProvider store={activeCanvasStore}>
     <div
       className="h-screen w-screen flex flex-col bg-canvas-bg"
       onDragOver={handleFileDragOver}
@@ -525,12 +534,19 @@ function MainApp() {
       {/* Main window shell fills the viewport so the canvas extends edge to
           edge under the translucent sidebars. The top-level dock tab bar
           insets itself via CSS vars (--cate-left/right-sidebar-width) so the
-          Canvas tab pill stays next to the sidebar. */}
+          Canvas tab pill stays next to the sidebar.
+
+          Wrapped in the active workspace's dock store and KEYED by the
+          workspace id so the whole dock/canvas subtree remounts on switch and
+          reads that workspace's own stores — full per-workspace isolation. */}
+      <DockStoreProvider store={activeDockStore}>
       <MainWindowShell
+        key={selectedWorkspaceId}
         renderPanel={renderDockPanel}
         getPanelTitle={getPanelTitle}
         onClosePanel={handleDockClosePanel}
       />
+      </DockStoreProvider>
 
       {/* Companion lock: covers the canvas area (z-10, beneath the z-20 sidebars
           so workspace switching stays live) when the selected remote workspace's
@@ -544,6 +560,9 @@ function MainApp() {
       <div className="absolute inset-y-0 right-0 z-20 flex pointer-events-none">
         <div data-app-sidebar="right" className="pointer-events-auto h-full"><RightSidebar /></div>
       </div>
+
+      {/* Single shared file-drag drop indicator (canvas / dock / agent) */}
+      <FileDropOverlay />
 
       {/* Modal overlays */}
       {showNodeSwitcher && <NodeSwitcher />}

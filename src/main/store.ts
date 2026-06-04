@@ -72,13 +72,40 @@ async function applySettingSideEffect(key: keyof AppSettings, value: unknown): P
     broadcastToAll(SETTINGS_CHANGED, key, value)
   }
   // Rebuild active fs watchers so their ignore globs match the new exclusions
-  // (dynamic import avoids a static store<->filesystem cycle).
+  // (dynamic import avoids a static store<->filesystem cycle). Also push the new
+  // set to the LOCAL companion daemon, which captured its exclusions once at
+  // launch — without this the daemon's file tree / file-name search wouldn't
+  // honor the change until a restart. Only LOCAL: remote daemons get their
+  // config at connect time (out of scope here). Imports are dynamic to avoid
+  // store<->filesystem and store<->companion cycles.
   if (key === 'fileExclusions') {
     try {
       const { refreshWatcherIgnores } = await import('./ipc/filesystem')
       refreshWatcherIgnores()
     } catch (err) {
       log.warn('Watcher ignore refresh failed: %O', err)
+    }
+    try {
+      const { companions } = await import('./companion/companionManager')
+      const { LOCAL_COMPANION_ID } = await import('./companion/locator')
+      if (companions.has(LOCAL_COMPANION_ID)) {
+        companions.resolve(LOCAL_COMPANION_ID).setExclusions(value as string[]).catch(() => {})
+      }
+    } catch (err) {
+      log.warn('Companion exclusions forward failed: %O', err)
+    }
+  }
+  // Push the idle-suspend toggle to the LOCAL companion daemon, which gated its
+  // idle scanner once at launch — toggling otherwise needs a restart.
+  if (key === 'autoSuspendIdleTerminals') {
+    try {
+      const { companions } = await import('./companion/companionManager')
+      const { LOCAL_COMPANION_ID } = await import('./companion/locator')
+      if (companions.has(LOCAL_COMPANION_ID)) {
+        companions.resolve(LOCAL_COMPANION_ID).setIdleSuspend(value !== false).catch(() => {})
+      }
+    } catch (err) {
+      log.warn('Companion idle-suspend forward failed: %O', err)
     }
   }
   // Live-toggle Sentry when the crash-reporting setting flips, so the change

@@ -17,7 +17,7 @@ import {
   PaintBrush,
   Image as ImageIcon,
 } from '@phosphor-icons/react'
-import { isExternalFileDrag, importDroppedEntries } from '../lib/importExternalEntries'
+import { isExternalFileDrag, importDroppedEntries } from '../lib/fs/importExternalEntries'
 import type { FileTreeNode as FileTreeNodeType } from '../../shared/types'
 import { folderColorClass, lookupNodeDecoration, type GitTree } from './gitStatusDecoration'
 import { getClipboard, hasClipboard, setClipboard } from './fileClipboard'
@@ -28,12 +28,12 @@ import { parseLocator } from '../../main/companion/locator'
 // Mirrors the Swift sfSymbolName mapping from FileTreeNode.swift
 // -----------------------------------------------------------------------------
 
-interface IconDef {
+export interface IconDef {
   icon: React.ReactNode
   color: string
 }
 
-function getFileIcon(extension: string, isDirectory: boolean, isExpanded: boolean): IconDef {
+export function getFileIcon(extension: string, isDirectory: boolean, isExpanded: boolean): IconDef {
   if (isDirectory) {
     return isExpanded ? ICON_FOLDER_OPEN : ICON_FOLDER
   }
@@ -121,6 +121,11 @@ interface FileTreeNodeProps {
   onTreeChanged?: () => void
   /** Workspace root path — used to compute relative paths for "Copy Relative Path". */
   rootPath: string
+  /** Owning workspace id — scopes filesystem path validation to that workspace's roots. */
+  workspaceId?: string
+  /** Name-filter predicate (owned by the explorer). When provided, a node only
+   *  renders if this returns true; undefined means "no filter, show everything". */
+  isPathVisible?: (path: string) => boolean
   /** External request to create a file/folder in a specific directory */
   createRequest?: CreateRequest | null
   /** Called when this node has handled the createRequest */
@@ -142,6 +147,8 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
   onDeletePaths,
   onTreeChanged,
   rootPath,
+  workspaceId,
+  isPathVisible,
   createRequest,
   onCreateRequestHandled,
 }) => {
@@ -290,12 +297,12 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
     if (!trimmed || trimmed === node.name || !window.electronAPI) return
     const newPath = node.path.substring(0, node.path.lastIndexOf('/') + 1) + trimmed
     try {
-      await window.electronAPI.fsRename(node.path, newPath)
+      await window.electronAPI.fsRename(node.path, newPath, workspaceId)
       onTreeChanged?.()
     } catch {
       /* ignore */
     }
-  }, [renameValue, node.name, node.path, onTreeChanged])
+  }, [renameValue, node.name, node.path, onTreeChanged, workspaceId])
 
   // --- Create new file/folder ---
   const startCreate = useCallback((type: 'file' | 'folder') => {
@@ -331,16 +338,16 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
     const newPath = dir + '/' + trimmed
     try {
       if (type === 'folder') {
-        await window.electronAPI.fsMkdir(newPath)
+        await window.electronAPI.fsMkdir(newPath, workspaceId)
       } else {
-        await window.electronAPI.fsWriteFile(newPath, '')
+        await window.electronAPI.fsWriteFile(newPath, '', workspaceId)
       }
       // onTreeChanged → loadTree → refreshExpandedChildren re-reads this folder.
       onTreeChanged?.()
     } catch (err) {
       console.error('[file-tree] Failed to create entry:', err)
     }
-  }, [isCreating, createValue, node.isDirectory, node.path, parentDir, onTreeChanged])
+  }, [isCreating, createValue, node.isDirectory, node.path, parentDir, onTreeChanged, workspaceId])
 
   // --- Paste (copy from clipboard) ---
   const handlePaste = useCallback(async () => {
@@ -351,13 +358,13 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
     if (node.isDirectory) void onExpand(node.path)
     for (const src of sources) {
       try {
-        await window.electronAPI.fsCopy(src, destDir)
+        await window.electronAPI.fsCopy(src, destDir, workspaceId)
       } catch (err) {
         console.error('[file-tree] Paste failed:', err)
       }
     }
     onTreeChanged?.()
-  }, [node.isDirectory, node.path, parentDir, onExpand, onTreeChanged])
+  }, [node.isDirectory, node.path, parentDir, onExpand, onTreeChanged, workspaceId])
 
   // --- Delete ---
   const handleDelete = useCallback(async () => {
@@ -365,12 +372,12 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
     const confirmed = window.confirm(`Delete "${node.name}"?${node.isDirectory ? ' This will delete all contents.' : ''}`)
     if (!confirmed) return
     try {
-      await window.electronAPI.fsDelete(node.path)
+      await window.electronAPI.fsDelete(node.path, workspaceId)
       onTreeChanged?.()
     } catch (err) {
       console.error('[file-tree] Failed to delete entry:', err)
     }
-  }, [node.name, node.path, node.isDirectory, onTreeChanged])
+  }, [node.name, node.path, node.isDirectory, onTreeChanged, workspaceId])
 
   // --- Drag-and-drop move ---
   const dropTargetDir = node.isDirectory ? node.path : parentDir
@@ -413,7 +420,7 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
       dragCounterRef.current = 0
       setIsDragOver(false)
       const files = e.dataTransfer.files
-      const ok = await importDroppedEntries(files, dropTargetDir, node.name)
+      const ok = await importDroppedEntries(files, dropTargetDir, node.name, workspaceId)
       if (ok) onTreeChanged?.()
       return
     }
@@ -436,17 +443,22 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
       // Don't move a directory into itself
       if (node.isDirectory && destPath.startsWith(srcPath + '/')) continue
       try {
-        await window.electronAPI.fsRename(srcPath, destPath)
+        await window.electronAPI.fsRename(srcPath, destPath, workspaceId)
       } catch (err) {
         console.error('[file-tree] Failed to move file:', err)
       }
     }
     onTreeChanged?.()
-  }, [dropTargetDir, node.isDirectory, node.name, onTreeChanged])
+  }, [dropTargetDir, node.isDirectory, node.name, onTreeChanged, workspaceId])
 
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
+
+  // Name filter: when the explorer supplies a predicate, hide rows that don't
+  // pass it (the explorer pre-computes which paths match / are ancestors of a
+  // match). undefined predicate = filter inactive = render everything.
+  if (isPathVisible && !isPathVisible(node.path)) return null
 
   return (
     <div>
@@ -582,6 +594,8 @@ export const FileTreeNode: React.FC<FileTreeNodeProps> = ({
               onDeletePaths={onDeletePaths}
               onTreeChanged={onTreeChanged}
               rootPath={rootPath}
+              workspaceId={workspaceId}
+              isPathVisible={isPathVisible}
               createRequest={createRequest}
               onCreateRequestHandled={onCreateRequestHandled}
             />

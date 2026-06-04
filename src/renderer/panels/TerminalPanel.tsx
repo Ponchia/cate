@@ -15,7 +15,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 
 import type { TerminalPanelProps } from './types'
-import { terminalRegistry } from '../lib/terminalRegistry'
+import { terminalRegistry } from '../lib/terminal/terminalRegistry'
+import { formatTerminalPaste, type DroppedRef } from './terminalDrop'
 import { useAppStore } from '../stores/appStore'
 import { useCanvasStoreContext, useCanvasStoreApi } from '../stores/CanvasStoreContext'
 
@@ -170,7 +171,7 @@ export default function TerminalPanel({
 
     let cancelled = false
 
-    function attachAndObserve(entry: import('../lib/terminalRegistry').RegistryEntry): void {
+    function attachAndObserve(entry: import('../lib/terminal/terminalRegistry').RegistryEntry): void {
       if (cancelled) return
 
       // Move the xterm DOM element into the render box and fit it
@@ -574,8 +575,6 @@ export default function TerminalPanel({
   // Drag-and-drop: accept files from OS or internal file explorer
   // -------------------------------------------------------------------------
 
-  const [isDragOver, setIsDragOver] = useState(false)
-
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     // Accept drops from internal file explorer or external file drops
     if (
@@ -584,18 +583,11 @@ export default function TerminalPanel({
     ) {
       // Stop here so the app-root background handler doesn't override the drop
       // effect to 'none' (which would suppress the drop event entirely and stop
-      // file paths from being inserted into the terminal).
+      // file paths from being inserted into the terminal). The drop indicator
+      // is driven globally via the capture-phase tracker, which still fires.
       e.stopPropagation()
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
-      setIsDragOver(true)
-    }
-  }, [])
-
-  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    // Only clear when leaving the container itself, not child elements
-    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
-      setIsDragOver(false)
     }
   }, [])
 
@@ -603,37 +595,37 @@ export default function TerminalPanel({
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault()
       e.stopPropagation()
-      setIsDragOver(false)
 
-      const paths: string[] = []
+      const refs: DroppedRef[] = []
 
-      // Internal file explorer drag
+      // Internal file explorer / search drag. A search-line drag carries the
+      // line number too — pasted as path:line (like a VS Code reference).
       const catePath = e.dataTransfer.getData('application/cate-file')
       if (catePath) {
-        paths.push(catePath)
+        let line: number | undefined
+        const lineRaw = e.dataTransfer.getData('application/cate-file-line')
+        if (lineRaw) {
+          try {
+            const lr = JSON.parse(lineRaw) as { path?: string; line?: number }
+            if (lr?.path === catePath) line = lr.line
+          } catch { /* ignore */ }
+        }
+        refs.push({ path: catePath, line })
       }
 
       // External OS file drop — use Electron's webUtils to get real paths
       if (e.dataTransfer.files.length > 0) {
         for (const file of Array.from(e.dataTransfer.files)) {
           const filePath = window.electronAPI?.getPathForFile(file)
-          if (filePath) paths.push(filePath)
+          if (filePath) refs.push({ path: filePath })
         }
       }
 
-      if (paths.length === 0) return
-
-      // Shell-escape each path and write to terminal as space-separated text
-      const escaped = paths.map((p) => {
-        // If path contains no special shell characters, use it as-is
-        if (/^[a-zA-Z0-9_./:@~=-]+$/.test(p)) return p
-        // Otherwise, single-quote it (escaping any existing single quotes)
-        return "'" + p.replace(/'/g, "'\\''") + "'"
-      })
+      if (refs.length === 0) return
 
       const entry = terminalRegistry.getEntry(panelId)
       if (entry) {
-        entry.terminal.paste(escaped.join(' '))
+        entry.terminal.paste(formatTerminalPaste(refs))
       }
     },
     [panelId],
@@ -689,8 +681,9 @@ export default function TerminalPanel({
         ref={containerRef}
         className="flex-1 relative min-h-0"
         style={{ padding: 0, overflow: 'hidden' }}
+        data-filedrop="terminal"
+        data-filedrop-id={panelId}
         onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {/*
@@ -713,11 +706,8 @@ export default function TerminalPanel({
             transformOrigin: '0 0',
           }}
         />
-        {isDragOver && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-500/40 rounded pointer-events-none">
-            <span className="text-blue-400 text-sm font-medium">Drop to paste path</span>
-          </div>
-        )}
+        {/* File-drop indicator is rendered globally by <FileDropOverlay/>
+            (this container is marked data-filedrop="terminal"). */}
         {/* Inline URL prompt is rendered outside this scaled box so it
             stays at panel scale regardless of renderScale. */}
         {createError && (

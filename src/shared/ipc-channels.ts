@@ -30,6 +30,12 @@ export const FS_IMPORT_ENTRIES = 'fs:import-entries'
 export const FS_SEARCH = 'fs:search'
 export const FS_READ_BINARY = 'fs:readBinary'
 
+// Content search (ripgrep-backed Search view)
+export const SEARCH_START = 'search:start'    // renderer -> main (invoke, returns searchId)
+export const SEARCH_CANCEL = 'search:cancel'  // renderer -> main (invoke)
+export const SEARCH_RESULT = 'search:result'  // main -> renderer (streamed batch)
+export const SEARCH_DONE = 'search:done'      // main -> renderer (terminal event)
+
 // Shell utilities
 export const SHELL_SHOW_IN_FOLDER = 'shell:showInFolder'
 
@@ -339,6 +345,7 @@ export const COMPANION_SSH_HOSTS = 'companion:ssh-hosts'   // renderer -> main (
 export const COMPANION_INSTALL = 'companion:install'       // renderer -> main (explicit clean install + connect)
 export const COMPANION_DELETE = 'companion:delete'         // renderer -> main (rm -rf the host install, keep saved auth)
 export const COMPANION_STATUS = 'companion:status'         // main -> renderer (broadcast)
+export const COMPANION_LOCAL_STATUS = 'companion:local-status' // renderer -> main (current LOCAL phase, seeds the loading blocker)
 
 
 // Performance profiler (only active under CATE_PERF=1)

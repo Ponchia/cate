@@ -8,6 +8,7 @@ import { useShortcutStore } from '../stores/shortcutStore'
 import { useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import { useAppStore, getActiveCanvasOps } from '../stores/appStore'
 import { useUIStore } from '../stores/uiStore'
+import { useSearchStore } from '../stores/searchStore'
 import type { MenuActionId, ShortcutAction } from '../../shared/types'
 import { confirmDeleteRegion } from '../lib/confirmDeleteRegion'
 import { confirmClosePanels } from '../lib/confirmClosePanels'
@@ -83,7 +84,7 @@ export function useShortcuts(): void {
         return
       }
       if (action === 'reloadWorkspace') {
-        const { reloadActiveWorkspaceFromDisk } = await import('../lib/session')
+        const { reloadActiveWorkspaceFromDisk } = await import('../lib/workspace/session')
         await reloadActiveWorkspaceFromDisk()
         return
       }
@@ -130,6 +131,16 @@ export function useShortcuts(): void {
           } else {
             ui.setActiveRightSidebarView(ui.activeRightSidebarView === 'explorer' ? null : 'explorer')
           }
+          break
+        }
+        case 'toggleSearch': {
+          const ui = useUIStore.getState()
+          const side = ui.sidebarLayout.left.includes('search') ? 'left' : 'right'
+          const active = side === 'left' ? ui.activeLeftSidebarView : ui.activeRightSidebarView
+          const next = active === 'search' ? null : 'search'
+          if (side === 'left') ui.setActiveLeftSidebarView(next)
+          else ui.setActiveRightSidebarView(next)
+          if (next === 'search') useSearchStore.getState().requestFocus()
           break
         }
         case 'toggleMinimap':
@@ -365,6 +376,9 @@ export function useShortcuts(): void {
       if (NAVIGATE_ACTIONS.has(action) || PAN_ACTIONS.has(action)) {
         // Let an open overlay own the arrow keys.
         if (ui.showNodeSwitcher || ui.showCommandPalette) return
+        // Let a keyboard-navigable list (e.g. the Search results tree, marked
+        // data-keynav) keep its own arrow keys instead of moving the canvas.
+        if (isKeyNavFocused()) return
         // Defer to a real text editor (Monaco / input / textarea /
         // contenteditable) so its own Cmd/Shift+Arrow editing keys keep
         // working. Terminals don't rely on those chords, so canvas navigation
@@ -436,6 +450,14 @@ export function useShortcuts(): void {
       if (active.getAttribute('contenteditable') === 'true') return true
       if (active.closest('[contenteditable="true"]')) return true
       return false
+    }
+
+    /** True when focus is inside a list that handles its own arrow keys (e.g.
+     *  the Search results tree). Such surfaces opt out via `data-keynav` so the
+     *  global canvas-navigation shortcuts don't steal their arrow keys. */
+    function isKeyNavFocused(): boolean {
+      const active = document.activeElement as HTMLElement | null
+      return !!active?.closest('[data-keynav]')
     }
 
     /**

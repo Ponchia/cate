@@ -14,12 +14,12 @@ import CanvasToolbar from '../canvas/CanvasToolbar'
 import WelcomePage from '../ui/WelcomePage'
 import { EmptyCanvasOverlay } from './EmptyCanvasOverlay'
 import type { PanelType, Point, DockLayoutNode, PanelLocation, WindowDockState } from '../../shared/types'
-import { useAppStore, useSelectedWorkspace, registerCanvasOps, unregisterCanvasOps, setActiveCanvasPanelId } from '../stores/appStore'
+import { useAppStore, useSelectedWorkspace, registerCanvasOps, unregisterCanvasOps, setActiveCanvasPanelId, type PanelPlacement } from '../stores/appStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useStore } from 'zustand'
 import type { StoreApi } from 'zustand'
 import { ensureWorkspaceFolder } from '../hooks/useShortcuts'
-import { createCanvasOps } from '../lib/canvasBridge'
+import { createCanvasOps } from '../lib/canvas/canvasBridge'
 import { createDockStore, type DockStore } from '../stores/dockStore'
 import {
   registerNodeDockStore,
@@ -228,32 +228,39 @@ export default function CanvasPanel({ panelId, workspaceId, nodeId, renderPanelC
     (s) => s.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? '',
   )
 
+  // Pin interactive creates to THIS canvas so a node made from this panel's
+  // toolbar / right-click menu lands here, not on the workspace's primary canvas.
+  const here = useCallback(
+    (): PanelPlacement => ({ target: 'canvas', canvasPanelId: panelId }),
+    [panelId],
+  )
+
   const onCreateAtPoint = useCallback(
     (type: PanelType, canvasPoint: Point) => {
-      getPanelDef(type).create({ workspaceId, canvasPoint })
+      getPanelDef(type).create({ workspaceId, canvasPoint, placement: here() })
     },
-    [workspaceId],
+    [workspaceId, here],
   )
 
   const onNewTerminal = useCallback(async () => {
     const wsId = await ensureWorkspaceFolder(workspaceId)
-    if (wsId) useAppStore.getState().createTerminal(wsId)
-  }, [workspaceId])
+    if (wsId) useAppStore.getState().createTerminal(wsId, undefined, undefined, here())
+  }, [workspaceId, here])
 
   const onNewBrowser = useCallback(async () => {
     const wsId = await ensureWorkspaceFolder(workspaceId)
-    if (wsId) useAppStore.getState().createBrowser(wsId)
-  }, [workspaceId])
+    if (wsId) useAppStore.getState().createBrowser(wsId, undefined, undefined, here())
+  }, [workspaceId, here])
 
   const onNewEditor = useCallback(async () => {
     const wsId = await ensureWorkspaceFolder(workspaceId)
-    if (wsId) useAppStore.getState().createEditor(wsId)
-  }, [workspaceId])
+    if (wsId) useAppStore.getState().createEditor(wsId, undefined, undefined, here())
+  }, [workspaceId, here])
 
   const onNewAgent = useCallback(async () => {
     const wsId = await ensureWorkspaceFolder(workspaceId)
-    if (wsId) useAppStore.getState().createAgent(wsId)
-  }, [workspaceId])
+    if (wsId) useAppStore.getState().createAgent(wsId, undefined, here())
+  }, [workspaceId, here])
 
   const onZoomIn = useCallback(() => {
     store.getState().animateZoomTo(zoomLevel + 0.1)
@@ -331,6 +338,7 @@ export default function CanvasPanel({ panelId, workspaceId, nodeId, renderPanelC
 
         {(nodeIds.length > 0 || workspaceRootPath) && (
           <CanvasToolbar
+            canvasPanelId={panelId}
             zoom={zoomLevel}
             onNewTerminal={onNewTerminal}
             onNewBrowser={onNewBrowser}

@@ -15,11 +15,11 @@ import {
   SESSION_FLUSH_SAVE_DONE,
 } from '../shared/ipc-channels'
 import { registerHandlers as registerTerminalHandlers, flushAllLoggers, killAllTerminals } from './ipc/terminal'
-import { localProcessHost } from './companion/localProcessHost'
-import { companions } from './companion/companionManager'
+import { companions, forwardFileGrant, forwardClearFileGrantsForWindow, forwardClearScopedWriteAllowancesForWindow } from './companion/companionManager'
 import { registerCompanionHandlers } from './ipc/companion'
 import { registerHandlers as registerFilesystemHandlers, stopWatchersForWindow } from './ipc/filesystem'
 import { registerHandlers as registerGitHandlers } from './ipc/git'
+import { registerHandlers as registerSearchHandlers, stopSearchesForWindow } from './ipc/search'
 import { registerHandlers as registerShellHandlers, unregisterTerminalsForWindow, getRunningTerminals } from './ipc/shell'
 import { registerHandlers as registerGitMonitorHandlers, stopMonitorsForWindow } from './ipc/git-monitor'
 import { registerHandlers as registerStoreHandlers, loadSettingsSyncFromDisk, readBootSnapshot, writeBootSnapshot, getSettingSync, setSettingsFromMain } from './store'
@@ -41,7 +41,8 @@ import { addAllowedRoot, clearFileGrantsForWindow, clearScopedWriteAllowancesFor
 import { isLocalLocator } from './companion/locator'
 import { listPersistentGrants, recordPersistentGrant } from './grantedPathStore'
 import { buildApplicationMenu, rebuildApplicationMenu, setNewMainWindowFn } from './menu'
-import { initShellEnv } from './shellEnv'
+import { initShellEnv, getShellEnv } from './shellEnv'
+import { currentExclusionSet } from './ipc/filesystem'
 import { initAutoUpdater, isInstallingUpdate } from './auto-updater'
 import { initSentry, captureMainException, captureMainMessage, flushSentry } from './sentry'
 import { initAnalytics, trackAppStart, checkAndReportUpdate, hasRunBefore, devSimulateUpdateFrom } from './analytics'
@@ -344,6 +345,9 @@ function createWindow(params?: CateWindowParams): BrowserWindow {
         // exact path; it does not widen access elsewhere.
         try {
           await grantFileAccess(windowId, filePath)
+          // Mirror the grant into the owning companion's authoritative map so a
+          // restored out-of-root editor can read/save against the daemon.
+          forwardFileGrant(filePath, windowId)
         } catch (err) {
           log.warn('[grants] Failed to grant %s to window %d: %s', filePath, windowId, err)
         }
@@ -378,8 +382,13 @@ function createWindow(params?: CateWindowParams): BrowserWindow {
     stopWatchersForWindow(windowId)
     unregisterTerminalsForWindow(windowId)
     stopMonitorsForWindow(windowId)
+    stopSearchesForWindow(windowId)
     clearScopedWriteAllowancesForWindow(windowId)
     clearFileGrantsForWindow(windowId)
+    // Forward the clears to every registered companion (the daemon keeps its own
+    // grant maps; a window close has no locator, so fan out to all hosts).
+    forwardClearScopedWriteAllowancesForWindow(windowId)
+    forwardClearFileGrantsForWindow(windowId)
     // Rebuild menu to update panel/dock window list
     if (isPanel || isDock) rebuildApplicationMenu()
     // Trigger immediate session save from main window when a child window closes
@@ -595,17 +604,12 @@ function registerCriticalHandlers(): void {
  */
 function registerDeferredHandlers(): void {
   registerGitHandlers()
+  registerSearchHandlers()
   registerGitMonitorHandlers()
   registerNotificationHandlers()
   registerAuthHandlers(authManager)
   registerAgentHandlers(authManager, agentManager)
   registerCompanionHandlers()
-}
-
-/** Union of critical + deferred — kept for any callers that want the full set in one call. */
-function registerAllHandlers(): void {
-  registerCriticalHandlers()
-  registerDeferredHandlers()
 }
 
 /**
@@ -707,6 +711,9 @@ function registerWindowAndDialogHandlers(): void {
     if (win) {
       try {
         const safePath = await grantFileAccess(win.id, result.filePath)
+        // Mirror the grant into the owning companion (the LOCAL daemon owns this
+        // host-absolute path) so the initial write + later reloads validate there.
+        forwardFileGrant(safePath, win.id)
         // Persist the approval so future windows (and future app launches)
         // can read+write this file via createWindow's grantsReady pass.
         // Critically there is NO renderer-facing IPC to add paths here —
@@ -726,6 +733,7 @@ function registerWindowAndDialogHandlers(): void {
           if (other.id === win.id || other.isDestroyed()) continue
           try {
             await grantFileAccess(other.id, safePath)
+            forwardFileGrant(safePath, other.id)
           } catch (err) {
             log.warn('[DIALOG_SAVE_FILE] Failed to grant to window %d: %s', other.id, err)
           }
@@ -1559,21 +1567,18 @@ ipcMain.handle(TELEMETRY_SET_CONSENT, async (_e, choice: { crashReporting?: bool
 setNewMainWindowFn(() => createWindow({ type: 'main' }))
 
 // ---------------------------------------------------------------------------
-// Emergency PTY cleanup — kill child process groups on crash or signal so
-// dev servers, watchers, etc. don't survive as zombies keeping ports open.
-// Defined before the error handlers that call it.
+// Crash / signal teardown. Local terminals run in the companion daemon
+// subprocess: when this main process dies its stdin closes, and the daemon's
+// `process.stdin.on('close')` handler (src/companion/index.ts) group-kills its
+// ptys and exits — so dev servers/watchers don't survive as zombies. No
+// in-process PTY cleanup is needed here anymore.
 // ---------------------------------------------------------------------------
 
-function emergencyKillPTYs(): void {
-  localProcessHost.emergencyKill()
-}
-
 // Global error handlers — Sentry (when configured) captures the error before
-// process exit. Also kill PTY process groups so dev servers don't survive.
+// process exit.
 process.on('uncaughtException', (err) => {
   log.error('uncaughtException: %O', err)
   captureMainException(err)
-  emergencyKillPTYs()
   flushSentry().finally(() => process.exit(1))
 })
 process.on('unhandledRejection', (reason) => {
@@ -1582,14 +1587,12 @@ process.on('unhandledRejection', (reason) => {
 })
 
 process.on('SIGTERM', () => {
-  log.info('Received SIGTERM, killing PTY process groups')
-  emergencyKillPTYs()
+  log.info('Received SIGTERM, exiting')
   process.exit(0)
 })
 
 process.on('SIGINT', () => {
-  log.info('Received SIGINT, killing PTY process groups')
-  emergencyKillPTYs()
+  log.info('Received SIGINT, exiting')
   process.exit(0)
 })
 
@@ -1603,6 +1606,19 @@ app.whenReady().then(async () => {
   // This ensures MCP servers, `which` lookups, etc. see the full PATH.
   await initShellEnv()
   log.info('Shell environment resolved')
+
+  // Bring the local workspace online: provision + launch the host-target companion
+  // tarball as a local daemon, the same path remote hosts use. Done after the shell
+  // env so the daemon inherits the full PATH for git/terminals. This registers a
+  // DeferredCompanion SYNCHRONOUSLY (resolve(LOCAL) works immediately) and connects
+  // the daemon in the background, so first-run tarball provisioning never blocks
+  // the window paint — early IPC ops queue behind the deferred's `ready`.
+  companions.ensureLocalCompanion({
+    root: app.getPath('home'),
+    exclusions: [...currentExclusionSet()],
+    env: getShellEnv(),
+    idleSuspend: getSettingSync('autoSuspendIdleTerminals'),
+  })
 
   if (process.platform === 'darwin') {
     app.setAboutPanelOptions({

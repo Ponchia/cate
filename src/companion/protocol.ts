@@ -9,6 +9,8 @@
 // dependency-free apart from pure @shared types.
 // =============================================================================
 
+import type { SearchFileResult, SearchStats } from '../shared/types'
+
 /** Bumped only on a wire-incompatible change. A mismatch is a hard failure. */
 export const COMPANION_PROTOCOL_VERSION = 1
 
@@ -65,6 +67,14 @@ export const Methods = {
   validatePathStrict: 'validatePathStrict',
   validatePathForCreation: 'validatePathForCreation',
   validateCwd: 'validateCwd',
+  addAllowedRoot: 'addAllowedRoot',
+  removeAllowedRoot: 'removeAllowedRoot',
+  setExclusions: 'setExclusions',
+  setIdleSuspend: 'setIdleSuspend',
+  grantFileAccess: 'grantFileAccess',
+  registerScopedWriteAllowance: 'registerScopedWriteAllowance',
+  clearFileGrantsForWindow: 'clearFileGrantsForWindow',
+  clearScopedWriteAllowancesForWindow: 'clearScopedWriteAllowancesForWindow',
 
   fileReadFile: 'file.readFile',
   fileReadBinary: 'file.readBinary', // result is base64
@@ -78,6 +88,8 @@ export const Methods = {
   fileCopy: 'file.copy',
   fileImportEntries: 'file.importEntries',
   fileSearch: 'file.search',
+  fileSearchContentStart: 'file.searchContent.start', // returns a streamId; batch/done arrive as evt frames
+  fileSearchContentStop: 'file.searchContent.stop',
   fileWatchStart: 'file.watch.start', // returns a streamId; events arrive as evt frames
   fileWatchStop: 'file.watch.stop',
 
@@ -154,3 +166,10 @@ export type AgentEvtPayload =
 export type PtyEvtPayload =
   | { kind: 'data'; data: string }
   | { kind: 'exit'; exitCode: number }
+
+/** Payload carried by a `file.searchContent` stream's evt frames. `batch`
+ *  delivers completed-file results as they arrive; `done` fires once with final
+ *  stats (and an error string when the search failed). */
+export type SearchEvtPayload =
+  | { kind: 'batch'; files: SearchFileResult[] }
+  | { kind: 'done'; stats: SearchStats; error?: string }

@@ -10,7 +10,7 @@
 import type { CanvasNodeId, CanvasNodeState, Point, Size, Rect, PanelType } from '../../shared/types'
 import { PANEL_DEFAULT_SIZES } from '../../shared/types'
 import { CANVAS_GRID_SIZE } from './layoutEngine'
-import { viewToCanvas as viewToCanvasCoords } from '../lib/coordinates'
+import { viewToCanvas as viewToCanvasCoords } from '../lib/canvas/coordinates'
 
 /** A recommended spot for a new node, surfaced as a numbered, clickable "ghost".
  *  Best first; the on-screen number is the array index + 1. */

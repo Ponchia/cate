@@ -6,16 +6,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import log from '../lib/logger'
 import { ArrowClockwise, FilePlus, FolderPlus, MagnifyingGlass, X, Folder, File } from '@phosphor-icons/react'
-import type { FileTreeNode as FileTreeNodeType, FileSearchResult } from '../../shared/types'
+import type { FileTreeNode as FileTreeNodeType } from '../../shared/types'
 import { FileTreeNode } from './FileTreeNode'
 import { isNavKey, resolveTreeNavAction } from './treeKeyboardNav'
-import { buildGitTreeDecorations, folderColorClass, lookupNodeDecoration, toPosixPath, type GitTree } from './gitStatusDecoration'
+import { buildGitTreeDecorations, toPosixPath, type GitTree } from './gitStatusDecoration'
+import { watchFsRoot } from '../lib/fs/fsWatchManager'
 import { getClipboard, hasClipboard } from './fileClipboard'
 import { useAppStore } from '../stores/appStore'
-import { useDockStore } from '../stores/dockStore'
-import { openFileAsPanel } from '../lib/fileRouting'
-import { workspaceDisplayName } from '../lib/displayPath'
-import { isExternalFileDrag, importDroppedEntries } from '../lib/importExternalEntries'
+import { getWorkspaceDockStore } from '../stores/workspaceStores'
+import { openFileAsPanel } from '../lib/fs/fileRouting'
+import { workspaceDisplayName } from '../lib/fs/displayPath'
+import { isExternalFileDrag, importDroppedEntries } from '../lib/fs/importExternalEntries'
 import { SidebarSectionHeader, SidebarHeaderButton } from './SidebarSectionHeader'
 import type { DockLayoutNode } from '../../shared/types'
 
@@ -41,11 +42,11 @@ function findActivePanel(node: DockLayoutNode): string | null {
 }
 
 function isCanvasActiveInCenter(): boolean {
-  const centerLayout = useDockStore.getState().zones.center.layout
+  const appState = useAppStore.getState()
+  const centerLayout = getWorkspaceDockStore(appState.selectedWorkspaceId)?.getState().zones.center.layout
   if (!centerLayout) return false
   const activePanelId = findActivePanel(centerLayout)
   if (!activePanelId) return false
-  const appState = useAppStore.getState()
   const ws = appState.workspaces.find((w) => w.id === appState.selectedWorkspaceId)
   return ws?.panels[activePanelId]?.type === 'canvas'
 }
@@ -90,9 +91,6 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
   const [createRequest, setCreateRequest] = useState<{ type: 'file' | 'folder'; targetDir: string; seq: number } | null>(null)
   const [searchVisible, setSearchVisible] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<FileSearchResult[]>([])
-  const [searchLoading, setSearchLoading] = useState(false)
-  const searchSeqRef = useRef(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const rootCreateInputRef = useRef<HTMLInputElement>(null)
   const lastSelectedPath = useRef<string | null>(null)
@@ -118,14 +116,79 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     setTimeout(() => searchInputRef.current?.focus(), 0)
   }, [])
 
+  // ---------------------------------------------------------------------------
+  // Name filter (inline Explorer search) — see the comment on `filter` below.
+  // ---------------------------------------------------------------------------
+  const filterQuery = searchQuery.trim().toLowerCase()
+  const isFiltering = filterQuery.length > 0
+
+  // Name-only filter over the *already-loaded* model (childrenCache). VS Code
+  // "filter on type": a node shows when its own name matches the query, when it
+  // is an ancestor of a match, or when it is any descendant under a folder that
+  // itself matches. We never eagerly read the whole tree — only loaded folders
+  // can be filtered (matches inside unopened folders won't appear until opened).
+  //
+  // We compute two things in one walk:
+  //  - `visible`: the set of paths to render (passed down as a predicate).
+  //  - `forceExpand`: ancestors of matches, force-expanded while filtering so the
+  //    matches are actually on screen even if the user hadn't opened them.
+  const filter = useMemo(() => {
+    if (!isFiltering) return null
+    const visible = new Set<string>()
+    const forceExpand = new Set<string>()
+
+    // Returns true if `node` (or any visible descendant) should be shown.
+    // `underMatch` is true when an ancestor folder already matched — then every
+    // descendant is shown wholesale.
+    const walk = (node: FileTreeNodeType, underMatch: boolean): boolean => {
+      const selfMatch = node.name.toLowerCase().includes(filterQuery)
+      const kids = node.isDirectory ? (childrenCache.get(node.path) ?? []) : []
+      let descendantVisible = false
+      const propagateMatch = underMatch || selfMatch
+      for (const child of kids) {
+        if (walk(child, propagateMatch)) descendantVisible = true
+      }
+      const show = selfMatch || underMatch || descendantVisible
+      if (show) {
+        visible.add(node.path)
+        // Force-expand a folder when one of its descendants matched (so the match
+        // is reachable). A folder that only matches by its own name stays as the
+        // user left it.
+        if (node.isDirectory && (descendantVisible || underMatch)) forceExpand.add(node.path)
+      }
+      return show
+    }
+
+    for (const n of nodes) walk(n, false)
+    return { visible, forceExpand }
+  }, [isFiltering, filterQuery, nodes, childrenCache])
+
+  // Effective expansion: while filtering, union the user's expansion with the
+  // ancestors of matches so matches are visible without permanently mutating
+  // expandedPaths (clearing the filter restores the user's own expansion).
+  const effectiveExpanded = useMemo(() => {
+    if (!filter) return expandedPaths
+    const merged = new Set(expandedPaths)
+    for (const p of filter.forceExpand) merged.add(p)
+    return merged
+  }, [filter, expandedPaths])
+
+  const isPathVisible = useMemo(
+    () => (filter ? (path: string) => filter.visible.has(path) : undefined),
+    [filter],
+  )
+
   // Flat, top-to-bottom list of every visible row: root nodes plus the children
   // of each expanded folder. Drives keyboard navigation and shift-click ranges.
+  // Uses effectiveExpanded (filter-aware) and skips rows hidden by the filter so
+  // keyboard nav matches exactly what's on screen.
   const flatRows = useMemo<FlatRow[]>(() => {
     const out: FlatRow[] = []
     const walk = (list: FileTreeNodeType[], depth: number, parentPath: string | null) => {
       for (const n of list) {
+        if (filter && !filter.visible.has(n.path)) continue
         out.push({ path: n.path, depth, isDirectory: n.isDirectory, parentPath, node: n })
-        if (n.isDirectory && expandedPaths.has(n.path)) {
+        if (n.isDirectory && effectiveExpanded.has(n.path)) {
           const kids = childrenCache.get(n.path)
           if (kids) walk(kids, depth + 1, n.path)
         }
@@ -133,7 +196,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     }
     walk(nodes, 0, null)
     return out
-  }, [nodes, expandedPaths, childrenCache])
+  }, [nodes, effectiveExpanded, childrenCache, filter])
 
   const flatIndexByPath = useMemo(
     () => new Map(flatRows.map((r, i) => [r.path, i] as const)),
@@ -149,7 +212,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     if (!window.electronAPI || childrenCache.has(path)) return
     setLoadingPaths((s) => new Set(s).add(path))
     try {
-      const entries = await window.electronAPI.fsReadDir(path)
+      const entries = await window.electronAPI.fsReadDir(path, selectedWorkspaceId)
       setChildrenCache((prev) => new Map(prev).set(path, entries))
     } catch {
       // Cache an empty array so an unreadable folder doesn't retry-loop.
@@ -161,7 +224,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
         return n
       })
     }
-  }, [childrenCache])
+  }, [childrenCache, selectedWorkspaceId])
 
   const expand = useCallback(async (path: string) => {
     setExpandedPaths((s) => (s.has(path) ? s : new Set(s).add(path)))
@@ -198,7 +261,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     const results = await Promise.all(
       paths.map(async (p) => {
         try {
-          return [p, await window.electronAPI!.fsReadDir(p)] as const
+          return [p, await window.electronAPI!.fsReadDir(p, selectedWorkspaceId)] as const
         } catch {
           return [p, null] as const // null = path gone / unreadable
         }
@@ -224,7 +287,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
       }
       return changed ? next : prev
     })
-  }, [])
+  }, [selectedWorkspaceId])
 
   // ---------------------------------------------------------------------------
   // Load tree
@@ -235,7 +298,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
 
     setIsLoading(true)
     try {
-      const entries = await window.electronAPI.fsReadDir(dirPath)
+      const entries = await window.electronAPI.fsReadDir(dirPath, selectedWorkspaceId)
 
       // Check git status. We fetch both the tracked-file list and the porcelain
       // status: the status drives per-file decorations (modified/added/deleted/
@@ -279,7 +342,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
       setGitTree(undefined)
       setIsLoading(false)
     }
-  }, [refreshExpandedChildren])
+  }, [refreshExpandedChildren, selectedWorkspaceId])
 
   // ---------------------------------------------------------------------------
   // Watch for filesystem changes
@@ -305,12 +368,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     // Initial load
     loadTree(rootPath)
 
-    // Start watcher
-    window.electronAPI.fsWatchStart(rootPath).catch((err) => log.warn('[file-explorer] Watch start failed:', err))
-
-    // Listen for events. Coalesce bursts (e.g. a build writing many files) with
-    // a short trailing debounce so we don't re-read the tree + re-run git status
-    // on every individual fs event.
+    // Watch via the shared refcounted manager (one underlying watcher per root,
+    // multiplexed) so the Explorer and the Search view's git-tree watcher don't
+    // tear down each other's subscription. Coalesce bursts (e.g. a build writing
+    // many files) with a short trailing debounce.
     const scheduleReload = () => {
       if (rootPathRef.current !== rootPath) return
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
@@ -319,7 +380,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
         if (rootPathRef.current === rootPath) loadTree(rootPath)
       }, 150)
     }
-    const unsubscribe = window.electronAPI.onFsWatchEvent(scheduleReload)
+    const releaseWatch = watchFsRoot(rootPath, scheduleReload, selectedWorkspaceId)
 
     // Reload when the exclusions list changes so hidden/shown folders update
     // without a relaunch.
@@ -334,9 +395,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
         clearTimeout(reloadTimerRef.current)
         reloadTimerRef.current = null
       }
-      unsubscribe()
+      releaseWatch()
       unsubscribeSettings()
-      window.electronAPI?.fsWatchStop(rootPath).catch((err) => log.warn('[file-explorer] Watch stop failed:', err))
     }
 
     return () => {
@@ -349,36 +409,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
         loadRetryTimerRef.current = null
       }
     }
-  }, [rootPath, loadTree])
+  }, [rootPath, loadTree, selectedWorkspaceId])
 
-  // ---------------------------------------------------------------------------
-  // Debounced file search (name + content) — runs in main process.
-  // ---------------------------------------------------------------------------
-
-  useEffect(() => {
-    const trimmed = searchQuery.trim()
-    if (!trimmed || !rootPath || !window.electronAPI) {
-      setSearchResults([])
-      setSearchLoading(false)
-      return
-    }
-    const seq = ++searchSeqRef.current
-    setSearchLoading(true)
-    const handle = window.setTimeout(async () => {
-      try {
-        const results = await window.electronAPI.fsSearch(rootPath, trimmed)
-        if (seq !== searchSeqRef.current) return
-        setSearchResults(results)
-      } catch (err) {
-        if (seq !== searchSeqRef.current) return
-        log.warn('[file-explorer] search failed:', err)
-        setSearchResults([])
-      } finally {
-        if (seq === searchSeqRef.current) setSearchLoading(false)
-      }
-    }, 200)
-    return () => window.clearTimeout(handle)
-  }, [searchQuery, rootPath])
+  // Inline Explorer search is a lightweight name-only tree filter ("filter on
+  // type"). Full content search now lives in the dedicated Search view.
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -473,14 +507,14 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return
     for (const p of paths) {
       try {
-        await window.electronAPI.fsDelete(p)
+        await window.electronAPI.fsDelete(p, selectedWorkspaceId)
       } catch (err) {
         console.error('[file-explorer] Failed to delete entry:', err)
       }
     }
     setSelectedPaths(new Set())
     handleReload()
-  }, [handleReload])
+  }, [handleReload, selectedWorkspaceId])
 
   const handleTreeKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Inline rename/create inputs handle their own keys.
@@ -500,7 +534,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     if (!isNavKey(e.key)) return
 
     const activePath = selectedPaths.size === 1 ? [...selectedPaths][0] : null
-    const action = resolveTreeNavAction(e.key, flatRows, activePath, (p) => expandedPaths.has(p))
+    const action = resolveTreeNavAction(e.key, flatRows, activePath, (p) => effectiveExpanded.has(p))
     if (!action) {
       // Still swallow the key (e.g. Right on a file) so the scroll container
       // doesn't scroll instead.
@@ -517,7 +551,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     }
   }, [
     selectedPaths, deletePaths, flatRows,
-    expandedPaths, expand, collapse, toggleExpand, handleFileOpen, moveCursorTo,
+    effectiveExpanded, expand, collapse, toggleExpand, handleFileOpen, moveCursorTo,
   ])
 
   // Resolve the target directory for new file/folder creation based on selection
@@ -555,15 +589,15 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
     const newPath = rootPath + '/' + trimmed
     try {
       if (type === 'folder') {
-        await window.electronAPI.fsMkdir(newPath)
+        await window.electronAPI.fsMkdir(newPath, selectedWorkspaceId)
       } else {
-        await window.electronAPI.fsWriteFile(newPath, '')
+        await window.electronAPI.fsWriteFile(newPath, '', selectedWorkspaceId)
       }
       loadTree(rootPath)
     } catch (err) {
       console.error('[file-explorer] Failed to create entry:', err)
     }
-  }, [rootCreating, rootCreateValue, rootPath, loadTree])
+  }, [rootCreating, rootCreateValue, rootPath, loadTree, selectedWorkspaceId])
 
   const folderName = workspaceDisplayName(rootPath) || 'Explorer'
 
@@ -598,7 +632,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
         const sources = getClipboard()
         for (const src of sources) {
           try {
-            await window.electronAPI.fsCopy(src, rootPath)
+            await window.electronAPI.fsCopy(src, rootPath, selectedWorkspaceId)
           } catch (err) {
             console.error('[file-explorer] Paste failed:', err)
           }
@@ -642,7 +676,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
         e.preventDefault()
         e.stopPropagation()
         const files = e.dataTransfer.files
-        void importDroppedEntries(files, rootPath, folderName).then((ok) => {
+        void importDroppedEntries(files, rootPath, folderName, selectedWorkspaceId).then((ok) => {
           if (ok) handleReload()
         })
       }}
@@ -667,7 +701,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
                   return next
                 })
               }}
-              title="Search Files"
+              title="Filter Files"
             >
               <MagnifyingGlass size={13} />
             </SidebarHeaderButton>
@@ -696,7 +730,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
                 }
                 e.stopPropagation()
               }}
-              placeholder="Search files"
+              placeholder="Filter by name"
               className="w-full bg-surface-5 text-primary text-xs pl-7 pr-2 py-1 rounded border border-subtle focus:border-blue-500/50 outline-none"
             />
           </div>
@@ -712,62 +746,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
       )}
 
       {/* Tree content */}
-      {searchQuery.trim() ? (
-        <div className="flex-1 overflow-y-auto py-1">
-          {searchLoading && searchResults.length === 0 ? (
-            <div className="flex items-center justify-center py-4 text-xs text-muted">Searching…</div>
-          ) : searchResults.length === 0 ? (
-            <div className="flex items-center justify-center py-4 text-xs text-muted">No matches</div>
-          ) : (
-            searchResults.map((r) => {
-              const parentRel = r.relativePath.includes('/')
-                ? r.relativePath.substring(0, r.relativePath.lastIndexOf('/'))
-                : ''
-              const isSel = selectedPaths.has(r.path)
-              const { decoration, folderKind } = lookupNodeDecoration(gitTree, r.path, r.isDirectory)
-              const nameColor = decoration
-                ? decoration.colorClass
-                : folderKind
-                  ? folderColorClass(folderKind)
-                  : 'text-primary'
-              return (
-                <div
-                  key={r.path}
-                  className={`flex flex-col gap-0.5 px-2 py-1 text-xs cursor-pointer ${isSel ? 'bg-surface-5' : 'hover:bg-surface-5/50'}`}
-                  onClick={(e) => {
-                    handleSelect(r.path, { shift: e.shiftKey, cmd: e.metaKey || e.ctrlKey })
-                  }}
-                  onDoubleClick={() => {
-                    if (!r.isDirectory) handleFileOpen([r.path])
-                  }}
-                >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="flex-shrink-0" style={{ color: r.isDirectory ? '#E2B855' : '#9CA3AF' }}>
-                      {r.isDirectory ? <Folder size={13} /> : <File size={13} />}
-                    </span>
-                    <span className={`truncate ${nameColor} ${decoration?.strike ? 'line-through' : ''}`}>{r.name}</span>
-                    {decoration && (
-                      <span
-                        className={`flex-shrink-0 w-4 text-center font-mono text-[10px] ${decoration.colorClass}`}
-                        title={`Git: ${decoration.title}`}
-                      >
-                        {decoration.letter}
-                      </span>
-                    )}
-                    {parentRel && <span className="truncate text-muted text-[10px]">{parentRel}</span>}
-                  </div>
-                  {r.contentPreview && (
-                    <div className="text-muted text-[10px] truncate pl-5">
-                      <span className="opacity-60">{r.contentLine}: </span>
-                      {r.contentPreview}
-                    </div>
-                  )}
-                </div>
-              )
-            })
-          )}
-        </div>
-      ) : isLoading && nodes.length === 0 ? (
+      {isLoading && nodes.length === 0 ? (
         <div className="flex items-center justify-center flex-1 text-xs text-muted">
           Loading...
         </div>
@@ -812,7 +791,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
               const destPath = rootPath + '/' + fileName
               if (srcPath === destPath) continue
               try {
-                await window.electronAPI.fsRename(srcPath, destPath)
+                await window.electronAPI.fsRename(srcPath, destPath, selectedWorkspaceId)
               } catch (err) {
                 console.error('[file-explorer] Failed to move file:', err)
               }
@@ -820,27 +799,33 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ rootPath }) => {
             handleReload()
           }}
         >
-          {nodes.map((node) => (
-            <FileTreeNode
-              key={node.path}
-              node={node}
-              depth={0}
-              git={gitTree}
-              selectedPaths={selectedPaths}
-              expandedPaths={expandedPaths}
-              childrenCache={childrenCache}
-              loadingPaths={loadingPaths}
-              onSelect={handleSelect}
-              onFileOpen={handleFileOpen}
-              onToggleExpand={toggleExpand}
-              onExpand={expand}
-              onDeletePaths={deletePaths}
-              onTreeChanged={handleReload}
-              rootPath={rootPath}
-              createRequest={createRequest}
-              onCreateRequestHandled={() => setCreateRequest(null)}
-            />
-          ))}
+          {isFiltering && flatRows.length === 0 ? (
+            <div className="flex items-center justify-center py-4 text-xs text-muted">No matches</div>
+          ) : (
+            nodes.map((node) => (
+              <FileTreeNode
+                key={node.path}
+                node={node}
+                depth={0}
+                git={gitTree}
+                selectedPaths={selectedPaths}
+                expandedPaths={effectiveExpanded}
+                childrenCache={childrenCache}
+                loadingPaths={loadingPaths}
+                onSelect={handleSelect}
+                onFileOpen={handleFileOpen}
+                onToggleExpand={toggleExpand}
+                onExpand={expand}
+                onDeletePaths={deletePaths}
+                onTreeChanged={handleReload}
+                rootPath={rootPath}
+                workspaceId={selectedWorkspaceId}
+                isPathVisible={isPathVisible}
+                createRequest={createRequest}
+                onCreateRequestHandled={() => setCreateRequest(null)}
+              />
+            ))
+          )}
 
           {/* Inline create input for root-level creation (from empty space context menu) */}
           {rootCreating && (

@@ -44,6 +44,7 @@ const loadMinimapCorner = (): MinimapCorner => {
 }
 
 interface CanvasToolbarProps {
+  canvasPanelId: string
   zoom: number
   onNewTerminal: () => void
   onNewBrowser: () => void
@@ -85,7 +86,7 @@ const ToolbarButton: React.FC<{
 // picker (onClick), while dragging onto the canvas spawns a ghost that follows
 // the cursor and drops a terminal at that exact spot (explicit position →
 // bypasses the picker). The cursor is treated as the new terminal's centre.
-const TerminalSpawnButton: React.FC<{ onClick: () => void }> = ({ onClick }) => {
+const TerminalSpawnButton: React.FC<{ onClick: () => void; canvasPanelId: string }> = ({ onClick, canvasPanelId }) => {
   const canvasApi = useCanvasStoreApi()
   const [ghost, setGhost] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const justDragged = useRef(false)
@@ -121,7 +122,9 @@ const TerminalSpawnButton: React.FC<{ onClick: () => void }> = ({ onClick }) => 
       const base = PANEL_DEFAULT_SIZES.terminal
       const pos = { x: center.x - base.width / 2, y: center.y - base.height / 2 }
       const wsId = useAppStore.getState().selectedWorkspaceId
-      if (wsId) useAppStore.getState().createTerminal(wsId, undefined, pos)
+      // Pin to this toolbar's canvas so the drop lands here, not on the
+      // workspace's primary canvas (matters on secondary/nested canvases).
+      if (wsId) useAppStore.getState().createTerminal(wsId, undefined, pos, { target: 'canvas', canvasPanelId })
     }
     window.addEventListener('mousemove', onMove, true)
     window.addEventListener('mouseup', onUp, true)
@@ -214,6 +217,7 @@ const MenuItem: React.FC<{
 )
 
 const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
+  canvasPanelId,
   zoom,
   onNewTerminal,
   onNewBrowser,
@@ -366,7 +370,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             <div className="w-px h-5 bg-surface-5 mx-1" />
 
             {/* Basic panel buttons */}
-            <TerminalSpawnButton onClick={onNewTerminal} />
+            <TerminalSpawnButton onClick={onNewTerminal} canvasPanelId={canvasPanelId} />
             <ToolbarButton onClick={onNewBrowser} title="Browser" size="panel">
               <Globe size={18} />
             </ToolbarButton>

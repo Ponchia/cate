@@ -20,20 +20,32 @@ import path from 'path'
 import { existsSync } from 'fs'
 import { mkdir, rename, writeFile, readFile, stat } from 'fs/promises'
 import log from '../logger'
-import { GH_OWNER, GH_REPO, releaseTag, piTarballName, piReleaseUrl } from '../../companion/release'
+import { GH_OWNER, GH_REPO, releaseTag } from '../../companion/release'
 
-/** Targets we build companion tarballs for. WSL reuses the linux targets. */
-export type CompanionTarget = 'linux-x64' | 'linux-arm64' | 'darwin-x64' | 'darwin-arm64'
+/** Targets we build companion tarballs for. WSL reuses the linux targets;
+ *  win32-x64 is local-only (a Windows laptop running its OWN workspace daemon —
+ *  there is no Windows remote, since ssh/wsl hosts are both Linux). */
+export type CompanionTarget = 'linux-x64' | 'linux-arm64' | 'darwin-x64' | 'darwin-arm64' | 'win32-x64'
 
 export const COMPANION_TARGETS: readonly CompanionTarget[] = [
   'linux-x64',
   'linux-arm64',
   'darwin-x64',
   'darwin-arm64',
+  'win32-x64',
 ]
 
 export function isCompanionTarget(s: string): s is CompanionTarget {
   return (COMPANION_TARGETS as readonly string[]).includes(s)
+}
+
+/** This machine's companion target, or null on an unsupported platform/arch
+ *  (e.g. win32-arm64, which has no tarball yet). Used to provision + run the
+ *  local workspace on the same daemon tarball as remote hosts. With 'win32-x64'
+ *  now in the union, `win32-<arch>` composes to a real target on x64 Windows. */
+export function hostCompanionTarget(): CompanionTarget | null {
+  const t = `${process.platform === 'win32' ? 'win32' : process.platform}-${process.arch}`
+  return isCompanionTarget(t) ? t : null
 }
 
 /** `cate-companion-1.1.0-linux-x64.tgz` */
@@ -80,62 +92,6 @@ function cachedTarball(version: string, target: CompanionTarget): string {
   return path.join(cacheDir(), tarballName(version, target))
 }
 
-// ---------------------------------------------------------------------------
-// pi coding agent tarball — cross-platform (one artifact for every target; in
-// --mode rpc pi loads no native deps), keyed by the pi version. Uploaded to the
-// same `v<appVersion>` release as the companion tarballs, pulled on demand to
-// the host (local or remote) when the agent is first used. `appVersion` is the
-// release tag; `piVersion` is the filename (the two version independently).
-// ---------------------------------------------------------------------------
-
-function devPiTarball(piVersion: string): string | null {
-  if (app.isPackaged) return null
-  const p = path.join(app.getAppPath(), 'dist-companion', piTarballName(piVersion))
-  return existsSync(p) ? p : null
-}
-
-function cachedPiTarball(piVersion: string): string {
-  return path.join(cacheDir(), piTarballName(piVersion))
-}
-
-/** A local pi tarball if present (dev build / cache), without downloading. */
-export function localPiTarballIfPresent(piVersion: string): string | null {
-  const dev = devPiTarball(piVersion)
-  if (dev) return dev
-  const cached = cachedPiTarball(piVersion)
-  return existsSync(cached) ? cached : null
-}
-
-/** Local path to the pi tarball for the SFTP/copy fallback, downloading from
- *  the release if needed (dev build → cache → network). */
-export async function ensureLocalPiTarball(appVersion: string, piVersion: string): Promise<string> {
-  const dev = devPiTarball(piVersion)
-  if (dev) return dev
-  const cached = cachedPiTarball(piVersion)
-  if (existsSync(cached) && (await stat(cached)).size > 0) return cached
-
-  const url = piReleaseUrl(appVersion, piVersion)
-  log.info('[companion] downloading %s', url)
-  let res: Response
-  try {
-    res = await fetch(url)
-  } catch (err) {
-    throw new Error(`Could not reach the pi release (${url}): ${err instanceof Error ? err.message : String(err)}`)
-  }
-  if (!res.ok) {
-    throw new Error(
-      `pi tarball not found at ${url} (HTTP ${res.status}). ` +
-        (app.isPackaged ? 'The release may not include pi yet.' : 'In dev, build it first: `npm run pi:tarball`.'),
-    )
-  }
-  const buf = Buffer.from(await res.arrayBuffer())
-  await mkdir(cacheDir(), { recursive: true })
-  const tmp = `${cached}.${process.pid}.part`
-  await writeFile(tmp, buf)
-  await rename(tmp, cached)
-  return cached
-}
-
 /** A local tarball if one is already present (dev build or cache) — no download.
  *  Used to hash-check the remote install so a changed daemon re-pushes in dev. */
 export function localTarballIfPresent(version: string, target: CompanionTarget): string | null {
@@ -143,6 +99,14 @@ export function localTarballIfPresent(version: string, target: CompanionTarget):
   if (dev) return dev
   const cached = cachedTarball(version, target)
   return existsSync(cached) ? cached : null
+}
+
+/** The host-target companion tarball shipped inside the packaged app
+ *  (resources/companion-host.tgz), or null in dev / when absent. */
+export function shippedCompanionTarball(): string | null {
+  if (!app.isPackaged) return null
+  const p = path.join(process.resourcesPath, 'companion-host.tgz')
+  return existsSync(p) ? p : null
 }
 
 /** Short content hash of a local tarball, for the remote `.ok` marker. */

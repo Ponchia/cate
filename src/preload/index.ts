@@ -110,6 +110,10 @@ import {
   FS_COPY,
   FS_IMPORT_ENTRIES,
   FS_SEARCH,
+  SEARCH_START,
+  SEARCH_CANCEL,
+  SEARCH_RESULT,
+  SEARCH_DONE,
   SHELL_SHOW_IN_FOLDER,
   NOTIFY_OS,
   NOTIFY_ACTION,
@@ -145,6 +149,7 @@ import {
   COMPANION_DELETE,
   COMPANION_INSTALL,
   COMPANION_STATUS,
+  COMPANION_LOCAL_STATUS,
   WEBVIEW_SCREENSHOT,
   BROWSER_SET_PROXY,
   NATIVE_FILE_DRAG,
@@ -218,7 +223,7 @@ import {
   AUTH_DELETE,
   PERF_GET,
 } from '../shared/ipc-channels'
-import type { AppSettings, SidebarSession } from '../shared/types'
+import type { AppSettings, SidebarSession, SearchOptions, SearchResultBatch, SearchDoneEvent } from '../shared/types'
 
 // Cache native-fullscreen state so renderer drag handlers can synchronously
 // check it without an IPC round-trip on every mousemove. Main BROADCASTS
@@ -256,6 +261,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     rows: number
     cwd?: string
     shell?: string
+    workspaceId?: string
   }): Promise<string> {
     return ipcRenderer.invoke(TERMINAL_CREATE, options)
   },
@@ -320,36 +326,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Filesystem
   // ---------------------------------------------------------------------------
 
-  fsReadFile(filePath: string): Promise<string> {
-    return ipcRenderer.invoke(FS_READ_FILE, filePath)
+  fsReadFile(filePath: string, workspaceId?: string): Promise<string> {
+    return ipcRenderer.invoke(FS_READ_FILE, filePath, workspaceId)
   },
 
-  fsReadBinary(filePath: string): Promise<ArrayBuffer> {
-    return ipcRenderer.invoke(FS_READ_BINARY, filePath)
+  fsReadBinary(filePath: string, workspaceId?: string): Promise<ArrayBuffer> {
+    return ipcRenderer.invoke(FS_READ_BINARY, filePath, workspaceId)
   },
 
-  fsWriteFile(filePath: string, content: string): Promise<void> {
-    return ipcRenderer.invoke(FS_WRITE_FILE, filePath, content)
+  fsWriteFile(filePath: string, content: string, workspaceId?: string): Promise<void> {
+    return ipcRenderer.invoke(FS_WRITE_FILE, filePath, content, workspaceId)
   },
 
-  fsReadDir(dirPath: string): Promise<unknown[]> {
-    return ipcRenderer.invoke(FS_READ_DIR, dirPath)
+  fsReadDir(dirPath: string, workspaceId?: string): Promise<unknown[]> {
+    return ipcRenderer.invoke(FS_READ_DIR, dirPath, workspaceId)
   },
 
-  fsSearch(rootPath: string, query: string, options?: unknown): Promise<unknown[]> {
-    return ipcRenderer.invoke(FS_SEARCH, rootPath, query, options)
+  fsSearch(rootPath: string, query: string, options?: unknown, workspaceId?: string): Promise<unknown[]> {
+    return ipcRenderer.invoke(FS_SEARCH, rootPath, query, options, workspaceId)
   },
 
-  fsWatchStart(dirPath: string): Promise<void> {
-    return ipcRenderer.invoke(FS_WATCH_START, dirPath)
+  fsWatchStart(dirPath: string, workspaceId?: string): Promise<void> {
+    return ipcRenderer.invoke(FS_WATCH_START, dirPath, workspaceId)
   },
 
-  fsWatchStop(dirPath: string): Promise<void> {
-    return ipcRenderer.invoke(FS_WATCH_STOP, dirPath)
+  fsWatchStop(dirPath: string, workspaceId?: string): Promise<void> {
+    return ipcRenderer.invoke(FS_WATCH_STOP, dirPath, workspaceId)
   },
 
-  fsStat(filePath: string): Promise<{ isDirectory: boolean; isFile: boolean }> {
-    return ipcRenderer.invoke(FS_STAT, filePath)
+  fsStat(filePath: string, workspaceId?: string): Promise<{ isDirectory: boolean; isFile: boolean }> {
+    return ipcRenderer.invoke(FS_STAT, filePath, workspaceId)
   },
 
   onFsWatchEvent(
@@ -364,6 +370,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on(FS_WATCH_EVENT, listener)
     return () => {
       ipcRenderer.removeListener(FS_WATCH_EVENT, listener)
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Content search (ripgrep-backed Search view)
+  // ---------------------------------------------------------------------------
+
+  searchStart(rootPath: string, searchId: string, options: SearchOptions, workspaceId?: string): Promise<string> {
+    return ipcRenderer.invoke(SEARCH_START, rootPath, searchId, options, workspaceId)
+  },
+
+  searchCancel(): Promise<void> {
+    return ipcRenderer.invoke(SEARCH_CANCEL)
+  },
+
+  onSearchResult(callback: (batch: SearchResultBatch) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, batch: SearchResultBatch): void => {
+      callback(batch)
+    }
+    ipcRenderer.on(SEARCH_RESULT, listener)
+    return () => {
+      ipcRenderer.removeListener(SEARCH_RESULT, listener)
+    }
+  },
+
+  onSearchDone(callback: (event: SearchDoneEvent) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, done: SearchDoneEvent): void => {
+      callback(done)
+    }
+    ipcRenderer.on(SEARCH_DONE, listener)
+    return () => {
+      ipcRenderer.removeListener(SEARCH_DONE, listener)
     }
   },
 
@@ -843,28 +881,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Shell utilities
   // ---------------------------------------------------------------------------
 
-  fsDelete(filePath: string): Promise<void> {
-    return ipcRenderer.invoke(FS_DELETE, filePath)
+  fsDelete(filePath: string, workspaceId?: string): Promise<void> {
+    return ipcRenderer.invoke(FS_DELETE, filePath, workspaceId)
   },
 
-  fsRename(oldPath: string, newPath: string): Promise<void> {
-    return ipcRenderer.invoke(FS_RENAME, oldPath, newPath)
+  fsRename(oldPath: string, newPath: string, workspaceId?: string): Promise<void> {
+    return ipcRenderer.invoke(FS_RENAME, oldPath, newPath, workspaceId)
   },
 
-  fsMkdir(dirPath: string): Promise<void> {
-    return ipcRenderer.invoke(FS_MKDIR, dirPath)
+  fsMkdir(dirPath: string, workspaceId?: string): Promise<void> {
+    return ipcRenderer.invoke(FS_MKDIR, dirPath, workspaceId)
   },
 
-  fsCopy(srcPath: string, destDir: string): Promise<string> {
-    return ipcRenderer.invoke(FS_COPY, srcPath, destDir)
+  fsCopy(srcPath: string, destDir: string, workspaceId?: string): Promise<string> {
+    return ipcRenderer.invoke(FS_COPY, srcPath, destDir, workspaceId)
   },
 
   fsImportEntries(
     sources: string[],
     destDir: string,
     mode: 'copy' | 'move',
+    workspaceId?: string,
   ): Promise<{ created: string[]; failed: number }> {
-    return ipcRenderer.invoke(FS_IMPORT_ENTRIES, sources, destDir, mode)
+    return ipcRenderer.invoke(FS_IMPORT_ENTRIES, sources, destDir, mode, workspaceId)
   },
 
   shellShowInFolder(filePath: string): Promise<void> {
@@ -1057,6 +1096,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   companionList(): Promise<string[]> {
     return ipcRenderer.invoke(COMPANION_LIST)
+  },
+  companionLocalStatus(): Promise<{ phase: string; message?: string }> {
+    return ipcRenderer.invoke(COMPANION_LOCAL_STATUS)
   },
   companionWslDistros(): Promise<string[]> {
     return ipcRenderer.invoke(COMPANION_WSL_DISTROS)

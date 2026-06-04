@@ -1,8 +1,8 @@
 // =============================================================================
 // RemoteCompanion — a Companion whose every operation is an RPC to a daemon over
-// a CompanionRpcClient. Type-identical to LocalCompanion, so the IPC handlers
-// neither know nor care whether they are talking to the local machine, a server,
-// or WSL. (Like LocalCompanion, `process`/terminals land in a later step.)
+// a CompanionRpcClient. This is the ONLY Companion implementation: the local
+// machine, a server, and WSL all run the same daemon, so the IPC handlers neither
+// know nor care which host they are talking to.
 // =============================================================================
 
 import { Methods } from '../../companion/protocol'
@@ -29,7 +29,7 @@ import type {
   PrSummary,
 } from './types'
 import type { CompanionRpcClient } from './rpcClient'
-import type { FsWatchEvtPayload, PtyEvtPayload, AgentEvtPayload } from '../../companion/protocol'
+import type { FsWatchEvtPayload, PtyEvtPayload, AgentEvtPayload, SearchEvtPayload } from '../../companion/protocol'
 import type { FileTreeNode, FileSearchResult, FileSearchOptions } from '../../shared/types'
 
 export class RemoteCompanion implements Companion {
@@ -123,6 +123,42 @@ export class RemoteCompanion implements Companion {
         call<{ created: string[]; failed: number }>(Methods.fileImportEntries, [sources, destDir, mode, winId]),
       search: (root, query, opts?: FileSearchOptions) =>
         longCall<FileSearchResult[]>(Methods.fileSearch, [root, query, opts]),
+      searchContent: (root, opts, cbs) => {
+        // Server-assigned streamId, like watch: start, then register the stream
+        // when the round-trip resolves. batch/done arrive as evt frames.
+        let streamId: string | null = null
+        let stopped = false
+        void call<string>(Methods.fileSearchContentStart, [root, opts]).then((id) => {
+          if (stopped) {
+            // Cancelled before the start round-trip resolved.
+            void this.rpc.call(Methods.fileSearchContentStop, [id]).catch(() => {})
+            return
+          }
+          streamId = id
+          this.rpc.registerStream(id, (payload) => {
+            const p = payload as SearchEvtPayload
+            if (p.kind === 'batch') cbs.onBatch(p.files)
+            else {
+              cbs.onDone(p.stats, p.error)
+              this.rpc.unregisterStream(id)
+            }
+          })
+        }).catch((err) => {
+          // The start request itself failed (e.g. transport dropped): surface a
+          // terminal done so the renderer's spinner clears.
+          if (!stopped) cbs.onDone({ matches: 0, files: 0, truncated: false }, err instanceof Error ? err.message : String(err))
+        })
+        return {
+          cancel: () => {
+            stopped = true
+            if (streamId) {
+              this.rpc.unregisterStream(streamId)
+              void this.rpc.call(Methods.fileSearchContentStop, [streamId]).catch(() => {})
+              streamId = null
+            }
+          },
+        }
+      },
       watch: (prefix, onChange) => {
         let streamId: string | null = null
         let stopped = false
@@ -191,24 +227,59 @@ export class RemoteCompanion implements Companion {
   // Validation runs authoritatively on the daemon (only it can realpath the
   // remote filesystem). These mirror the Companion contract; the lexical local
   // fast-fail can be layered on later without changing callers.
-  validatePath(filePath: string, ownerWindowId?: number): string {
+  validatePath(filePath: string, ownerWindowId?: number, scopeId?: string): string {
     // Synchronous in the interface, but the authoritative check is remote and
     // async. We return the path as-is here; FileHost methods themselves call
     // through to the daemon, which validates before touching the fs.
     void ownerWindowId
+    void scopeId
     return filePath
   }
 
-  async validatePathStrict(filePath: string, ownerWindowId?: number): Promise<string> {
-    return this.rpc.call(Methods.validatePathStrict, [filePath, ownerWindowId]) as Promise<string>
+  async validatePathStrict(filePath: string, ownerWindowId?: number, scopeId?: string): Promise<string> {
+    return this.rpc.call(Methods.validatePathStrict, [filePath, ownerWindowId, scopeId]) as Promise<string>
   }
 
-  async validatePathForCreation(filePath: string, ownerWindowId?: number): Promise<string> {
-    return this.rpc.call(Methods.validatePathForCreation, [filePath, ownerWindowId]) as Promise<string>
+  async validatePathForCreation(filePath: string, ownerWindowId?: number, scopeId?: string): Promise<string> {
+    return this.rpc.call(Methods.validatePathForCreation, [filePath, ownerWindowId, scopeId]) as Promise<string>
   }
 
-  validateCwd(cwd: string): string {
+  validateCwd(cwd: string, ownerWindowId?: number, scopeId?: string): string {
     // Authoritative validation happens on the daemon inside each vcs op.
+    void ownerWindowId
+    void scopeId
     return cwd
+  }
+
+  addAllowedRoot(root: string, scopeId?: string): Promise<void> {
+    return this.rpc.call(Methods.addAllowedRoot, [root, scopeId]) as Promise<void>
+  }
+
+  removeAllowedRoot(root: string, scopeId?: string): Promise<void> {
+    return this.rpc.call(Methods.removeAllowedRoot, [root, scopeId]) as Promise<void>
+  }
+
+  setExclusions(names: string[]): Promise<void> {
+    return this.rpc.call(Methods.setExclusions, [names]) as Promise<void>
+  }
+
+  setIdleSuspend(enabled: boolean): Promise<void> {
+    return this.rpc.call(Methods.setIdleSuspend, [enabled]) as Promise<void>
+  }
+
+  grantFileAccess(filePath: string, ownerWindowId: number): Promise<void> {
+    return this.rpc.call(Methods.grantFileAccess, [filePath, ownerWindowId]) as Promise<void>
+  }
+
+  registerScopedWriteAllowance(safePath: string, ownerWindowId: number): Promise<void> {
+    return this.rpc.call(Methods.registerScopedWriteAllowance, [safePath, ownerWindowId]) as Promise<void>
+  }
+
+  clearFileGrantsForWindow(windowId: number): Promise<void> {
+    return this.rpc.call(Methods.clearFileGrantsForWindow, [windowId]) as Promise<void>
+  }
+
+  clearScopedWriteAllowancesForWindow(windowId: number): Promise<void> {
+    return this.rpc.call(Methods.clearScopedWriteAllowancesForWindow, [windowId]) as Promise<void>
   }
 }
