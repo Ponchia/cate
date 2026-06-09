@@ -60,6 +60,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   workspaces: [],
   selectedWorkspaceId: '',
   localCompanionPhase: null,
+  reloadEpochs: {},
 
   // --- Slices ---
   ...createWorkspaceSlice(set, get),

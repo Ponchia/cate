@@ -6,9 +6,10 @@
 import log from '../logger'
 import { useAppStore } from '../../stores/appStore'
 import { deferredSnapshots } from './deferredRestore'
-import { restoreSession } from './sessionRestore'
 import { collectPanelIdsFromDockState } from './sessionSerialize'
+import { createDefaultDockState } from '../../stores/dockStore'
 import { mark } from '../perfMarks'
+import { restoreWorkspaceLayout } from './sessionRestore'
 import type {
   MultiWorkspaceSession,
   PanelType,
@@ -85,8 +86,9 @@ export async function restoreMultiWorkspaceSession(session: MultiWorkspaceSessio
       } else {
         // Local workspace: restore into its own stores FIRST (by id), then mark
         // it selected. Doing restore before select means selectWorkspace finds
-        // the center canvas already present and won't mint a throwaway one.
-        await restoreSession(snapshot, wsId)
+        // the center canvas already present and won't mint a throwaway one. The
+        // launch path neither tears down (nothing live yet) nor remounts.
+        await restoreWorkspaceLayout(snapshot, wsId, { teardown: false, remount: false })
         await appStore.selectWorkspace(wsId)
       }
     } else {
@@ -110,66 +112,81 @@ export async function restoreMultiWorkspaceSession(session: MultiWorkspaceSessio
 // -----------------------------------------------------------------------------
 
 export async function restoreDetachedWindows(session: MultiWorkspaceSession): Promise<void> {
-  // Recreate panel windows that were open at the time of last save
-  if (session.panelWindows && session.panelWindows.length > 0) {
-    log.debug(`[session] restoring ${session.panelWindows.length} panel windows`)
-    for (const pw of session.panelWindows) {
-      try {
-        const snapshot: PanelTransferSnapshot = {
-          panel: pw.panel,
-          geometry: {
-            origin: { x: pw.bounds.x, y: pw.bounds.y },
-            size: { width: pw.bounds.width, height: pw.bounds.height },
-          },
-          sourceLocation: { type: 'canvas', canvasId: '', canvasNodeId: '' },
-          terminalReplayPtyId: pw.panel.type === 'terminal' ? pw.terminalPtyId : undefined,
-          rootPath: useAppStore.getState().workspaces.find((w) => w.id === pw.workspaceId)?.rootPath || undefined,
-          worktrees: useAppStore.getState().workspaces.find((w) => w.id === pw.workspaceId)?.worktrees,
-        }
-        // Pass the persisted workspaceId so the restored panel window is
-        // registered to its workspace at creation — otherwise it is saved to no
-        // workspace and lost on the next restart.
-        const newWindowId = await window.electronAPI.panelTransfer(snapshot, undefined, pw.workspaceId)
-        if (typeof newWindowId === 'number') {
-          // Position the new panel window to its saved bounds
-          // The main process createWindow positions it, but we passed geometry in the snapshot
-          log.debug(`[session] panel window restored: ${pw.panel.title} (windowId=${newWindowId})`)
-        }
-      } catch (err) {
-        log.warn(`[session] failed to restore panel window "${pw.panel.title}":`, err)
-      }
-    }
-  }
-
-  // Recreate dock windows that were open at the time of last save. Unlike a
-  // LIVE single-panel detach (dragDetach + buildSinglePanelDockState), a restore
-  // must rebuild the FULL window: every top-level tab from dw.dockState.zones,
-  // each terminal tab's scrollback replay, and each canvas tab's children.
+  // Recreate dock windows that were open at the time of last save. Detached
+  // windows now restore ONLY via dock windows (legacy single-panel windows are
+  // migrated into dock windows upstream, in dockWindowsFromSession). Unlike a
+  // LIVE single-panel detach, a restore must rebuild the FULL window: every
+  // top-level tab from dw.dockState.zones, each terminal tab's scrollback
+  // replay, and each canvas tab's children.
   if (session.dockWindows && session.dockWindows.length > 0) {
     log.debug(`[session] restoring ${session.dockWindows.length} dock windows`)
-    for (const dw of session.dockWindows) {
-      try {
-        const init = buildDockWindowRestoreInit(dw)
-        // A window with no top-level panels has nothing to show — skip it.
-        if (init.topLevelPanelIds.length === 0) continue
+    await recreateDockWindows(session.dockWindows)
+  }
+}
 
-        const restoreWs = useAppStore.getState().workspaces.find((w) => w.id === dw.workspaceId)
-        const rootPath = restoreWs?.rootPath || undefined
-        await window.electronAPI.dockWindowRestore({
-          ...dw,
-          initPayload: {
-            ...init.initPayload,
-            rootPath: rootPath ?? init.initPayload.rootPath,
-            worktrees: restoreWs?.worktrees ?? init.initPayload.worktrees,
-          },
-        })
-        log.debug(`[session] dock window restored: ${init.topLevelPanelIds.length} top-level tabs, ${Object.keys(dw.panels).length} panels`)
-      } catch (err) {
-        log.warn(`[session] failed to restore dock window:`, err)
-      }
+/**
+ * Recreate a batch of detached dock windows, isolating each window's failure so
+ * one bad snapshot can't abort the rest. When `workspaceIdOverride` is set, every
+ * snapshot is rebound to that live workspace id before recreation (see the
+ * reload/reopen rationale in restoreWorkspaceDetachedWindows).
+ */
+async function recreateDockWindows(
+  dockWindows: DetachedDockWindowSnapshot[],
+  workspaceIdOverride?: string,
+): Promise<void> {
+  for (const dw of dockWindows) {
+    try {
+      await recreateDockWindow(
+        workspaceIdOverride === undefined ? dw : { ...dw, workspaceId: workspaceIdOverride },
+      )
+    } catch (err) {
+      log.warn(`[session] failed to restore dock window:`, err)
     }
   }
+}
 
+/**
+ * Restore a single workspace's detached dock windows on demand (reload /
+ * hydrate-from-disk). When `closeExisting` is set, this workspace's currently
+ * open detached windows are destroyed first so a rebuild doesn't duplicate them.
+ * The caller passes only the dock windows that belong to `wsId`.
+ */
+export async function restoreWorkspaceDetachedWindows(
+  wsId: string,
+  dockWindows: DetachedDockWindowSnapshot[] | undefined,
+  opts: { closeExisting: boolean },
+): Promise<void> {
+  if (opts.closeExisting) {
+    await window.electronAPI.windowsCloseForWorkspace(wsId)
+  }
+  if (!dockWindows?.length) return
+  // Rebind every snapshot to the live workspace id: a reopened workspace gets a
+  // fresh runtime id, so the snapshot's saved dw.workspaceId is stale. For the
+  // reload-from-disk case wsId already equals dw.workspaceId (no-op). This keeps
+  // the rebuilt window's rootPath/worktrees resolvable and its workspace
+  // association correct for the next save / close.
+  await recreateDockWindows(dockWindows, wsId)
+}
+
+/** Recreate one detached dock window from its persisted snapshot, resolving the
+ *  owning workspace's rootPath/worktrees and skipping windows that have no
+ *  top-level panels. */
+async function recreateDockWindow(dw: DetachedDockWindowSnapshot): Promise<void> {
+  const init = buildDockWindowRestoreInit(dw)
+  // A window with no top-level panels has nothing to show — skip it.
+  if (init.topLevelPanelIds.length === 0) return
+
+  const restoreWs = useAppStore.getState().workspaces.find((w) => w.id === dw.workspaceId)
+  const rootPath = restoreWs?.rootPath || undefined
+  await window.electronAPI.dockWindowRestore({
+    ...dw,
+    initPayload: {
+      ...init.initPayload,
+      rootPath: rootPath ?? init.initPayload.rootPath,
+      worktrees: restoreWs?.worktrees ?? init.initPayload.worktrees,
+    },
+  })
+  log.debug(`[session] dock window restored: ${init.topLevelPanelIds.length} top-level tabs, ${Object.keys(dw.panels).length} panels`)
 }
 
 /**
@@ -177,28 +194,41 @@ export async function restoreDetachedWindows(session: MultiWorkspaceSession): Pr
  * snapshot. Returns the list of TOP-LEVEL panels (those referenced by the dock
  * zones — canvas CHILDREN live in dw.panels WITHOUT a zone reference) and a full
  * DockWindowInitPayload that restores the ORIGINAL zone/stack/tab layout with:
- *   • every top-level terminal tab seeded for scrollback replay
- *     (terminalReplayPtyIds[panelId] = dw.terminalPtyIds[panelId]), and
- *   • every top-level canvas tab's children hydrated via buildRestoredCanvasState
- *     (nodes + childPanels + childTerminals replay hints).
+ *   • `restore: true` + per-panel cwds, so the shell arms scrollback replay for
+ *     EVERY terminal panel (top-level + canvas children) by its stable panelId —
+ *     identical to the main window, no live-ptyId round-trip, and
+ *   • every top-level canvas tab's layout hydrated via buildRestoredCanvasState
+ *     (nodes + childPanels).
  * Back-compat: a snapshot without canvasStates degrades to empty canvases.
  */
 export function buildDockWindowRestoreInit(
   dw: DetachedDockWindowSnapshot,
 ): { topLevelPanelIds: string[]; initPayload: DockWindowInitPayload } {
-  const topLevelIds = collectPanelIdsFromDockState(dw.dockState.zones)
+  // A legacy/malformed snapshot may lack dockState.zones entirely — treat it as
+  // an empty window so the caller skips it cleanly rather than throwing.
+  const zones = dw.dockState?.zones
+  if (!zones) {
+    return {
+      topLevelPanelIds: [],
+      initPayload: {
+        panels: dw.panels,
+        dockState: createDefaultDockState(),
+        workspaceId: dw.workspaceId,
+        restore: true,
+        terminalCwds: dw.terminalCwds,
+      },
+    }
+  }
+
+  const topLevelIds = collectPanelIdsFromDockState(zones)
   const topLevelSet = new Set(topLevelIds)
 
-  const terminalReplayPtyIds: Record<string, string> = {}
   const canvasStates: Record<string, PanelTransferSnapshot['canvasState']> = {}
 
   for (const panelId of topLevelIds) {
     const panel = dw.panels[panelId]
     if (!panel) continue
-    if (panel.type === 'terminal') {
-      const ptyId = dw.terminalPtyIds?.[panelId]
-      if (ptyId) terminalReplayPtyIds[panelId] = ptyId
-    } else if (panel.type === 'canvas') {
+    if (panel.type === 'canvas') {
       const cs = buildRestoredCanvasState(dw, panel, topLevelSet)
       if (cs) canvasStates[panelId] = cs
     }
@@ -206,11 +236,13 @@ export function buildDockWindowRestoreInit(
 
   const initPayload: DockWindowInitPayload = {
     // Send EVERY persisted panel record (top-level tabs AND canvas children) so
-    // the receiving shell can resolve types/titles for all of them.
+    // the receiving shell can resolve types/titles AND arm replay for all of them.
     panels: dw.panels,
-    dockState: dw.dockState.zones,
+    dockState: zones,
     workspaceId: dw.workspaceId,
-    terminalReplayPtyIds: Object.keys(terminalReplayPtyIds).length ? terminalReplayPtyIds : undefined,
+    // Cold restore: the shell replays every terminal panel by its panelId.
+    restore: true,
+    terminalCwds: dw.terminalCwds && Object.keys(dw.terminalCwds).length ? dw.terminalCwds : undefined,
     canvasStates: Object.keys(canvasStates).length ? canvasStates : undefined,
   }
 
@@ -221,13 +253,12 @@ export function buildDockWindowRestoreInit(
  * Build the `canvasState` for a detached canvas window being restored from a
  * `DetachedDockWindowSnapshot`. Pure (no store/IPC access) so it's unit-testable.
  *
- * Returns undefined when the top-level panel isn't a canvas (non-canvas dock
- * windows restore via terminalReplayPtyId only). When it IS a canvas:
+ * Returns undefined when the top-level panel isn't a canvas. When it IS a canvas:
  *   • nodes/viewport come from dw.canvasStates[canvasId] (empty if absent —
  *     old session files degrade gracefully to an empty canvas).
  *   • childPanels = every dw.panels entry that is NOT a top-level dock panel.
- *   • childTerminals = a `replayPtyId` restore hint per child terminal that has
- *     a persisted ptyId — the receiver spawns fresh + replays the dead PTY's log.
+ * Child terminal scrollback replay is NOT wired here: the shell arms replay for
+ * EVERY terminal panel (children included) by its stable panelId on restore.
  */
 export function buildRestoredCanvasState(
   dw: DetachedDockWindowSnapshot,
@@ -238,14 +269,9 @@ export function buildRestoredCanvasState(
 
   const layout = dw.canvasStates?.[topLevelPanel.id]
   const childPanels: Record<string, PanelState> = {}
-  const childTerminals: Record<string, { replayPtyId?: string }> = {}
   for (const [panelId, panel] of Object.entries(dw.panels)) {
     if (topLevelIds.has(panelId)) continue // top-level dock panels aren't canvas children
     childPanels[panelId] = panel
-    if (panel.type === 'terminal') {
-      const ptyId = dw.terminalPtyIds?.[panelId]
-      if (ptyId) childTerminals[panelId] = { replayPtyId: ptyId }
-    }
   }
 
   return {
@@ -253,6 +279,5 @@ export function buildRestoredCanvasState(
     viewportOffset: layout?.viewportOffset ?? { x: 0, y: 0 },
     zoomLevel: layout?.zoomLevel ?? 1,
     childPanels,
-    childTerminals,
   }
 }

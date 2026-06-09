@@ -22,10 +22,9 @@
 // build resilient.
 // =============================================================================
 
-import log from '../../logger'
-import { ensureLocalTarball, localTarballIfPresent, isCompanionDevMode, releaseUrl, isCompanionTarget, type CompanionTarget } from '../companionArtifacts'
+import { ensureLocalTarball, isCompanionDevMode, isCompanionTarget, type CompanionTarget } from '../companionArtifacts'
 import { verifyAndPinHostKey, hostKeyId } from '../sshKnownHosts'
-import { shellQuote as shq, computeMarker, markersMatch, buildRemotePullCommand, bootstrapDevShared, provisionedProbe, buildInstallCheckCommand, buildExtractCommand, type CompanionChannel, type CompanionTransport } from './transport'
+import { shellQuote as shq, bootstrapDevShared, isInstalledShared, bootstrapProdShared, buildExtractCommand, type CompanionChannel, type CompanionTransport } from './transport'
 
 export interface SshOptions {
   host: string
@@ -150,15 +149,8 @@ export class SshTransport implements CompanionTransport {
    *  missing). In dev the freshness key is the provisioned core (the cjs hot-swap
    *  is part of install, not the probe). */
   async isInstalled(version: string): Promise<boolean> {
-    const installDir = await this.resolveInstallDir(version)
-    const D = shq(installDir)
-    if (isCompanionDevMode()) {
-      return (await this.exec(provisionedProbe(D))).stdout.includes('CATE_PROVISIONED')
-    }
-    const localTar = localTarballIfPresent(version, this.target as CompanionTarget)
-    const marker = await computeMarker(version, localTar)
-    const ok = (await this.exec(buildInstallCheckCommand(D))).stdout.trim()
-    return markersMatch(ok, marker, localTar, version)
+    const D = shq(await this.resolveInstallDir(version))
+    return isInstalledShared(version, D, this.target as CompanionTarget, (cmd) => this.exec(cmd))
   }
 
   /** Remove the whole companion install tree on the host (all versions). */
@@ -185,28 +177,16 @@ export class SshTransport implements CompanionTransport {
       return
     }
 
-    // Marker stored in `.ok`. When a local tarball is present (dev build / cache)
-    // it includes its content hash, so a changed daemon at the same version
-    // re-installs automatically; otherwise (production pull) it's just the version.
-    const localTar = localTarballIfPresent(version, this.target as CompanionTarget)
-    const marker = await computeMarker(version, localTar)
-
-    // Already installed and current?
-    const installed = await this.exec(buildInstallCheckCommand(D))
-    const ok = installed.stdout.trim()
-    if (markersMatch(ok, marker, localTar, version)) return
-
-    // 1. Remote pull — let the host fetch its own tarball from the release.
-    const url = releaseUrl(version, this.target as CompanionTarget)
-    const pull = await this.exec(buildRemotePullCommand(this.installDir, url, version))
-    if (pull.stdout.includes('CATE_PULL_OK')) {
-      log.info('[companion:ssh] %s pulled tarball from release', this.target)
-      return
-    }
-    log.info('[companion:ssh] remote pull unavailable (%s); falling back to SFTP push', pull.stderr.trim() || `code ${pull.code}`)
-
-    // 2. SFTP fallback — client downloads the tarball and pushes it.
-    await this.pushTarball(version, marker)
+    // PROD: probe the `.ok` marker, then remote-pull from the release with an
+    // SFTP push fallback when the host can't fetch (shared with WSL).
+    await bootstrapProdShared(version, D, {
+      tag: 'ssh',
+      target: this.target as CompanionTarget,
+      installDir: this.installDir,
+      exec: (cmd) => this.exec(cmd),
+      pushTarball: (v, marker) => this.pushTarball(v, marker),
+      pullFallbackLabel: '[companion:ssh] remote pull unavailable (%s); falling back to SFTP push',
+    })
   }
 
   /**

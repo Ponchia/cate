@@ -39,12 +39,13 @@ beforeEach(() => {
     workspaceRemove: vi.fn(async () => ({ ok: true })),
     recentProjectsAdd: vi.fn(),
     recentProjectsRemove: vi.fn(async () => undefined),
+    windowsCloseForWorkspace: vi.fn(async () => undefined),
     projectStateLoad,
   }
   projectStateLoad.mockReset()
 })
 
-import { useAppStore } from '../../stores/appStore'
+import { useAppStore, awaitWorkspaceSync } from '../../stores/appStore'
 import { hydrateWorkspaceFromDiskIfEmpty } from './session'
 import { deferredSnapshots } from './deferredRestore'
 import type { ProjectWorkspaceFile, ProjectSessionFile } from '../../../shared/types'
@@ -80,8 +81,12 @@ function diskState(): { workspace: ProjectWorkspaceFile; session: ProjectSession
   }
 }
 
-function freshWorkspace(id: string, rootPath = ROOT): string {
-  return useAppStore.getState().addWorkspace('WS', rootPath, id)
+async function freshWorkspace(id: string, rootPath = ROOT): Promise<string> {
+  const wsId = useAppStore.getState().addWorkspace('WS', rootPath, id)
+  // Let the create's main-sync response settle so its applied WorkspaceInfo
+  // can't later clobber the name hydrate restores from the .cate/ file.
+  await awaitWorkspaceSync()
+  return wsId
 }
 
 describe('hydrateWorkspaceFromDiskIfEmpty — guards', () => {
@@ -99,7 +104,7 @@ describe('hydrateWorkspaceFromDiskIfEmpty — guards', () => {
   })
 
   it('no-ops when a deferred restore owns the workspace', async () => {
-    const id = freshWorkspace('ws-deferred')
+    const id = await freshWorkspace('ws-deferred')
     deferredSnapshots.set(id, { workspaceName: 'x', rootPath: ROOT } as never)
     await hydrateWorkspaceFromDiskIfEmpty(id)
     expect(projectStateLoad).not.toHaveBeenCalled()
@@ -107,7 +112,7 @@ describe('hydrateWorkspaceFromDiskIfEmpty — guards', () => {
   })
 
   it('no-ops when the disk has no saved layout', async () => {
-    const id = freshWorkspace('ws-nostate')
+    const id = await freshWorkspace('ws-nostate')
     projectStateLoad.mockResolvedValue(null)
     await hydrateWorkspaceFromDiskIfEmpty(id)
     expect(projectStateLoad).toHaveBeenCalledWith(ROOT)
@@ -119,7 +124,7 @@ describe('hydrateWorkspaceFromDiskIfEmpty — guards', () => {
 
 describe('hydrateWorkspaceFromDiskIfEmpty — restore', () => {
   it('loads the saved .cate/ layout into an empty workspace', async () => {
-    const id = freshWorkspace('ws-restore')
+    const id = await freshWorkspace('ws-restore')
     projectStateLoad.mockResolvedValue(diskState())
 
     await hydrateWorkspaceFromDiskIfEmpty(id)
@@ -133,7 +138,7 @@ describe('hydrateWorkspaceFromDiskIfEmpty — restore', () => {
   })
 
   it('no-ops when the workspace already has real content', async () => {
-    const id = freshWorkspace('ws-has-content')
+    const id = await freshWorkspace('ws-has-content')
     projectStateLoad.mockResolvedValue(diskState())
     // First hydrate populates it...
     await hydrateWorkspaceFromDiskIfEmpty(id)

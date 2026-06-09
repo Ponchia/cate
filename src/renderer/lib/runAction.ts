@@ -62,6 +62,16 @@ export async function runAction(
     return
   }
   if (action === 'reloadWorkspace') {
+    // Reload-from-disk is a workspace/main-level operation: it tears down panels,
+    // re-reads .cate/, and closes+recreates the workspace's detached windows. A
+    // detached window's per-window store doesn't own the real workspace, so
+    // running it here would just destroy this window. Route it to the main
+    // window, which owns the workspace + session.
+    const windowType = new URLSearchParams(window.location.search).get('type')
+    if (windowType && windowType !== 'main') {
+      await window.electronAPI.runActionInMain('reloadWorkspace')
+      return
+    }
     const { reloadActiveWorkspaceFromDisk } = await import('./workspace/session')
     await reloadActiveWorkspaceFromDisk()
     return

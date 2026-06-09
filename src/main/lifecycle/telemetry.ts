@@ -3,7 +3,7 @@ import log from '../logger'
 import { getSettingSync, setSettingsFromMain } from '../store'
 import { trackAppStart, checkAndReportUpdate } from '../analytics'
 import { initSentry } from '../sentry'
-import { getWindowType } from '../windowRegistry'
+import { getActiveMainWindow } from '../windowRegistry'
 import { TELEMETRY_SET_CONSENT } from '../../shared/ipc-channels'
 
 // Fire the first-run/version-change analytics + app_start. Held back entirely
@@ -34,9 +34,7 @@ export function registerTelemetryConsentHandler(): void {
     })
     // initSentry now sees consent=true; it inits only if crash reporting was accepted.
     initSentry()
-    const mainWin = BrowserWindow.getAllWindows().find(
-      (w) => !w.isDestroyed() && getWindowType(w.id) === 'main',
-    )
+    const mainWin = getActiveMainWindow()
     if (mainWin) fireStartupTelemetry(mainWin)
   })
 }

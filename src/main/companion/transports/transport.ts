@@ -27,7 +27,7 @@ export interface CompanionChannel {
 // -----------------------------------------------------------------------------
 
 import log from '../../logger'
-import { ensureLocalTarball, localCompanionBundlePath, tarballHash, type CompanionTarget } from '../companionArtifacts'
+import { localCompanionBundlePath, localTarballIfPresent, isCompanionDevMode, releaseUrl, tarballHash, type CompanionTarget } from '../companionArtifacts'
 
 /** Minimal POSIX shell-quote for argv interpolated into a remote command string. */
 export function shellQuote(s: string): string {
@@ -138,6 +138,74 @@ export async function bootstrapDevShared(version: string, D: string, deps: Boots
 
   await deps.pushBundle(bundle, h, D)
   log.info('[companion:%s] dev fast-push companion.cjs (%s)', deps.tag, h)
+}
+
+/** Transport-specific bits the shared install probe + prod provisioner need. */
+export interface BootstrapProdDeps {
+  /** Log tag, e.g. 'ssh' / 'wsl'. */
+  tag: 'ssh' | 'wsl'
+  /** The resolved companion target (used for tarball lookup + success log). */
+  target: CompanionTarget
+  /** UNQUOTED install dir; the prod pull quotes internally via shellQuote. */
+  installDir: string
+  /** Run a shell command on the host (must not throw; returns code+output). */
+  exec(cmd: string): Promise<RemoteExecResult>
+  /** Full-tarball provision into the install dir, writing the given `.ok` marker
+   *  (SFTP push / /mnt copy). */
+  pushTarball(version: string, marker: string): Promise<void>
+  /** Fallback log line when the host can't fetch its own tarball — wording
+   *  differs per transport (SFTP push vs /mnt copy), so it's passed in full. The
+   *  `%s` placeholder is filled with the pull failure reason. */
+  pullFallbackLabel: string
+}
+
+/** Reachable + correct-version bundle present? Does NOT install. Shared by SSH
+ *  and WSL isInstalled(): in dev the freshness key is the provisioned core (the
+ *  cjs hot-swap is part of install, not the probe); in prod it's the `.ok`
+ *  marker. `D` is the shell-quoted install dir. */
+export async function isInstalledShared(
+  version: string,
+  D: string,
+  target: CompanionTarget,
+  exec: (cmd: string) => Promise<RemoteExecResult>,
+): Promise<boolean> {
+  if (isCompanionDevMode()) {
+    return (await exec(provisionedProbe(D))).stdout.includes('CATE_PROVISIONED')
+  }
+  const localTar = localTarballIfPresent(version, target)
+  const marker = await computeMarker(version, localTar)
+  const ok = (await exec(buildInstallCheckCommand(D))).stdout.trim()
+  return markersMatch(ok, marker, localTar, version)
+}
+
+/**
+ * Production provisioning shared by SSH and WSL. Marker stored in `.ok`: when a
+ * local tarball is present (dev build / cache) it embeds its content hash so a
+ * changed daemon at the same version re-installs, otherwise it's just the version.
+ * Returns early if already installed and current. First tries a host-side
+ * remote/in-distro pull from the release; if the host can't fetch, falls back to
+ * a client-side push (SFTP / /mnt). `D` is the shell-quoted install dir.
+ */
+export async function bootstrapProdShared(version: string, D: string, deps: BootstrapProdDeps): Promise<void> {
+  const localTar = localTarballIfPresent(version, deps.target)
+  const marker = await computeMarker(version, localTar)
+
+  // Already installed and current?
+  const installed = await deps.exec(buildInstallCheckCommand(D))
+  const ok = installed.stdout.trim()
+  if (markersMatch(ok, marker, localTar, version)) return
+
+  // 1. Remote / in-distro pull — let the host fetch its own tarball from the release.
+  const url = releaseUrl(version, deps.target)
+  const pull = await deps.exec(buildRemotePullCommand(deps.installDir, url, version))
+  if (pull.stdout.includes('CATE_PULL_OK')) {
+    log.info('[companion:%s] %s pulled tarball from release', deps.tag, deps.target)
+    return
+  }
+  log.info(deps.pullFallbackLabel, pull.stderr.trim() || `code ${pull.code}`)
+
+  // 2. Client-side fallback — download/copy the tarball and push it.
+  await deps.pushTarball(version, marker)
 }
 
 export interface CompanionTransport {

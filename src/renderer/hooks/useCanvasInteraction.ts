@@ -10,6 +10,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useUIStore } from '../stores/uiStore'
 import { useDragStore } from '../drag'
 import { viewToCanvas } from '../lib/canvas/coordinates'
+import { rectsOverlap } from '../canvas/layoutEngine'
 import { isMouseWheel, type WheelLike } from '../lib/wheelIntent'
 import { ZOOM_MIN, ZOOM_MAX } from '../../shared/types'
 import type { Point } from '../../shared/types'
@@ -22,14 +23,6 @@ const RIGHT_CLICK_DRAG_THRESHOLD = 4
 // at any zoom level; a discrete notch can't use the delta-proportional path the
 // trackpad pinch uses.
 const MOUSE_WHEEL_ZOOM_FACTOR = 0.15
-
-// AABB overlap test for marquee selection
-function rectsIntersect(
-  ax: number, ay: number, aw: number, ah: number,
-  bx: number, by: number, bw: number, bh: number,
-): boolean {
-  return !(ax + aw <= bx || bx + bw <= ax || ay + ah <= by || by + bh <= ay)
-}
 
 // CSS cursor for the canvas when idle (not actively panning), per active tool.
 function idleCursorForTool(): string {
@@ -480,8 +473,9 @@ export function useCanvasInteraction(
             const { zoomLevel: z, viewportOffset: vo } = canvasStoreApi.getState()
             const r = canvasRef.current?.getBoundingClientRect()
             if (!r) return
-            const endCanvasX = (ev.clientX - r.left - vo.x) / z
-            const endCanvasY = (ev.clientY - r.top - vo.y) / z
+            const endCanvas = viewToCanvas({ x: ev.clientX - r.left, y: ev.clientY - r.top }, z, vo)
+            const endCanvasX = endCanvas.x
+            const endCanvasY = endCanvas.y
             const mx = Math.min(startCanvasX, endCanvasX)
             const my = Math.min(startCanvasY, endCanvasY)
             const mw = Math.abs(endCanvasX - startCanvasX)
@@ -489,8 +483,9 @@ export function useCanvasInteraction(
 
             const { nodes } = canvasStoreApi.getState()
 
+            const marqueeRect = { origin: { x: mx, y: my }, size: { width: mw, height: mh } }
             const hitNodeIds = Object.values(nodes)
-              .filter((n) => rectsIntersect(mx, my, mw, mh, n.origin.x, n.origin.y, n.size.width, n.size.height))
+              .filter((n) => rectsOverlap(marqueeRect, { origin: n.origin, size: n.size }))
               .map((n) => n.id)
 
             if (!shiftHeld) {

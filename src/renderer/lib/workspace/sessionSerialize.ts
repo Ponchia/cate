@@ -6,7 +6,6 @@
 
 import type {
   SessionSnapshot,
-  PanelWindowSnapshot,
   DetachedDockWindowSnapshot,
   PanelType,
   ProjectWorkspaceFile,
@@ -59,7 +58,6 @@ export function buildWorkspaceFile(
 
 export function buildSessionFile(
   snapshot: SessionSnapshot,
-  panelWindows?: PanelWindowSnapshot[],
   dockWindows?: DetachedDockWindowSnapshot[],
 ): ProjectSessionFile {
   // Machine-local per-panel facts for every placed panel, keyed by id: the
@@ -81,7 +79,6 @@ export function buildSessionFile(
     version: 1,
     workspaceId: snapshot.workspaceId,
     panels,
-    panelWindows: panelWindows?.length ? panelWindows : undefined,
     dockWindows: dockWindows?.length ? dockWindows : undefined,
     // Worktree registry is machine-local (gitignored checkouts) — kept here, not
     // in the committed workspace.json. Paths are absolute, like workingDirectory.

@@ -22,6 +22,7 @@ import { deferredSnapshots, setDeferredRestoreHandler } from './deferredRestore'
 import { terminalRestoreData } from '../terminal/terminalRestoreData'
 import { terminalRegistry } from '../terminal/terminalRegistry'
 import { collectPanelIdsFromDockState, projectFilesToSnapshot } from './sessionSerialize'
+import { dockWindowsFromSession } from './sessionLoad'
 import type {
   SessionSnapshot,
   ProjectWorkspaceFile,
@@ -103,8 +104,17 @@ export async function reloadActiveWorkspaceFromDisk(): Promise<void> {
   }
 
   // Discard the live layout, then rebuild from the file via the launch path.
-  appStore.closeAllPanels(wsId)
-  await restoreSession(snapshot, wsId)
+  // remount bumps the reload epoch so the main shell remounts and respawns
+  // terminals cleanly; detached windows are rebuilt afterwards.
+  await restoreWorkspaceLayout(snapshot, wsId, { teardown: true, remount: true })
+  // sessionStartup imports from this module, so break the cycle with a dynamic
+  // import (matches the deferred-restore handler injection at module load).
+  const { restoreWorkspaceDetachedWindows } = await import('./sessionStartup')
+  await restoreWorkspaceDetachedWindows(
+    wsId,
+    dockWindowsFromSession(projectState.session),
+    { closeExisting: true },
+  )
   log.info('[session] reloaded workspace %s from disk (%d panels)', wsId, Object.keys(snapshot.panels ?? {}).length)
 }
 
@@ -172,14 +182,37 @@ export async function hydrateWorkspaceFromDiskIfEmpty(wsId: string): Promise<voi
     appStore.setWorkspaceColor(wsId, projectState.workspace.color)
   }
 
-  appStore.closeAllPanels(wsId)
-  await restoreSession(snapshot, wsId)
+  await restoreWorkspaceLayout(snapshot, wsId, { teardown: true, remount: true })
+  const { restoreWorkspaceDetachedWindows } = await import('./sessionStartup')
+  await restoreWorkspaceDetachedWindows(
+    wsId,
+    dockWindowsFromSession(projectState.session),
+    { closeExisting: true },
+  )
   log.info('[session] hydrated workspace %s on open (%d panels)', wsId, Object.keys(snapshot.panels).length)
 }
 
 // -----------------------------------------------------------------------------
 // Restore
 // -----------------------------------------------------------------------------
+
+/**
+ * Unified workspace-layout restore. The single building block shared by the
+ * three load paths (initial multi-workspace restore, reload-from-disk, and
+ * hydrate-on-open) so they can't drift:
+ *   • teardown — dispose the live layout first (closeAllPanels) before replaying.
+ *   • remount — bump the reload epoch so the main shell remounts and respawns
+ *     terminals cleanly (used by the from-disk rebuilds, not the launch path).
+ */
+export async function restoreWorkspaceLayout(
+  snapshot: SessionSnapshot,
+  wsId: string,
+  opts: { teardown: boolean; remount: boolean },
+): Promise<void> {
+  if (opts.teardown) useAppStore.getState().closeAllPanels(wsId)
+  await restoreSession(snapshot, wsId)
+  if (opts.remount) useAppStore.getState().bumpReloadEpoch(wsId)
+}
 
 export async function restoreSession(snapshot: SessionSnapshot, workspaceId: string): Promise<void> {
   if (!snapshot) {

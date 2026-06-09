@@ -440,53 +440,16 @@ export function release(panelId: string): void {
   if (entry.ptyId) ptyToPanel.delete(entry.ptyId)
   pendingTransfers.delete(panelId) // stale transfer would hijack a future fresh mount
 
-  const { terminal, fitAddon, webglAddon, cleanupListeners } = entry
-
-  // Remove all IPC listeners and xterm disposables
-  for (const cleanup of cleanupListeners) {
-    cleanup()
-  }
-  cleanupListeners.length = 0
-
-  // Detach DOM element before disposing
-  const el = (terminal as unknown as { element?: HTMLElement }).element
-  if (el?.parentElement) {
-    el.parentElement.removeChild(el)
-  }
-
-  if (webglAddon) {
-    try { webglAddon.dispose() } catch { /* ignore */ }
-    entry.webglAddon = null
-  }
-  if (typeof (fitAddon as unknown as { dispose?: () => void }).dispose === 'function') {
-    try { (fitAddon as unknown as { dispose: () => void }).dispose() } catch { /* ignore */ }
-  }
-  try { terminal.dispose() } catch { /* ignore */ }
+  teardownEntry(entry)
 }
 
 /**
- * Fully tears down a terminal: kills the PTY, disposes all xterm addons and
- * the Terminal instance, removes IPC listeners, and removes the entry from
- * the registry.
+ * Shared teardown for a registry entry: removes IPC listeners and xterm
+ * disposables, detaches the DOM element, and disposes addons + the Terminal.
+ * Does NOT touch the registry maps or kill the PTY — callers own that.
  */
-export function dispose(panelId: string): void {
-  const entry = registry.get(panelId)
-  if (!entry) return
-
-  // Remove from registry first so re-entrant calls are no-ops
-  registry.delete(panelId)
-  if (entry.ptyId) ptyToPanel.delete(entry.ptyId)
-  pendingTransfers.delete(panelId) // stale transfer would hijack a future fresh mount
-
-  const { terminal, fitAddon, webglAddon, ptyId, cleanupListeners } = entry
-  const { electronAPI } = window
-
-  // Kill PTY and unregister from shell monitor
-  if (ptyId) {
-    electronAPI.terminalKill(ptyId).catch((err) => log.warn('[terminal] Kill failed:', err))
-    electronAPI.shellUnregisterTerminal(ptyId).catch((err) => log.warn('[terminal] Shell unregister failed:', err))
-    useStatusStore.getState().unregisterTerminal(ptyId)
-  }
+function teardownEntry(entry: RegistryEntry): void {
+  const { terminal, fitAddon, webglAddon, cleanupListeners } = entry
 
   // Remove all IPC listeners and xterm disposables
   for (const cleanup of cleanupListeners) {
@@ -512,6 +475,33 @@ export function dispose(panelId: string): void {
   }
 
   try { terminal.dispose() } catch { /* ignore */ }
+}
+
+/**
+ * Fully tears down a terminal: kills the PTY, disposes all xterm addons and
+ * the Terminal instance, removes IPC listeners, and removes the entry from
+ * the registry.
+ */
+export function dispose(panelId: string): void {
+  const entry = registry.get(panelId)
+  if (!entry) return
+
+  // Remove from registry first so re-entrant calls are no-ops
+  registry.delete(panelId)
+  if (entry.ptyId) ptyToPanel.delete(entry.ptyId)
+  pendingTransfers.delete(panelId) // stale transfer would hijack a future fresh mount
+
+  const { ptyId } = entry
+  const { electronAPI } = window
+
+  // Kill PTY and unregister from shell monitor
+  if (ptyId) {
+    electronAPI.terminalKill(ptyId).catch((err) => log.warn('[terminal] Kill failed:', err))
+    electronAPI.shellUnregisterTerminal(ptyId).catch((err) => log.warn('[terminal] Shell unregister failed:', err))
+    useStatusStore.getState().unregisterTerminal(ptyId)
+  }
+
+  teardownEntry(entry)
 }
 
 /**

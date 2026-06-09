@@ -10,10 +10,10 @@ import type { Point, Size, PanelTransferSnapshot } from '../../shared/types'
 import { PANEL_DEFAULT_SIZES, PANEL_CANVAS_DROP_SIZES } from '../../shared/types'
 import { useDragStore } from './store'
 import type { DragSource, DragOpSourceSpec, RuntimeState } from './types'
+import { applyBodyClassEffect } from './types'
 import { reduce, initial as runtimeInitial } from './runtime'
 import { resolveDrop } from './resolve'
 import { commitDrop } from './commit'
-import { normalizeGrabOffset } from './geometry'
 import { viewToCanvas } from '../lib/canvas/coordinates'
 import { dockTabGrabOffset } from './grabOffset'
 import { findNodeIdForDockStore } from '../panels/nodeDockRegistry'
@@ -272,24 +272,18 @@ function buildSnapshotFor(spec: DragOpSourceSpec): PanelTransferSnapshot | null 
     )
   }
 
-  if (spec.kind === 'panel-window') {
-    const drag = useDragStore.getState()
-    const size = drag.ghostSize ?? PANEL_DEFAULT_SIZES[spec.panelType]
-    // windowId is filled in by the main process during PANEL_RECEIVE routing;
-    // 0 is a placeholder ("the source detached window") that nothing reads back.
-    return createTransferSnapshot(
-      panel,
-      { type: 'detached', windowId: 0 },
-      { origin: { x: 0, y: 0 }, size },
-      { resolveChildPanel, workspaceRootPath: rootPath, worktrees },
-    )
-  }
-
   const drag = useDragStore.getState()
   const size = drag.ghostSize ?? PANEL_DEFAULT_SIZES[spec.panelType]
+  // panel-window: windowId is filled in by the main process during
+  // PANEL_RECEIVE routing; 0 is a placeholder ("the source detached window")
+  // that nothing reads back.
+  const location =
+    spec.kind === 'panel-window'
+      ? { type: 'detached' as const, windowId: 0 }
+      : { type: 'dock' as const, zone: spec.zone, stackId: spec.stackId }
   return createTransferSnapshot(
     panel,
-    { type: 'dock', zone: spec.zone, stackId: spec.stackId },
+    location,
     { origin: { x: 0, y: 0 }, size },
     { resolveChildPanel, workspaceRootPath: rootPath, worktrees },
   )
@@ -303,8 +297,7 @@ function runEffects(prevActive: ActiveDispatch, next: RuntimeState) {
   for (const eff of next.effects) {
     switch (eff.kind) {
       case 'set-body-class':
-        if (eff.on) document.body.classList.add(eff.cls)
-        else document.body.classList.remove(eff.cls)
+        applyBodyClassEffect(eff)
         break
       case 'push-history':
         if (prevActive.spec.kind === 'canvas-node') {
@@ -368,9 +361,6 @@ function runEffects(prevActive: ActiveDispatch, next: RuntimeState) {
           // eslint-disable-next-line no-console
           console.warn('[useDragOp] commitDrop failed', err)
         })
-        break
-      case 'clear-state':
-        // Final state published below also clears; nothing extra to do here.
         break
     }
   }

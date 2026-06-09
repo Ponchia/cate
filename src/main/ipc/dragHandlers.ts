@@ -31,6 +31,7 @@ import {
   sendToWindow,
   broadcastToAll,
   broadcastToAllExcept,
+  windowFromEvent,
 } from '../windowRegistry'
 import type { CateWindowParams, DockWindowInitPayload, PanelTransferSnapshot } from '../../shared/types'
 import {
@@ -60,7 +61,7 @@ export function registerDragHandlers({ createWindow }: DragHandlerDeps): void {
 
   // Cross-window drag-and-drop
   ipcMain.handle(DRAG_START, async (event, snapshot: PanelTransferSnapshot) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
+    const win = windowFromEvent(event)
     if (!win) return
 
     const tempFile = writeDragTempFile(snapshot)
@@ -184,7 +185,7 @@ export function registerDragHandlers({ createWindow }: DragHandlerDeps): void {
   }
 
   ipcMain.handle(CROSS_WINDOW_DRAG_START, async (event, snapshot: PanelTransferSnapshot, _screenPos: unknown) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
+    const win = windowFromEvent(event)
     if (!win) return
 
     // Refuse any cross-window drag while any Cate window is in macOS

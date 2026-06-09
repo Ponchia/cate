@@ -32,7 +32,7 @@ import {
 } from '@phosphor-icons/react'
 import type { PanelType, MenuActionId } from '../../shared/types'
 import { CateLogo } from './CateLogo'
-import { BACKDROP, CARD_SURFACE } from './Modal'
+import { PaletteDialogShell } from './Modal'
 import { useUIStore } from '../stores/uiStore'
 import { useAppStore } from '../stores/appStore'
 import { useOtherWindowPanels } from '../stores/windowPanelStore'
@@ -391,15 +391,11 @@ export const CommandPalette: React.FC = () => {
   const filesLabel = query ? 'Files' : 'Recent Files'
 
   return (
-    <div
-      className={`fixed inset-0 flex justify-center z-50 ${BACKDROP}`}
-      onClick={close}
+    <PaletteDialogShell
+      onClose={close}
+      cardClassName="w-[600px] max-w-[600px] max-h-[440px] mt-[120px] overflow-hidden flex flex-col self-start"
+      cardProps={{ 'data-onboarding': 'command-palette' }}
     >
-      <div
-        data-onboarding="command-palette"
-        className={`w-[600px] max-w-[600px] max-h-[440px] mt-[120px] overflow-hidden flex flex-col self-start ${CARD_SURFACE}`}
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Search input */}
         <div className="p-2 shrink-0">
           <div className="flex items-center gap-2 px-2.5 h-8 rounded-md bg-surface-0/60 border border-strong focus-within:border-[rgba(255,255,255,0.18)] transition-colors">
@@ -522,8 +518,7 @@ export const CommandPalette: React.FC = () => {
             </>
           )}
         </div>
-      </div>
-    </div>
+    </PaletteDialogShell>
   )
 }
 

@@ -30,7 +30,7 @@ import {
   CaretDown,
   ArrowSquareOut,
 } from '@phosphor-icons/react'
-import { BACKDROP, CARD_SURFACE } from '../ui/Modal'
+import { PaletteDialogShell } from '../ui/Modal'
 import { useUIStore } from '../stores/uiStore'
 import { useAppStore } from '../stores/appStore'
 import log from '../lib/logger'
@@ -218,11 +218,10 @@ export function SkillsDialog() {
   )
 
   return (
-    <div className={`fixed inset-0 flex justify-center z-50 ${BACKDROP}`} onClick={close}>
-      <div
-        className={`w-[600px] max-w-[600px] max-h-[560px] mt-[80px] overflow-hidden flex flex-col self-start ${CARD_SURFACE}`}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <PaletteDialogShell
+      onClose={close}
+      cardClassName="w-[600px] max-w-[600px] max-h-[560px] mt-[80px] overflow-hidden flex flex-col self-start"
+    >
         {/* Search + actions — no header bar, matching the other dialogs */}
         <div className="p-2 shrink-0 flex items-center gap-2">
           <div className="flex-1 flex items-center gap-2 px-2.5 h-8 rounded-md bg-surface-0/60 border border-strong focus-within:border-[rgba(255,255,255,0.18)] transition-colors">
@@ -291,8 +290,7 @@ export function SkillsDialog() {
             browseRows.map((e) => renderRow(e, false))
           )}
         </div>
-      </div>
-    </div>
+    </PaletteDialogShell>
   )
 }
 

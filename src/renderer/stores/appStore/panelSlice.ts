@@ -47,6 +47,7 @@ type PanelSliceActions = Pick<
   | 'removePanelRecord'
   | 'clearCanvas'
   | 'closeAllPanels'
+  | 'bumpReloadEpoch'
 >
 
 export function createPanelSlice(set: AppSet, get: AppGet): PanelSliceActions {
@@ -292,6 +293,12 @@ export function createPanelSlice(set: AppSet, get: AppGet): PanelSliceActions {
       // fresh canvas panel for the center zone.
       getOrCreateWorkspaceDockStore(wsId).getState().restoreSnapshot(createCleanDockSnapshot())
       get().ensureCenterCanvas(wsId)
+    },
+
+    bumpReloadEpoch(wsId) {
+      set((state) => ({
+        reloadEpochs: { ...state.reloadEpochs, [wsId]: (state.reloadEpochs[wsId] ?? 0) + 1 },
+      }))
     },
 
     clearCanvas(wsId, canvasPanelId) {

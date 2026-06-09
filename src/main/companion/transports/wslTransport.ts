@@ -16,9 +16,8 @@
 
 import { spawn, execFile, type ChildProcess } from 'child_process'
 import { promisify } from 'util'
-import log from '../../logger'
-import { ensureLocalTarball, localTarballIfPresent, isCompanionDevMode, releaseUrl, isCompanionTarget, type CompanionTarget } from '../companionArtifacts'
-import { shellQuote as shq, computeMarker, markersMatch, buildRemotePullCommand, bootstrapDevShared, provisionedProbe, buildInstallCheckCommand, buildExtractCommand, type CompanionChannel, type CompanionTransport } from './transport'
+import { ensureLocalTarball, isCompanionDevMode, isCompanionTarget, type CompanionTarget } from '../companionArtifacts'
+import { shellQuote as shq, bootstrapDevShared, isInstalledShared, bootstrapProdShared, buildExtractCommand, type CompanionChannel, type CompanionTransport } from './transport'
 
 const execFileP = promisify(execFile)
 
@@ -74,15 +73,8 @@ export class WslTransport implements CompanionTransport {
 
   /** Reachable + correct-version bundle present? Does NOT install. */
   async isInstalled(version: string): Promise<boolean> {
-    const installDir = await this.resolveInstallDir(version)
-    const D = shq(installDir)
-    if (isCompanionDevMode()) {
-      return (await this.wslSh(provisionedProbe(D))).stdout.includes('CATE_PROVISIONED')
-    }
-    const localTar = localTarballIfPresent(version, this.target as CompanionTarget)
-    const marker = await computeMarker(version, localTar)
-    const ok = (await this.wslSh(buildInstallCheckCommand(D))).stdout.trim()
-    return markersMatch(ok, marker, localTar, version)
+    const D = shq(await this.resolveInstallDir(version))
+    return isInstalledShared(version, D, this.target as CompanionTarget, (cmd) => this.wslSh(cmd))
   }
 
   /** Remove the whole companion install tree inside the distro (all versions). */
@@ -107,26 +99,16 @@ export class WslTransport implements CompanionTransport {
       return
     }
 
-    // See sshTransport: hash-aware marker so a changed daemon re-installs in dev.
-    const localTar = localTarballIfPresent(version, this.target as CompanionTarget)
-    const marker = await computeMarker(version, localTar)
-
-    // Already installed and current?
-    const installed = await this.wslSh(buildInstallCheckCommand(D))
-    const ok = installed.stdout.trim()
-    if (markersMatch(ok, marker, localTar, version)) return
-
-    // 1. In-distro pull.
-    const url = releaseUrl(version, this.target as CompanionTarget)
-    const pull = await this.wslSh(buildRemotePullCommand(this.installDir, url, version))
-    if (pull.stdout.includes('CATE_PULL_OK')) {
-      log.info('[companion:wsl] %s pulled tarball from release', this.target)
-      return
-    }
-    log.info('[companion:wsl] in-distro pull unavailable (%s); copying via /mnt', pull.stderr.trim() || `code ${pull.code}`)
-
-    // 2. /mnt fallback — copy the client-side tarball in and extract.
-    await this.copyTarball(version, marker)
+    // PROD: probe the `.ok` marker, then in-distro pull from the release with a
+    // /mnt copy fallback when the distro can't fetch (shared with SSH).
+    await bootstrapProdShared(version, D, {
+      tag: 'wsl',
+      target: this.target as CompanionTarget,
+      installDir: this.installDir,
+      exec: (cmd) => this.wslSh(cmd),
+      pushTarball: (v, marker) => this.copyTarball(v, marker),
+      pullFallbackLabel: '[companion:wsl] in-distro pull unavailable (%s); copying via /mnt',
+    })
   }
 
   /** Dev provisioning (mirrors sshTransport.bootstrapDev): install runtime +

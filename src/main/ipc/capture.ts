@@ -6,13 +6,14 @@ import { wrapHandler } from './handlerError'
 import { validatePath } from './pathValidation'
 import { isLocalLocator } from '../companion/locator'
 import { configureBrowserProxy } from '../browserProxy'
+import { windowFromEvent } from '../windowRegistry'
 import { CAPTURE_PAGE, WEBVIEW_SCREENSHOT, BROWSER_SET_PROXY, NATIVE_FILE_DRAG } from '../../shared/ipc-channels'
 
 export function registerCaptureHandlers(): void {
   // Capture page screenshot for panel previews
   ipcMain.handle(CAPTURE_PAGE, wrapHandler('[CAPTURE_PAGE]', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win || win.isDestroyed()) return null
+    const win = windowFromEvent(event)
+    if (!win) return null
     const image = await win.webContents.capturePage()
     return image.toDataURL()
   }))
@@ -58,7 +59,7 @@ export function registerCaptureHandlers(): void {
       return { ok: false, reason: 'remote' }
     }
     const validPath = validatePath(filePath)
-    const win = BrowserWindow.fromWebContents(event.sender)
+    const win = windowFromEvent(event)
     if (!win) return
     // Create a small drag icon from the file
     const iconSize = 64

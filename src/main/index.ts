@@ -98,7 +98,7 @@ function registerCriticalHandlers(): void {
   registerDialogHandlers()
   registerCaptureHandlers()
   registerWindowControlHandlers()
-  registerPanelWindowHandlers({ createWindow })
+  registerPanelWindowHandlers()
   registerDockWindowHandlers({ createWindow })
   registerWindowPanelHandlers()
   registerDragHandlers({ createWindow })

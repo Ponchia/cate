@@ -3,16 +3,16 @@ import {
   sendToWindow,
   setDockWindowState,
   listDockWindows,
+  windowFromEvent,
 } from '../windowRegistry'
 import { revealWindowPanel } from '../windowPanels'
 import { collectTopLevelPanelIds } from '../windows/dockState'
 import { revealWindow } from '../windows/reveal'
 import type {
-  CanvasLayoutSnapshot,
   CateWindowParams,
   DetachedDockWindowSnapshot,
   DockWindowInitPayload,
-  PanelState,
+  DockWindowSyncState,
 } from '../../shared/types'
 import {
   DOCK_WINDOW_INIT,
@@ -29,9 +29,9 @@ interface DockWindowDeps {
 export function registerDockWindowHandlers({ createWindow }: DockWindowDeps): void {
   // Dock window state sync (renderer -> main for session persistence)
   ipcMain.handle(DOCK_WINDOW_SYNC_STATE, async (event, state: unknown) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
+    const win = windowFromEvent(event)
     if (!win) return
-    setDockWindowState(win.id, state as { dockState: any; panels: Record<string, PanelState>; workspaceId: string; terminalPtyIds?: Record<string, string>; canvasStates?: Record<string, CanvasLayoutSnapshot> })
+    setDockWindowState(win.id, state as DockWindowSyncState)
   })
 
   // List all dock windows with state and bounds

@@ -20,7 +20,9 @@ import { resolveDrop } from './resolve'
 import { useSettingsStore } from '../stores/settingsStore'
 import { reduce, initial as runtimeInitial } from './runtime'
 import { remoteDragGrab } from './remoteGrab'
+import { placeNodeOnCanvas } from './commit'
 import type { DragEvent, DragSource, RuntimeState } from './types'
+import { applyBodyClassEffect } from './types'
 
 export type RemoteDropTarget =
   | { kind: 'dock'; target: DockDropTarget; dockStoreApi: StoreApi<DockStore> }
@@ -79,8 +81,7 @@ function runRemoteEffects(active: ActiveRemote, state: RuntimeState): void {
   for (const eff of state.effects) {
     switch (eff.kind) {
       case 'set-body-class':
-        if (eff.on) document.body.classList.add(eff.cls)
-        else document.body.classList.remove(eff.cls)
+        applyBodyClassEffect(eff)
         break
       case 'commit': {
         // Only handle remote-source commits here — local commits go through
@@ -125,7 +126,6 @@ function runRemoteEffects(active: ActiveRemote, state: RuntimeState): void {
       case 'cross-window-start':
       case 'cross-window-cancel':
       case 'push-history':
-      case 'clear-state':
         break
     }
   }
@@ -156,15 +156,13 @@ export function createRemoteDropHandler(opts: {
         dockTarget,
       )
     } else {
-      const canvasState = target.canvasStoreApi.getState()
-      const newNodeId = canvasState.addNode(
+      placeNodeOnCanvas(
+        target.canvasStoreApi,
         snapshot.panel.id,
         snapshot.panel.type,
         target.origin,
         target.size,
       )
-      target.canvasStoreApi.getState().resizeNode(newNodeId, target.size)
-      target.canvasStoreApi.getState().focusNode(newNodeId)
     }
   }
 }

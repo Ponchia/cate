@@ -16,6 +16,7 @@ export { saveSession } from './sessionSave'
 export { loadSession } from './sessionLoad'
 export {
   restoreSession,
+  restoreWorkspaceLayout,
   replayTerminalLog,
   reloadActiveWorkspaceFromDisk,
   isWorkspaceEffectivelyEmpty,
@@ -24,6 +25,7 @@ export {
 export {
   restoreMultiWorkspaceSession,
   restoreDetachedWindows,
+  restoreWorkspaceDetachedWindows,
   buildDockWindowRestoreInit,
   buildRestoredCanvasState,
 } from './sessionStartup'

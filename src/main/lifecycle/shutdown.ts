@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import log from '../logger'
 import { createWindow } from '../windows/windowFactory'
 import { setMainWindowReady, flushPendingOpenPaths } from './openPath'
-import { getWindowType, sendToWindow, listDockWindowIds } from '../windowRegistry'
+import { getActiveMainWindow, sendToWindow, listDockWindowIds } from '../windowRegistry'
 import { flushDockWindowsBeforeQuit } from '../dockWindowFlush'
 import { flushAllLoggers, killAllTerminals } from '../ipc/terminal'
 import { getRunningTerminals } from '../ipc/shell'
@@ -84,10 +84,8 @@ export function registerLifecycleHandlers(): void {
       const running = getRunningTerminals()
       if (running.length > 0) {
         event.preventDefault()
-        const allWindows = BrowserWindow.getAllWindows()
         const focusWin =
-          allWindows.find((w) => !w.isDestroyed() && getWindowType(w.id) === 'main') ??
-          allWindows.find((w) => !w.isDestroyed())
+          getActiveMainWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
         const count = running.length
         const name = count === 1 ? running[0].processName?.trim() : undefined
         const message =
@@ -124,8 +122,7 @@ export function registerLifecycleHandlers(): void {
 
     log.info('Before quit, flushing loggers and requesting session save')
     flushAllLoggers()
-    const allWindows = BrowserWindow.getAllWindows()
-    const mainWin = allWindows.find((w) => !w.isDestroyed() && getWindowType(w.id) === 'main')
+    const mainWin = getActiveMainWindow()
 
     if (!mainWin) {
       // No renderer to save — proceed immediately

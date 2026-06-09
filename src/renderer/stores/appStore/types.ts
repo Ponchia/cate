@@ -51,6 +51,10 @@ export interface AppStoreState {
    *  it's global rather than per-workspace). Drives the local loading blocker.
    *  `null` until seeded at init. */
   localCompanionPhase: CompanionPhase | null
+  /** Per-workspace reload counter. Bumped when a workspace's layout is rebuilt
+   *  from disk (reload / hydrate), so the main shell can remount and respawn its
+   *  terminals cleanly. Defaults to 0 for any workspace not present here. */
+  reloadEpochs: Record<string, number>
 }
 
 export interface AppStoreActions {
@@ -123,6 +127,9 @@ export interface AppStoreActions {
   renameWorkspace: (wsId: string, name: string) => void
   duplicateWorkspace: (wsId: string) => string
   closeAllPanels: (wsId: string) => void
+  /** Increment a workspace's reload epoch so the main shell remounts and
+   *  respawns its terminals after a from-disk layout rebuild. */
+  bumpReloadEpoch: (wsId: string) => void
   /** Remove every panel currently living on one canvas (dispose terminals, drop
    *  their records, empty the canvas store) without touching the rest of the
    *  workspace. Used by layout restore to replace a single canvas's contents. */

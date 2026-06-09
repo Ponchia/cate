@@ -9,7 +9,7 @@ import { consumeScopedWriteAllowance, validatePathStrict } from './pathValidatio
 import { wrapHandler } from './handlerError'
 import { parseLocator, formatLocator, LOCAL_COMPANION_ID } from '../companion/locator'
 import type { FsChangeType } from '../companion/types'
-import { companions } from '../companion/companionManager'
+import { companions, resolveLocator } from '../companion/companionManager'
 import { createKeyedDispatcher } from './batchedDispatcher'
 import { uploadEntriesToCompanion } from '../companion/uploadEntries'
 import {
@@ -465,8 +465,7 @@ function fileCompanionFor(locator: string): {
   path: string
   companionId: string
 } {
-  const { companionId, path: p } = parseLocator(locator)
-  return { companion: companions.resolve(companionId), path: p, companionId }
+  return resolveLocator(locator)
 }
 
 export function registerHandlers(): void {

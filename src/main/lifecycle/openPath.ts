@@ -1,6 +1,6 @@
-import { app, BrowserWindow } from 'electron'
+import { app } from 'electron'
 import log from '../logger'
-import { getWindowType, focusWindow } from '../windowRegistry'
+import { getActiveMainWindow, focusWindow } from '../windowRegistry'
 import { IS_E2E } from '../windows/reveal'
 import { APP_OPEN_PATH } from '../../shared/ipc-channels'
 
@@ -25,16 +25,8 @@ export function setMainWindowReady(ready: boolean): void {
   mainWindowReady = ready
 }
 
-function findMainWindow(): BrowserWindow | null {
-  for (const w of BrowserWindow.getAllWindows()) {
-    if (w.isDestroyed()) continue
-    if (getWindowType(w.id) === 'main') return w
-  }
-  return null
-}
-
 function deliverOpenPath(p: string): void {
-  const win = findMainWindow()
+  const win = getActiveMainWindow()
   if (!win || !mainWindowReady) {
     pendingOpenPaths.push(p)
     return
@@ -48,7 +40,7 @@ function deliverOpenPath(p: string): void {
 
 export function flushPendingOpenPaths(): void {
   if (!pendingOpenPaths.length) return
-  const win = findMainWindow()
+  const win = getActiveMainWindow()
   if (!win) return
   for (const p of pendingOpenPaths.splice(0)) {
     win.webContents.send(APP_OPEN_PATH, p)

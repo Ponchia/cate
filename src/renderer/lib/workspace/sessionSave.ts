@@ -21,7 +21,6 @@ import { deriveSidebarSession } from './sidebarSession'
 import { buildWorkspaceFile, buildSessionFile, collectPanelIdsFromDockState } from './sessionSerialize'
 import type {
   SessionSnapshot,
-  PanelWindowSnapshot,
   DetachedDockWindowSnapshot,
   PanelState,
   RemoteProjectEntry,
@@ -155,22 +154,7 @@ export async function saveSession(): Promise<void> {
     })
   }
 
-  // Capture detached window snapshots for inclusion in .cate/session.json
-  let panelWindows: PanelWindowSnapshot[] | undefined
-  try {
-    const pwList = await window.electronAPI.panelWindowsList()
-    if (pwList && pwList.length > 0) {
-      panelWindows = pwList.map((pw) => ({
-        panel: pw.panel,
-        bounds: pw.bounds,
-        workspaceId: pw.workspaceId,
-        terminalPtyId: pw.terminalPtyId,
-      }))
-    }
-  } catch (err) {
-    log.warn('[session] Panel window listing failed:', err)
-  }
-
+  // Capture detached dock-window snapshots for inclusion in .cate/session.json
   let dockWindows: DetachedDockWindowSnapshot[] | undefined
   try {
     const dwList = await window.electronAPI.dockWindowsList()
@@ -218,10 +202,9 @@ export async function saveSession(): Promise<void> {
     const ws = workspacesByRoot.get(snapshot.rootPath)
     const wsFile = buildWorkspaceFile(snapshot, snapshot.rootPath, ws?.color)
 
-    // Filter detached windows belonging to this workspace
-    const wsPanelWindows = panelWindows?.filter((pw) => pw.workspaceId === ws?.id)
-    const wsDockWindows = dockWindows?.filter((dw) => (dw as any).workspaceId === ws?.id)
-    const sessFile = buildSessionFile(snapshot, wsPanelWindows, wsDockWindows)
+    // Filter detached dock windows belonging to this workspace
+    const wsDockWindows = dockWindows?.filter((dw) => dw.workspaceId === ws?.id)
+    const sessFile = buildSessionFile(snapshot, wsDockWindows)
 
     // Dedup: skip IPC when the payload hasn't changed
     const serialized = JSON.stringify({ ws: wsFile, sess: sessFile })

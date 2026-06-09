@@ -12,13 +12,13 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { minimumSize, findSharedBorders, snapResizeDelta } from '../canvas/layoutEngine'
 import type { SharedBorder } from '../canvas/layoutEngine'
 import type { PanelType, Point, Size } from '../../shared/types'
-import { detectEdge, getCursorForEdge } from './resizeEdge'
+import { getCursorForEdge } from './resizeEdge'
 import type { ResizeEdge } from './resizeEdge'
 import { pinDocumentCursor } from '../lib/dom/pinDocumentCursor'
 
 // Re-exported so existing importers (CanvasNode, useNodeResizeCursor,
 // NodeResizeOverlay) keep importing from this module unchanged.
-export { detectEdge, getCursorForEdge } from './resizeEdge'
+export { getCursorForEdge } from './resizeEdge'
 export type { ResizeEdge } from './resizeEdge'
 
 interface PendingResize {
@@ -50,7 +50,6 @@ interface UseNodeResizeReturn {
   isResizing: boolean
   resizeEdge: ResizeEdge | null
   handleResizeStart: (e: React.MouseEvent, edge: ResizeEdge) => void
-  getCursor: (edge: ResizeEdge | null) => string
 }
 
 /** Whether the edge is a cardinal (non-corner) edge. */
@@ -450,15 +449,9 @@ export function useNodeResize(
     [nodeId, panelType, minSize.width, minSize.height],
   )
 
-  const getCursor = useCallback(
-    (edge: ResizeEdge | null): string => getCursorForEdge(edge),
-    [],
-  )
-
   return {
     isResizing: isResizingRef.current,
     resizeEdge: currentEdgeRef.current,
     handleResizeStart,
-    getCursor,
   }
 }

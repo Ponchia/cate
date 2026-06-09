@@ -22,14 +22,20 @@
 // =============================================================================
 
 import {
-  FIELD_CELL, REACH, OUTER_REACH_SCALE, INTENSITY, OUTER_LEVEL, CORNER, PANEL_CORNER, SMINK,
+  FIELD_CELL, CORNER, PANEL_CORNER, SMINK,
   COLOR_BLEND,
-  INNER_RING_FRAC, OUTLINE_WIDTH, OUTLINE_ALPHA, WARP_AMP, WARP_FREQ,
+  OUTLINE_WIDTH, OUTLINE_ALPHA, WARP_AMP, WARP_FREQ,
 } from './territoryConfig'
 import {
   fbm, sdRoundRect, smin, sdSegment, hexToRgb, type TerritoryRect,
 } from './territoryMath'
-import { buildBridges } from './territoryGeometry'
+import {
+  buildBridges,
+  INNER_RING as innerRing,
+  OUTER_REACH as outerReach,
+  OUTER_A as outerA,
+  INNER_EXTRA as innerExtra,
+} from './territoryGeometry'
 
 export type { TerritoryRect }
 export interface TerritoryGroup {
@@ -223,8 +229,6 @@ export function drawTerritory(
   const rows = Math.ceil(height / cell) + 1
   const N = cols * rows
 
-  const innerRing = REACH * INNER_RING_FRAC
-  const outerReach = REACH * OUTER_REACH_SCALE
   const G = groups.length
   const rgbs = groups.map((g) => hexToRgb(g.color))
 
@@ -284,8 +288,6 @@ export function drawTerritory(
   })
 
   const combined = ensureCombined(N)
-  const outerA = INTENSITY * OUTER_LEVEL
-  const innerExtra = (INTENSITY - outerA) / (1 - outerA)
   const line = 'rgb(206,217,236)'
 
   const multi = G > 1

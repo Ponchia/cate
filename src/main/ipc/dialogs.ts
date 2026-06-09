@@ -8,6 +8,7 @@ import { isLocalLocator } from '../companion/locator'
 import { forwardFileGrant } from '../companion/companionManager'
 import { recordPersistentGrant } from '../grantedPathStore'
 import { importCanvasBackgroundImage } from '../canvasBackgroundStore'
+import { windowFromEvent } from '../windowRegistry'
 import {
   SHELL_SHOW_IN_FOLDER,
   DIALOG_OPEN_FOLDER,
@@ -52,7 +53,7 @@ export function registerDialogHandlers(): void {
   // bytes via CANVAS_READ_BACKGROUND_IMAGE; no path grant is needed because that
   // reader runs in main (full fs access) rather than through the sandboxed fs IPC.
   ipcMain.handle(DIALOG_OPEN_IMAGE, async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const win = windowFromEvent(event)
     const result = await dialog.showOpenDialog(win!, {
       title: 'Choose Canvas Background Image',
       properties: ['openFile'],
@@ -96,7 +97,7 @@ export function registerDialogHandlers(): void {
 
   // Native Save-As dialog for untitled editor buffers.
   ipcMain.handle(DIALOG_SAVE_FILE, async (event, payload: { defaultName?: string; defaultPath?: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const win = windowFromEvent(event)
     const result = await dialog.showSaveDialog(win!, {
       title: 'Save File',
       defaultPath: payload?.defaultPath || payload?.defaultName || 'Untitled.txt',
@@ -153,7 +154,7 @@ export function registerDialogHandlers(): void {
   ipcMain.handle(
     DIALOG_CONFIRM_UNSAVED,
     async (event, payload: { fileName?: string; multiple?: boolean; filePath?: string }) => {
-      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const win = windowFromEvent(event)
       const name = payload?.fileName ?? 'this file'
       const message = payload?.multiple
         ? `Do you want to save the changes you made to ${payload?.fileName ?? 'these files'}?`
@@ -186,7 +187,7 @@ export function registerDialogHandlers(): void {
   ipcMain.handle(
     DIALOG_CONFIRM_CLOSE_TERMINAL,
     async (event, payload: { count?: number; processName?: string | null }) => {
-      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const win = windowFromEvent(event)
       const count = payload?.count ?? 1
       const name = payload?.processName?.trim()
       const message =
@@ -217,7 +218,7 @@ export function registerDialogHandlers(): void {
   // move the panels to another canvas, delete them, or cancel. When it's the
   // last canvas (or empty) a simple close/cancel prompt is shown.
   ipcMain.handle(DIALOG_CONFIRM_CLOSE_CANVAS, async (event, payload: { panelCount: number; isLast: boolean }) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const win = windowFromEvent(event)
     const { panelCount, isLast } = payload ?? { panelCount: 0, isLast: true }
 
     // Simple close prompt: last canvas, or an empty canvas on a multi-canvas workspace.
@@ -254,7 +255,7 @@ export function registerDialogHandlers(): void {
   // Ask whether to copy or move external files/folders dropped onto the file
   // explorer into a workspace directory.
   ipcMain.handle(DIALOG_CONFIRM_IMPORT, async (event, payload: { count: number; destName: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const win = windowFromEvent(event)
     const count = payload?.count ?? 0
     const destName = payload?.destName ?? 'this folder'
     const result = await dialog.showMessageBox(win!, {
@@ -272,7 +273,7 @@ export function registerDialogHandlers(): void {
   // Confirm reloading the canvas after the workspace.json file changed on disk
   // (edited externally while Cate was running).
   ipcMain.handle(DIALOG_CONFIRM_RELOAD_WORKSPACE, async (event, payload: { name?: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const win = windowFromEvent(event)
     const name = payload?.name?.trim()
     const result = await dialog.showMessageBox(win!, {
       type: 'question',
@@ -290,7 +291,7 @@ export function registerDialogHandlers(): void {
   // terminalLinkOpenTarget setting is 'ask'). The chosen target is remembered by
   // the renderer and can be changed later in Settings → Browser.
   ipcMain.handle(DIALOG_TERMINAL_LINK_OPEN, async (event, payload: { url: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const win = windowFromEvent(event)
     const url = payload?.url ?? ''
     const result = await dialog.showMessageBox(win!, {
       type: 'question',

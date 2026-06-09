@@ -178,10 +178,11 @@ describe('depositCanvasChildTransfers — receiver reconnect', () => {
     expect(setPendingTransfer).not.toHaveBeenCalled()
   })
 
-  // Cold restore: a child terminal carries `replayPtyId` (its dead PTY) instead
-  // of a live `ptyId`, so the receiver must seed terminalRestoreData to spawn a
-  // fresh PTY and replay that log — NOT reconnect via setPendingTransfer.
-  it('seeds terminalRestoreData for replayPtyId children and reconnects ptyId ones', () => {
+  // depositCanvasChildTransfers handles LIVE transfers only: a child terminal
+  // with a live `ptyId` reconnects via setPendingTransfer. Cold restore does NOT
+  // flow through here — the shell arms replay for every terminal panel by its
+  // stable panelId, so depositCanvasChildTransfers must not touch terminalRestoreData.
+  it('reconnects live ptyId children and leaves terminalRestoreData alone', () => {
     terminalRestoreData.clear()
     depositCanvasChildTransfers({
       nodes: {},
@@ -190,14 +191,10 @@ describe('depositCanvasChildTransfers — receiver reconnect', () => {
       childPanels: {},
       childTerminals: {
         live: { ptyId: 'pty-live', scrollback: 'LL' },
-        dead: { replayPtyId: 'pty-dead' },
       },
     })
 
-    // Live entry reconnects; restore entry replays.
     expect(setPendingTransfer).toHaveBeenCalledWith('live', 'pty-live', 'LL')
-    expect(setPendingTransfer).not.toHaveBeenCalledWith('dead', expect.anything(), expect.anything())
-    expect(terminalRestoreData.get('dead')).toEqual({ replayFromId: 'pty-dead' })
     expect(terminalRestoreData.has('live')).toBe(false)
     terminalRestoreData.clear()
   })

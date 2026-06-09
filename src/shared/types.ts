@@ -261,13 +261,20 @@ export type CateWindowType = 'main' | 'panel' | 'dock'
  *  can list/reveal the panels that live in OTHER windows (it filters out its own
  *  by panel id). `parentCanvasId` is set for panels nested inside a canvas, so
  *  the overview can render a detached canvas with its children. */
-export interface WindowPanelInfo {
+export interface WindowPanelInfo extends WindowPanelReport {
+  ownerWindowId: number
+  ownerWindowType: CateWindowType
+}
+
+/** A single window's report of its panels for cross-window discovery, sent on
+ *  appStore change by every window type. Main stamps the owning window + type to
+ *  turn each into a WindowPanelInfo. `parentCanvasId` is resolved renderer-side
+ *  from the window's canvas stores. */
+export interface WindowPanelReport {
   panelId: string
   type: PanelType
   title: string
   workspaceId: string
-  ownerWindowId: number
-  ownerWindowType: CateWindowType
   /** Set when this panel lives inside a canvas panel in its window. */
   parentCanvasId?: string
   /** The panel's worktree tag (if any), so the overview can tint a detached
@@ -284,22 +291,6 @@ export interface WindowPanelInfo {
   agentName?: string | null
   /** Whether the owner window's scan found listening ports for this panel, so a
    *  detached row shows the same port dot as a local one. */
-  hasPorts?: boolean
-}
-
-/** A single window's report of its panels for cross-window discovery, sent on
- *  appStore change by every window type. Main stamps the owning window + type to
- *  turn each into a WindowPanelInfo. `parentCanvasId` is resolved renderer-side
- *  from the window's canvas stores. */
-export interface WindowPanelReport {
-  panelId: string
-  type: PanelType
-  title: string
-  workspaceId: string
-  parentCanvasId?: string
-  worktreeId?: string
-  agentState?: AgentState
-  agentName?: string | null
   hasPorts?: boolean
 }
 
@@ -325,14 +316,19 @@ export interface DockWindowInitPayload {
    *  detached window's stub workspace can resolve each panel's worktree accent —
    *  without it, worktree pills/tab tints render colorless in detached windows. */
   worktrees?: WorktreeMeta[]
-  /** Session-restore only: per top-level terminal panelId → the (now-dead) ptyId
-   *  whose saved scrollback log should be replayed into the freshly-spawned PTY.
-   *  Absent for a fresh live single-panel detach (which uses PANEL_RECEIVE). */
-  terminalReplayPtyIds?: Record<string, string>
+  /** Session-restore marker. When true, the receiving shell arms scrollback
+   *  replay for EVERY terminal panel (top-level + canvas children) by its stable
+   *  panelId — identical to the main window's restore. Absent/false for a fresh
+   *  live detach, where the terminal arrives live via PANEL_RECEIVE instead. */
+  restore?: boolean
+  /** Session-restore only: per terminal panelId → its last working directory, so
+   *  a respawned terminal lands where it was. Keyed by the stable panelId (same
+   *  as the main window's snapshot.terminalCwds). */
+  terminalCwds?: Record<string, string>
   /** Session-restore only: per top-level canvas panelId → its reconstructed
-   *  canvas hydration (nodes/viewport + child panels + child terminal replay
-   *  hints), so EVERY canvas tab restores its children rather than only the
-   *  first. Absent for a fresh live detach. */
+   *  canvas hydration (nodes/viewport + child panels), so EVERY canvas tab
+   *  restores its children rather than only the first. Absent for a fresh live
+   *  detach. */
   canvasStates?: Record<string, PanelTransferSnapshot['canvasState']>
 }
 
@@ -349,8 +345,11 @@ export interface DetachedDockWindowSnapshot {
   panels: Record<string, PanelState>
   bounds: { x: number; y: number; width: number; height: number }
   workspaceId: string
-  /** Map of terminal panelId → ptyId, so the scrollback log can be replayed on restore. */
-  terminalPtyIds?: Record<string, string>
+  /** Per terminal panelId → its last working directory, so a respawned terminal
+   *  lands where it was. Scrollback itself is persisted on disk keyed by the
+   *  stable panelId (`<panelId>.scrollback`), exactly like the main window — no
+   *  ptyId indirection, so restore never depends on a captured live-ptyId map. */
+  terminalCwds?: Record<string, string>
   /** Per-canvas-panel layout snapshots (nodes + viewport), keyed by canvas panelId,
    *  so a detached canvas window restores its children instead of landing empty.
    *  Optional for back-compat with session files written before this existed. */
@@ -407,20 +406,15 @@ export interface PanelTransferSnapshot {
   // Without these the receiving window can't resolve child panel types/titles
   // and falls back to a generic "Panel" stub.
   //
-  // `childTerminals` carries each child terminal's restore hint, keyed by child
-  // panel id, in one of two mutually-exclusive modes:
-  //   • LIVE transfer (`ptyId` + `scrollback`): the receiving window RECONNECTS
-  //     to the still-running process — the same live transfer a top-level
-  //     terminal gets via `terminalPtyId`.
-  //   • RESTORE / cold start (`replayPtyId`): the original PTY is dead, so the
-  //     receiver spawns a FRESH PTY and replays that dead PTY's saved scrollback
-  //     log — mirroring the main canvas's terminalRestoreData replay path.
-  canvasState?: {
-    nodes: Record<CanvasNodeId, CanvasNodeState>
-    viewportOffset: Point
-    zoomLevel: number
+  // `childTerminals` carries each child terminal's LIVE-transfer hand-off, keyed
+  // by child panel id: the receiving window RECONNECTS to the still-running
+  // process (`ptyId` + `scrollback`) — the same live transfer a top-level
+  // terminal gets via `terminalPtyId`. Cold session restore does NOT use this:
+  // the receiving shell arms scrollback replay for every terminal panel by its
+  // stable panelId (see DockWindowInitPayload.restore), mirroring the main window.
+  canvasState?: CanvasLayoutSnapshot & {
     childPanels: Record<string, PanelState>
-    childTerminals?: Record<string, { ptyId?: string; scrollback?: string; replayPtyId?: string }>
+    childTerminals?: Record<string, { ptyId?: string; scrollback?: string }>
   }
 }
 
@@ -963,7 +957,18 @@ export interface DockStateSnapshot {
   locations: Record<string, PanelLocation>
 }
 
-/** Snapshot of a detached panel window for session persistence. */
+/** Dock-window sync payload sent renderer -> main for session persistence. */
+export interface DockWindowSyncState {
+  dockState: DockStateSnapshot
+  panels: Record<string, PanelState>
+  /** Optional: the detached shell does not always echo back its workspace id;
+   *  when absent, main keeps the id set at window creation. */
+  workspaceId?: string
+  terminalCwds?: Record<string, string>
+  canvasStates?: Record<string, CanvasLayoutSnapshot>
+}
+
+// Legacy: detached single-panel windows (removed). Retained only to migrate old session files into dock windows.
 export interface PanelWindowSnapshot {
   panel: PanelState
   bounds: { x: number; y: number; width: number; height: number }
@@ -976,8 +981,6 @@ export interface MultiWorkspaceSession {
   version: 2
   selectedWorkspaceIndex: number | null
   workspaces: SessionSnapshot[]
-  /** Detached panel windows — added in Phase 5. Missing = no panel windows (migration). */
-  panelWindows?: PanelWindowSnapshot[]
   /** Detached dock windows with full dock layout. Missing = no dock windows (migration). */
   dockWindows?: DetachedDockWindowSnapshot[]
 }
@@ -1027,8 +1030,6 @@ export interface ProjectSessionFile {
    *  terminal working directory, and unsaved scratch content kept out of the
    *  committed file. */
   panels: Record<string, ProjectSessionPanel>
-  /** Detached panel windows (machine-local, not committed). */
-  panelWindows?: PanelWindowSnapshot[]
   /** Detached dock windows (machine-local, not committed). */
   dockWindows?: DetachedDockWindowSnapshot[]
   /** Git worktree registry (id/path/branch/color/label). Machine-local because

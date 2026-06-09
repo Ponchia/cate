@@ -18,7 +18,6 @@ vi.mock('./perf/perfMonitor', () => ({ PERF_ENABLED: false, countIpc: vi.fn() })
 import {
   registerWindow,
   setDockWindowState,
-  setPanelWindowMeta,
 } from './windowRegistry'
 import {
   setWindowPanels,
@@ -206,9 +205,9 @@ describe('cross-window panel discovery (main)', () => {
     expect(revealWindowPanel('nope')).toBe(false)
   })
 
-  it('does NOT drive discovery from the dock/panel session-persistence syncs', () => {
+  it('does NOT drive discovery from the dock session-persistence sync', () => {
     const main = open(1, 'main', 'ws-A')
-    const dock = open(150, 'dock', 'ws-A')
+    open(150, 'dock', 'ws-A')
     const before = broadcastsTo(main).length
 
     // Session-persistence syncs update windowRegistry state but must not touch
@@ -218,7 +217,6 @@ describe('cross-window panel discovery (main)', () => {
       panels: { t1: { id: 't1', type: 'terminal', title: 'Terminal 1', isDirty: false } as PanelState },
       workspaceId: 'ws-A',
     })
-    setPanelWindowMeta(dock.id, { id: 'p1', type: 'browser', title: 'Docs', isDirty: false } as PanelState, 'ws-A')
 
     expect(broadcastsTo(main).length).toBe(before)
     expect(getWindowPanels()).toHaveLength(0)

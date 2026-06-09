@@ -3,7 +3,7 @@
 // Ported from MainWindowView.swift
 // =============================================================================
 
-import React, { useEffect, useRef, useState, useCallback, Suspense } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import log from './lib/logger'
 import { useAppStore, useSelectedWorkspace, setupWorkspaceSync, getWorkspaceCanvasStore } from './stores/appStore'
 import { useCanvasStore } from './stores/canvasStore'
@@ -18,11 +18,10 @@ import { useFileDropTracker, FileDropOverlay } from './drag/fileDropTarget'
 import { useProcessMonitor } from './hooks/useProcessMonitor'
 import { Sidebar, RightSidebar } from './sidebar/Sidebar'
 import { renderPanelComponent, PANEL_REGISTRY } from './panels/registry'
+import { PanelSuspense } from './panels/PanelSuspense'
 const CanvasPanel = PANEL_REGISTRY.canvas.Component
 import { CompanionLockOverlay } from './ui/CompanionLockOverlay'
 import WindowChrome from './shells/WindowChrome'
-import { SavedLayoutsDialog } from './dialogs/SavedLayoutsDialog'
-import { SkillsDialog } from './dialogs/SkillsDialog'
 import { PostUpdateFeedbackDialog } from './dialogs/PostUpdateFeedbackDialog'
 import { UpdateReadyDialog } from './dialogs/UpdateReadyDialog'
 import { WelcomeDialog } from './dialogs/WelcomeDialog'
@@ -33,7 +32,6 @@ import { loadSession, restoreSession, restoreMultiWorkspaceSession, restoreDetac
 import type { MultiWorkspaceSession } from '../shared/types'
 import { useDockStore } from './stores/dockStore'
 import MainWindowShell from './shells/MainWindowShell'
-import PanelWindowShell from './shells/PanelWindowShell'
 import DockWindowShell from './shells/DockWindowShell'
 import TitlebarStrip from './shells/TitlebarStrip'
 import { WindowTypeContext } from './stores/WindowTypeContext'
@@ -83,19 +81,6 @@ export default function App() {
     )
   }
 
-  // Panel windows get a lightweight shell — no canvas, no dock zones (legacy)
-  if (windowParams.type === 'panel') {
-    return (
-      <WindowTypeContext.Provider value="panel">
-        <PanelWindowShell
-          panelType={windowParams.panelType}
-          panelId={windowParams.panelId}
-          workspaceId={windowParams.workspaceId}
-        />
-      </WindowTypeContext.Provider>
-    )
-  }
-
   return (
     <WindowTypeContext.Provider value="main">
       <MainApp />
@@ -121,6 +106,9 @@ function MainApp() {
   // Store state
   const currentWorkspace = useSelectedWorkspace()
   const selectedWorkspaceId = useAppStore((s) => s.selectedWorkspaceId)
+  // Reload epoch for the active workspace — part of the shell key so a from-disk
+  // rebuild remounts the shell (and respawns terminals) cleanly.
+  const reloadEpoch = useAppStore((s) => (selectedWorkspaceId ? s.reloadEpochs[selectedWorkspaceId] ?? 0 : 0))
   // The active workspace's OWN dock + canvas stores. The shell is keyed by
   // selectedWorkspaceId so it remounts on switch and reads these — no shared
   // store is ever swapped, so content can't bleed across workspaces. These
@@ -159,8 +147,7 @@ function MainApp() {
     // Treat the default "Workspace" placeholder as no real name, so the title
     // is just "Cate" until the user actually renames the workspace.
     const title = name && name !== 'Workspace' ? `${name} · Cate` : 'Cate'
-    const api = (window as unknown as { electronAPI?: { windowSetTitle?: (t: string) => Promise<void> } }).electronAPI
-    api?.windowSetTitle?.(title).catch(() => { /* noop */ })
+    window.electronAPI?.windowSetTitle(title).catch(() => { /* noop */ })
   }, [currentWorkspace?.name])
 
   // When the active workspace's workspace.json is detected to have changed on
@@ -253,9 +240,15 @@ function MainApp() {
         if (ric) ric(fn)
         else setTimeout(fn, 0)
       }
-      defer(() => {
+      defer(async () => {
+        // Recreate detached windows BEFORE autosave starts. Otherwise the first
+        // autosave can run while the restored windows haven't yet synced their
+        // state back to main, list zero detached windows, and overwrite
+        // session.json — dropping them on the next restart. Each restored window
+        // syncs as soon as it's ready (DockWindowShell), so by the time this
+        // resolves main can list them.
         if (restoredSession) {
-          restoreDetachedWindows(restoredSession).catch((err) => log.warn('[session] detached restore failed:', err))
+          await restoreDetachedWindows(restoredSession).catch((err) => log.warn('[session] detached restore failed:', err))
         }
         setupAutoSave()
         setupWorkspaceSync()
@@ -380,11 +373,7 @@ function MainApp() {
       const content = renderPanelComponent(panel, { workspaceId: selectedWorkspaceId, nodeId, zoomLevel: zoom })
       if (!content) return null
 
-      return (
-        <Suspense fallback={<div className="w-full h-full bg-surface-4 flex items-center justify-center text-muted text-sm">Loading...</div>}>
-          {content}
-        </Suspense>
-      )
+      return <PanelSuspense>{content}</PanelSuspense>
     },
     [currentWorkspace, selectedWorkspaceId],
   )
@@ -399,14 +388,14 @@ function MainApp() {
       // Canvas panels get their own full canvas with renderPanelContent for nodes
       if (panel.type === 'canvas') {
         return (
-          <Suspense fallback={<div className="w-full h-full bg-surface-4 flex items-center justify-center text-muted text-sm">Loading...</div>}>
+          <PanelSuspense>
             <CanvasPanel
               panelId={panelId}
               workspaceId={selectedWorkspaceId}
               nodeId=""
               renderPanelContent={renderPanelContent}
             />
-          </Suspense>
+          </PanelSuspense>
         )
       }
 
@@ -436,7 +425,7 @@ function MainApp() {
       <div className="relative flex-1 min-h-0 min-w-0">
       <DockStoreProvider store={activeDockStore}>
       <MainWindowShell
-        key={selectedWorkspaceId}
+        key={`${selectedWorkspaceId}:${reloadEpoch}`}
         renderPanel={renderDockPanel}
         getPanelTitle={getPanelTitle}
         onClosePanel={handleDockClosePanel}
@@ -456,12 +445,11 @@ function MainApp() {
       {/* Single shared file-drag drop indicator (canvas / dock / agent) */}
       <FileDropOverlay />
 
-      {/* Shared overlay chrome (command palette + settings + drag overlay) */}
+      {/* Shared overlay chrome (command palette + settings + skills +
+          saved-layouts dialogs + drag overlay) — rendered for every window. */}
       <WindowChrome />
 
       {/* Main-only modal overlays */}
-      <SavedLayoutsDialog />
-      <SkillsDialog />
       <WelcomeDialog />
       <OnboardingTour />
       <PostUpdateFeedbackDialog />

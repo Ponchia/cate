@@ -78,6 +78,15 @@ export interface PanelRenameProps {
   onContextMenu: (e: React.MouseEvent) => void
 }
 
+/** Display label for a panel row: explicit title, else the file basename, else
+ *  the url, else the panel type. Param is the minimal shape shared by the
+ *  TerminalPanelRow prop and a full PanelState. */
+export function panelRowLabel(
+  panel: { type: PanelType; title?: string; filePath?: string; url?: string },
+): string {
+  return panel.title || panel.filePath?.split('/').pop() || panel.url || panel.type
+}
+
 export interface TerminalPanelRowProps {
   panel: { id: string; type: PanelType; title?: string; filePath?: string; url?: string }
   indent: boolean
@@ -98,7 +107,7 @@ const AWAIT_COLOR = '#c08a5a'
 
 export const TerminalPanelRow: React.FC<TerminalPanelRowProps> = ({ panel, indent, agentState, agentLogo: agentLogoProp, hasPorts, worktreeColor, onClick, onClose, rename, titleHint }) => {
   const Icon = PANEL_ICONS[panel.type] ?? TerminalIcon
-  const label = panel.title || panel.filePath?.split('/').pop() || panel.url || panel.type
+  const label = panelRowLabel(panel)
 
   const isRunning = agentState === 'running'
   const isAwaiting = agentState === 'waitingForInput'
@@ -282,6 +291,11 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   const [renamingPanelId, setRenamingPanelId] = useState<string | null>(null)
   const [panelRenameValue, setPanelRenameValue] = useState('')
 
+  const beginRename = useCallback(() => {
+    setRenameValue(workspace.name || (workspace.rootPath ? workspaceDisplayName(workspace.rootPath) : '') || 'Workspace')
+    setIsRenaming(true)
+  }, [workspace.name, workspace.rootPath])
+
   const handleContextMenu = useCallback(async (e: React.MouseEvent) => {
     if (onBulkContextMenu) {
       const handled = await onBulkContextMenu(e)
@@ -327,8 +341,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     switch (id) {
       case 'select': app.selectWorkspace(workspace.id); break
       case 'rename':
-        setRenameValue(workspace.name || workspaceDisplayName(workspace.rootPath) || 'Workspace')
-        setIsRenaming(true)
+        beginRename()
         break
       case 'select-folder': {
         const path = await window.electronAPI.openFolderDialog()
@@ -351,7 +364,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
       case 'close-panels': app.closeAllPanels(workspace.id); break
       case 'remove': app.removeWorkspace(workspace.id, true); break
     }
-  }, [workspace.id, workspace.name, workspace.rootPath, workspace.color, workspace.panels, isSelected, onBulkContextMenu])
+  }, [workspace.id, workspace.name, workspace.rootPath, workspace.color, workspace.panels, isSelected, onBulkContextMenu, beginRename])
 
   useEffect(() => {
     if (isRenaming && renameInputRef.current) {
@@ -419,11 +432,6 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     e.stopPropagation()
     await focusWorkspacePanel(workspace.id, panelId)
   }, [workspace.id])
-
-  const beginRename = useCallback(() => {
-    setRenameValue(workspace.name || (workspace.rootPath ? workspaceDisplayName(workspace.rootPath) : '') || 'Workspace')
-    setIsRenaming(true)
-  }, [workspace.name, workspace.rootPath])
 
   const handleTitleClick = useCallback((e: React.MouseEvent) => {
     // Modified clicks are multi-select gestures — let them fall through to the
@@ -532,7 +540,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   }
 
   const renderPanelRow = (p: PanelState, indent = false) => {
-    const label = p.title || p.filePath?.split('/').pop() || p.url || p.type
+    const label = panelRowLabel(p)
     const isRenaming = renamingPanelId === p.id
     const rename: PanelRenameProps = {
       renameValue: isRenaming ? panelRenameValue : null,

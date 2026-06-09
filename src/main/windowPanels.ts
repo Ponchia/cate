@@ -9,10 +9,10 @@
 // and excludes its own panels by id, so what's left is the panels that live in
 // OTHER windows (surfaced by the overview + command palette).
 //
-// This is deliberately decoupled from the dock/panel session-persistence syncs
-// (windowRegistry's setDockWindowState / setPanelWindowMeta): those persist heavy
-// state on their own cadence and no longer drive discovery, so the union never
-// lags behind a 5s persistence tick.
+// This is deliberately decoupled from the dock session-persistence sync
+// (windowRegistry's setDockWindowState): it persists heavy state on its own
+// cadence and no longer drives discovery, so the union never lags behind a 5s
+// persistence tick.
 //
 // The dependency is one-directional: this module reads windowRegistry's public
 // getters and subscribes to onWindowClosed; windowRegistry never imports it.

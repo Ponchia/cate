@@ -8,6 +8,7 @@ import { readBootSnapshot, writeBootSnapshot } from '../store'
 import {
   registerWindow,
   getWindowType,
+  getActiveMainWindow,
 } from '../windowRegistry'
 import { stopWatchersForWindow } from '../ipc/filesystem'
 import { unregisterTerminalsForWindow } from '../ipc/shell'
@@ -29,7 +30,6 @@ import type { CateWindowParams } from '../../shared/types'
 export function createWindow(params?: CateWindowParams): BrowserWindow {
   const iconPath = path.join(__dirname, '../../build/icon-1024.png')
   const windowType = params?.type ?? 'main'
-  const isPanel = windowType === 'panel'
   const isDock = windowType === 'dock'
 
   // Boot snapshot — used only for the main window. Lets us restore the user's
@@ -53,21 +53,21 @@ export function createWindow(params?: CateWindowParams): BrowserWindow {
   }
 
   const win = new BrowserWindow({
-    width: snapGeom?.width ?? (isDock ? 700 : isPanel ? 700 : 1200),
-    height: snapGeom?.height ?? (isDock ? 500 : isPanel ? 500 : 800),
+    width: snapGeom?.width ?? (isDock ? 700 : 1200),
+    height: snapGeom?.height ?? (isDock ? 500 : 800),
     x: snapGeom?.x,
     y: snapGeom?.y,
     show: false,
-    minWidth: isDock ? 400 : isPanel ? undefined : 800,
-    minHeight: isDock ? 300 : isPanel ? undefined : 600,
-    title: isDock ? 'Cate' : isPanel ? 'Cate Panel' : 'Cate',
+    minWidth: isDock ? 400 : 800,
+    minHeight: isDock ? 300 : 600,
+    title: 'Cate',
     // macOS: hide the native title bar and draw a themed strip in its place (the
     // macOS native bar can't be tinted to a theme color — only dark/light — so we
-    // always use `hiddenInset`/`hidden` and render TitlebarStrip).
+    // always use `hiddenInset` and render TitlebarStrip).
     // Windows/Linux: go fully frameless and draw our own window controls in the
     // renderer (WindowControls), so the chrome matches the theme. `titleBarStyle`
     // is irrelevant once `frame:false`.
-    titleBarStyle: process.platform === 'darwin' ? (isPanel ? 'hidden' : 'hiddenInset') : 'default',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     // Align traffic lights with our 28px themed TitlebarStrip on macOS. Apple's
     // standard NSWindow title bar is ~28pt with lights at y≈7; matching that
     // here makes the themed bar visually identical to a native title bar.
@@ -78,9 +78,9 @@ export function createWindow(params?: CateWindowParams): BrowserWindow {
         : windowType === 'main'
           ? { x: 10, y: 6 }
           : undefined,
-    // macOS main windows keep a (hidden-inset) native frame; everything else —
-    // all panel/dock windows, and every window on Windows/Linux — is frameless.
-    frame: process.platform === 'darwin' ? !(isPanel || isDock) : false,
+    // macOS main windows keep a (hidden-inset) native frame; dock windows — and
+    // every window on Windows/Linux — are frameless.
+    frame: process.platform === 'darwin' ? !isDock : false,
     backgroundColor: bgColor,
     icon: nativeImage.createFromPath(iconPath),
     webPreferences: {
@@ -133,7 +133,7 @@ export function createWindow(params?: CateWindowParams): BrowserWindow {
   installRendererCrashRecovery(win, windowType, windowId)
 
   // Re-arm grants for every persisted Save-As path so editors restored in
-  // this window (any window type — main, panel, dock) can read+save their
+  // this window (any window type — main, dock) can read+save their
   // out-of-workspace files. We check the file still exists; missing entries
   // are pruned so the store doesn't grow unbounded with stale paths. The
   // returned promise gates loadURL below so the renderer's session-restore
@@ -162,15 +162,15 @@ export function createWindow(params?: CateWindowParams): BrowserWindow {
     }
   })()
 
-  // When the main window is closed, also close any detached panel/dock
-  // windows so the app actually quits (otherwise they keep the process
-  // alive and `window-all-closed` never fires).
+  // When the main window is closed, also close any detached dock windows so
+  // the app actually quits (otherwise they keep the process alive and
+  // `window-all-closed` never fires).
   if (windowType === 'main') {
     win.on('close', () => {
       for (const other of BrowserWindow.getAllWindows()) {
         if (other.id === windowId || other.isDestroyed()) continue
         const t = getWindowType(other.id)
-        if (t === 'panel' || t === 'dock') {
+        if (t === 'dock') {
           // Use close() rather than destroy() — destroy() tears down a
           // BrowserWindow without letting its <webview> children unload,
           // which crashes the GPU/renderer process on quit and triggers
@@ -194,20 +194,19 @@ export function createWindow(params?: CateWindowParams): BrowserWindow {
     // grant maps; a window close has no locator, so fan out to all hosts).
     forwardClearScopedWriteAllowancesForWindow(windowId)
     forwardClearFileGrantsForWindow(windowId)
-    // Rebuild menu to update panel/dock window list
-    if (isPanel || isDock) rebuildApplicationMenu()
+    // Rebuild menu to update the dock window list
+    if (isDock) rebuildApplicationMenu()
     // Trigger immediate session save from main window when a child window closes
     if (windowType !== 'main') {
-      const allWindows = BrowserWindow.getAllWindows()
-      const mainWin = allWindows.find((w) => !w.isDestroyed() && getWindowType(w.id) === 'main')
+      const mainWin = getActiveMainWindow()
       if (mainWin) {
         mainWin.webContents.send(SESSION_FLUSH_SAVE)
       }
     }
   })
 
-  // Rebuild menu when panel/dock windows are created
-  if (isPanel || isDock) {
+  // Rebuild menu when dock windows are created
+  if (isDock) {
     win.webContents.once('did-finish-load', () => {
       rebuildApplicationMenu()
     })
@@ -217,34 +216,21 @@ export function createWindow(params?: CateWindowParams): BrowserWindow {
   // (e.g., hide detach affordances). The authoritative check is a sync IPC
   // handler registered once below, but these broadcasts cover the cache
   // path used by any listener that wants push updates.
-  const broadcastFullscreenState = (): void => {
-    const isFullscreen = anyWindowFullscreen()
+  const broadcastFullscreen = (value: boolean): void => {
     for (const w of BrowserWindow.getAllWindows()) {
       if (w.isDestroyed()) continue
-      try { w.webContents.send(WINDOW_FULLSCREEN_STATE, isFullscreen) } catch { /* noop */ }
+      try { w.webContents.send(WINDOW_FULLSCREEN_STATE, value) } catch { /* noop */ }
     }
   }
-  win.on('enter-full-screen', broadcastFullscreenState)
-  win.on('leave-full-screen', broadcastFullscreenState)
+  win.on('enter-full-screen', () => broadcastFullscreen(anyWindowFullscreen()))
+  win.on('leave-full-screen', () => broadcastFullscreen(anyWindowFullscreen()))
   // Fire at the *start* of the transition too so the renderer can hide the
   // header drag-region before macOS begins its slide animation, instead of
   // waiting for the post-animation enter/leave events.
-  const broadcastEntering = (): void => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      if (w.isDestroyed()) continue
-      try { w.webContents.send(WINDOW_FULLSCREEN_STATE, true) } catch { /* noop */ }
-    }
-  }
-  const broadcastLeaving = (): void => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      if (w.isDestroyed()) continue
-      try { w.webContents.send(WINDOW_FULLSCREEN_STATE, false) } catch { /* noop */ }
-    }
-  }
   // macOS-only events; cast to sidestep missing type overloads.
-  ;(win as unknown as { on: (e: string, fn: () => void) => void }).on('will-enter-full-screen', broadcastEntering)
-  ;(win as unknown as { on: (e: string, fn: () => void) => void }).on('will-leave-full-screen', broadcastLeaving)
-  win.webContents.once('did-finish-load', broadcastFullscreenState)
+  ;(win as unknown as { on: (e: string, fn: () => void) => void }).on('will-enter-full-screen', () => broadcastFullscreen(true))
+  ;(win as unknown as { on: (e: string, fn: () => void) => void }).on('will-leave-full-screen', () => broadcastFullscreen(false))
+  win.webContents.once('did-finish-load', () => broadcastFullscreen(anyWindowFullscreen()))
 
   // Push this window's own maximize state to its renderer so the custom window
   // controls (WindowControls, Windows/Linux) can swap the maximize/restore glyph.

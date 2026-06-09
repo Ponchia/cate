@@ -17,7 +17,7 @@ import { useUIStore } from '../stores/uiStore'
 import { useDragStore, useDragSourceVisibility } from '../drag'
 import { useNodeResize } from '../hooks/useNodeResize'
 import { useCanvasNodeStyle } from './useCanvasNodeStyle'
-import { useCanvasNodeDrag, countPanels } from './useCanvasNodeDrag'
+import { useCanvasNodeDrag } from './useCanvasNodeDrag'
 import { useNodeResizeCursor } from './useNodeResizeCursor'
 import { NodeResizeOverlay } from './NodeResizeOverlay'
 import type { DockStore } from '../stores/dockStore'
@@ -188,7 +188,7 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
   const handleHeaderMouseDown = useCallback((e: React.MouseEvent, panelId?: string) => {
     if (handToolPanShouldWin(e)) return
     if (panelId) {
-      const total = countPanels(dockStoreApi.getState().zones.center.layout)
+      const total = collectPanelIds(dockStoreApi.getState().zones.center.layout).length
       if (total > 1) {
         handleTabDetachStart(e, panelId)
         return
