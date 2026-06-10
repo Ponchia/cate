@@ -36,9 +36,8 @@
 // =============================================================================
 
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { globSync } from 'node:fs'
 import * as CHANNELS from '../../shared/ipc-channels'
 
 const REPO_ROOT = join(__dirname, '..', '..', '..')
@@ -86,7 +85,9 @@ function read(relFromSrc: string): string {
 function readMainSources(): string {
   const dirs = ['main', 'agent/main', 'skills/main']
   const files = dirs.flatMap((d) =>
-    globSync('**/*.ts', { cwd: join(SRC, d) }).map((f) => join(SRC, d, f)),
+    readdirSync(join(SRC, d), { recursive: true, encoding: 'utf8' })
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => join(SRC, d, f)),
   )
   return files
     .filter((f) => !/\.(test|itest)\.tsx?$/.test(f))
