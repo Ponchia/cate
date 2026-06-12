@@ -572,6 +572,8 @@ export function storedShortcut(
 
 /** Mirrors StoredShortcut.displayString from Swift. */
 export function displayString(s: StoredShortcut): string {
+  // An empty key means the binding is disabled (see clearShortcut).
+  if (!s.key) return 'None'
   const parts: string[] = []
   if (s.control) parts.push('\u2303') // ⌃
   if (s.option) parts.push('\u2325')  // ⌥
@@ -739,11 +741,13 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, StoredShortcut> = {
   undo: storedShortcut('z', { command: true }),
   redo: storedShortcut('z', { command: true, shift: true }),
   deleteNode: storedShortcut('Backspace', { command: true }),
-  // ⇧Space toggles the tool from anywhere — including a focused terminal, editor,
-  // or input — by being intercepted before the surface sees it. (Plain Space also
-  // toggles, but only when the canvas is focused, since a bare key must still type
-  // a space while you're typing.)
-  toggleTool: storedShortcut(' ', { shift: true }),
+  // ⌃⇧Space toggles the tool from anywhere — including a focused terminal,
+  // editor, or input — by being intercepted before the surface sees it. (Plain
+  // Space also toggles, but only when the canvas is focused.) Used to be plain
+  // ⇧Space, but Shift is still held when the space after `:` `(` `?` `!` lands,
+  // so normal typing kept triggering it and the space never reached the
+  // terminal (issue #371).
+  toggleTool: storedShortcut(' ', { shift: true, control: true }),
   navigateUp: storedShortcut('↑', { command: true }),
   navigateDown: storedShortcut('↓', { command: true }),
   navigateLeft: storedShortcut('←', { command: true }),
@@ -1234,6 +1238,12 @@ export interface AppSettings {
    *  stable users and the public website download are never offered betas. */
   betaUpdatesEnabled: boolean
 
+  // Shortcuts
+  /** User keyboard-shortcut overrides, keyed by action. Only bindings that
+   *  differ from DEFAULT_SHORTCUTS are stored; an entry with an empty key
+   *  means the shortcut is disabled. */
+  customShortcuts: Partial<Record<ShortcutAction, StoredShortcut>>
+
   // Agent
   /** The user-pinned default model applied to every new agent chat, or null for
    *  none. Was renderer localStorage (cate.agent.defaultModel.v1) before. */
@@ -1311,6 +1321,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   // Updates
   betaUpdatesEnabled: false,
+
+  // Shortcuts
+  customShortcuts: {},
 
   // Agent
   agentDefaultModel: null,

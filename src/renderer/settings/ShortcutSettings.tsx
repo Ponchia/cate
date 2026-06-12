@@ -2,11 +2,12 @@ import { useShortcutStore } from '../stores/shortcutStore'
 import { SHORTCUT_ACTIONS, SHORTCUT_DISPLAY_NAMES, displayString } from '../../shared/types'
 import type { ShortcutAction } from '../../shared/types'
 import { ShortcutRecorder } from './ShortcutRecorder'
-import { ArrowCounterClockwise } from '@phosphor-icons/react'
+import { ArrowCounterClockwise, X } from '@phosphor-icons/react'
 import { useSettingsSearch, matchesQuery } from './SettingsSearchContext'
 
 export function ShortcutSettings() {
   const shortcuts = useShortcutStore((s) => s.shortcuts)
+  const clearShortcut = useShortcutStore((s) => s.clearShortcut)
   const resetShortcut = useShortcutStore((s) => s.resetShortcut)
   const resetAll = useShortcutStore((s) => s.resetAll)
   const { query, sectionMatched } = useSettingsSearch()
@@ -34,6 +35,14 @@ export function ShortcutSettings() {
               currentShortcut={shortcuts[action]}
               onRecord={(shortcut) => useShortcutStore.getState().setShortcut(action, shortcut)}
             />
+            <button
+              onClick={() => clearShortcut(action)}
+              disabled={!shortcuts[action].key}
+              className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-hover text-muted hover:text-secondary disabled:opacity-30 disabled:hover:bg-transparent"
+              title="Disable shortcut"
+            >
+              <X size={12} />
+            </button>
             <button
               onClick={() => resetShortcut(action)}
               className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-hover text-muted hover:text-secondary"
