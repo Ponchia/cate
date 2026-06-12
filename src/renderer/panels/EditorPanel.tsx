@@ -35,6 +35,17 @@ import {
 import { watchFsRoot } from '../lib/fs/fsWatchManager'
 
 // -----------------------------------------------------------------------------
+// Editor font
+// -----------------------------------------------------------------------------
+
+const EDITOR_DEFAULT_FONT_FAMILY = 'Menlo, Monaco, "Courier New", monospace'
+
+/** The editorFontFamily setting, with blank falling back to the default stack. */
+function resolveEditorFontFamily(setting: string): string {
+  return setting.trim() || EDITOR_DEFAULT_FONT_FAMILY
+}
+
+// -----------------------------------------------------------------------------
 // Monaco worker setup for Electron (Vite bundler)
 // -----------------------------------------------------------------------------
 
@@ -409,6 +420,7 @@ export default function EditorPanel({
     applyMonacoTheme(getActiveTheme())
     monaco.editor.setTheme(CATE_MONACO_THEME)
     const fontSize = useSettingsStore.getState().editorFontSize
+    const fontFamily = resolveEditorFontFamily(useSettingsStore.getState().editorFontFamily)
 
     // =======================================================================
     // DIFF MODE — Monaco diff editor
@@ -416,7 +428,7 @@ export default function EditorPanel({
     if (diffMode && filePath && rootPath) {
       const diffEditor = monaco.editor.createDiffEditor(containerRef.current, {
         theme: CATE_MONACO_THEME,
-        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        fontFamily,
         fontSize: fontSize || 12,
         automaticLayout: false,
         readOnly: true,
@@ -489,7 +501,7 @@ export default function EditorPanel({
     // =======================================================================
     const editor = monaco.editor.create(containerRef.current, {
       theme: CATE_MONACO_THEME,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontFamily,
       fontSize: fontSize || 12,
       minimap: { enabled: false },
       automaticLayout: false,
@@ -684,7 +696,7 @@ export default function EditorPanel({
   }, [save, panelId])
 
   // ---------------------------------------------------------------------------
-  // Watch settings changes: editor font size
+  // Watch settings changes: editor font size / family
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
@@ -696,6 +708,14 @@ export default function EditorPanel({
         if (diffEditorRef.current) {
           diffEditorRef.current.updateOptions({ fontSize: state.editorFontSize })
         }
+      }
+      if (state.editorFontFamily !== prevState.editorFontFamily) {
+        const fontFamily = resolveEditorFontFamily(state.editorFontFamily)
+        editorRef.current?.updateOptions({ fontFamily })
+        diffEditorRef.current?.updateOptions({ fontFamily })
+        // Cached glyph metrics belong to the old font; without this, layout
+        // (cursor position, selection width) stays measured for the old face.
+        monaco.editor.remeasureFonts()
       }
     })
     return unsub

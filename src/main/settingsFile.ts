@@ -37,6 +37,7 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   systemDarkThemeId: 'string',
   customThemes: 'array',
   editorFontSize: 'number',
+  editorFontFamily: 'string',
   uiScale: 'number',
   showMinimap: 'boolean',
   defaultPanelWidth: 'number',

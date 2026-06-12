@@ -1125,6 +1125,9 @@ export interface AppSettings {
   /** User-imported / agent-authored unified themes. */
   customThemes: Theme[]
   editorFontSize: number
+  /** CSS font-family for Monaco editor panels. Empty string = built-in default
+   *  stack (Menlo, Monaco, "Courier New", monospace). */
+  editorFontFamily: string
   /** Global UI zoom for Cate's own chrome (panels, sidebars, editor, terminal),
    *  applied via webFrame.setZoomFactor in every window. 1.0 = 100%. Does not
    *  affect web pages shown in browser panels (those keep their own zoom).
@@ -1269,6 +1272,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   systemDarkThemeId: 'dark-cold',
   customThemes: [],
   editorFontSize: 12,
+  editorFontFamily: '',
   uiScale: 1.0,
 
   // Canvas
