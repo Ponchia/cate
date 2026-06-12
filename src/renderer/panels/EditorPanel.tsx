@@ -4,6 +4,8 @@
 // =============================================================================
 
 import { useEffect, useRef, useCallback, useState } from 'react'
+import type { ReactNode } from 'react'
+import { Check, Copy } from '@phosphor-icons/react'
 import { useRenderCount } from '../lib/perf/perfClient'
 import log from '../lib/logger'
 import * as monaco from 'monaco-editor'
@@ -843,6 +845,36 @@ export default function EditorPanel({
 // Markdown preview renderer
 // -----------------------------------------------------------------------------
 
+/** Fenced code block with a hover copy button, matching the agent chat's
+ *  "Copy code" affordance (#373). */
+function MarkdownCodeBlock({ children }: { children: ReactNode }) {
+  const preRef = useRef<HTMLPreElement>(null)
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="relative group my-3">
+      <pre
+        ref={preRef}
+        className="rounded-md bg-surface-3 border border-subtle px-4 py-3 overflow-x-auto text-[12px] leading-snug"
+      >
+        {children}
+      </pre>
+      <button
+        onClick={() => {
+          void navigator.clipboard.writeText(preRef.current?.textContent ?? '')
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1200)
+        }}
+        title="Copy code"
+        className={`absolute top-1.5 right-1.5 p-1 rounded-md bg-surface-3 text-muted transition-opacity hover:text-primary hover:bg-hover-strong ${
+          copied ? 'opacity-100 text-primary' : 'opacity-0 group-hover:opacity-100'
+        }`}
+      >
+        {copied ? <Check size={12} /> : <Copy size={12} />}
+      </button>
+    </div>
+  )
+}
+
 function MarkdownPreview({ content }: { content: string }) {
   return (
     <div className="absolute inset-0 overflow-auto px-6 py-4">
@@ -887,11 +919,7 @@ function MarkdownPreview({ content }: { content: string }) {
                 </code>
               )
             },
-            pre: ({ children }) => (
-              <pre className="rounded-md bg-surface-3 border border-subtle px-4 py-3 overflow-x-auto text-[12px] leading-snug my-3">
-                {children}
-              </pre>
-            ),
+            pre: ({ children }) => <MarkdownCodeBlock>{children}</MarkdownCodeBlock>,
             table: ({ children }) => (
               <div className="overflow-x-auto my-3">
                 <table className="min-w-full text-[12px] border border-subtle rounded-md">{children}</table>
