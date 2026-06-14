@@ -1117,6 +1117,9 @@ export interface ProjectPetFile {
   enabled: boolean
   /** Whether the user has paused the pet (observer holds, no new executors). */
   paused: boolean
+  /** Whether the observer runs automatically on a timer. When false, observe
+   *  turns happen only when the user clicks the idle pet. Defaults to true. */
+  autoObserve: boolean
 }
 
 // -----------------------------------------------------------------------------
@@ -1321,11 +1324,10 @@ export interface AppSettings {
    *  none. Was renderer localStorage (cate.agent.defaultModel.v1) before. */
   agentDefaultModel: AgentModelRef | null
 
-  // Canvas Pet — the models the two headless pet brains run on. null falls back
-  // to a sensible default (observer → a cheap model / agentDefaultModel; executor
-  // → agentDefaultModel). Chosen by the user in Settings → Providers.
-  petObserverModel: AgentModelRef | null
-  petExecutorModel: AgentModelRef | null
+  // Canvas Pet — the model both headless pet brains (observer + executor) run on.
+  // null falls back to agentDefaultModel, then pi's first-available. Chosen by the
+  // user in Settings → Canvas Pet.
+  petModel: AgentModelRef | null
   /** The coding agent the executor (a pure orchestrator) launches in a terminal
    *  to do the actual work — an AgentId from src/shared/agents.ts. Empty ⇒ the
    *  executor picks an installed one itself. */
@@ -1412,8 +1414,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agentDefaultModel: null,
 
   // Canvas Pet
-  petObserverModel: null,
-  petExecutorModel: null,
+  petModel: null,
   petExecutorAgentId: '',
 
   // Layout — keep in sync with the sidebar's default arrangement.

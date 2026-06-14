@@ -40,15 +40,8 @@ import type {
 import {
   loadDefaultModel,
   saveDefaultModel,
-  loadPetObserverModel,
-  savePetObserverModel,
-  loadPetExecutorModel,
-  savePetExecutorModel,
-  loadPetExecutorAgentId,
-  savePetExecutorAgentId,
   clearModelPrefsForProvider,
 } from './agentModelPrefs'
-import { AGENTS } from '../../shared/agents'
 
 interface ProvidersViewProps {
   /** Called when the user pops past the list (returns to chat). Ignored when embedded. */
@@ -127,7 +120,6 @@ export function ProvidersView({ onBack, scopedProviderId, embedded = false }: Pr
   const body = (
     <>
       <DefaultModelSection models={models} />
-      <PetModelsSection models={models} />
       <Section label="Sign in">
         {grouped.oauth.map((p) => {
           const key = `oauth-${p.id}`
@@ -858,74 +850,11 @@ function DefaultModelSection({ models }: { models: Array<{ provider: string; mod
   )
 }
 
-// -----------------------------------------------------------------------------
-// Canvas Pet model section — the observer and executor each run on a model the
-// user pins here. When unset, both fall back to the global Default model (then
-// pi's first-available) in petSession.ts, so "Default model" is the None state.
-// -----------------------------------------------------------------------------
+export type PickModels = Array<{ provider: string; model: string; label?: string }>
 
-type PickModels = Array<{ provider: string; model: string; label?: string }>
-
-function PetModelsSection({ models }: { models: PickModels }) {
-  const [observer, setObserver] = useState<AgentModelRef | null>(() => loadPetObserverModel())
-  const [executor, setExecutor] = useState<AgentModelRef | null>(() => loadPetExecutorModel())
-  const [agentId, setAgentId] = useState<string>(() => loadPetExecutorAgentId())
-  const [openKey, setOpenKey] = useState<'observer' | 'executor' | null>(null)
-
-  const pickFor = (
-    save: (m: AgentModelRef | null) => void,
-    set: (m: AgentModelRef | null) => void,
-  ) => (m: { provider: string; model: string } | null) => {
-    const next = m ? { provider: m.provider, model: m.model } : null
-    save(next)
-    set(next)
-    setOpenKey(null)
-  }
-
-  return (
-    <div className="space-y-2">
-      <div className="text-[10.5px] uppercase tracking-wider text-muted/70 font-semibold">
-        Canvas Pet models
-      </div>
-      <ModelPrefRow
-        label="Suggests tasks"
-        models={models}
-        current={observer}
-        open={openKey === 'observer'}
-        setOpen={(v) => setOpenKey((typeof v === 'function' ? v(openKey === 'observer') : v) ? 'observer' : null)}
-        onPick={pickFor(savePetObserverModel, setObserver)}
-        noneLabel="Default model"
-      />
-      <ModelPrefRow
-        label="Runs tasks"
-        models={models}
-        current={executor}
-        open={openKey === 'executor'}
-        setOpen={(v) => setOpenKey((typeof v === 'function' ? v(openKey === 'executor') : v) ? 'executor' : null)}
-        onPick={pickFor(savePetExecutorModel, setExecutor)}
-        noneLabel="Default model"
-      />
-      <div className="space-y-1.5">
-        <div className="text-[10.5px] uppercase tracking-wider text-muted/70 font-semibold">Coding agent</div>
-        <select
-          value={agentId}
-          onChange={(e) => { setAgentId(e.target.value); savePetExecutorAgentId(e.target.value) }}
-          className="w-full bg-hover border border-strong rounded-md px-2 py-1.5 text-[12.5px] text-primary outline-none focus:border-agent-light/50"
-        >
-          <option value="">Let the executor choose</option>
-          {AGENTS.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.displayName}
-            </option>
-          ))}
-        </select>
-      </div>
-    </div>
-  )
-}
-
-// Shared model-picker row used by the default + pet model selectors.
-function ModelPrefRow({
+// Shared model-picker row used by the default-model section here and the Canvas
+// Pet section (CanvasPetSettings). Exported so both render an identical control.
+export function ModelPrefRow({
   label,
   sublabel,
   models,

@@ -13,9 +13,15 @@ import type { PetActivity } from '../../shared/types'
 export interface PetWsState {
   enabled: boolean
   paused: boolean
+  /** Whether the observer runs automatically on the timer. When false the pet
+   *  only observes when the user clicks the idle avatar. Mirrors .cate/pet.json. */
+  autoObserve: boolean
   activity: PetActivity
   /** Short status-bubble text, e.g. "Running tests…" or "Proposing: update docs". */
   status: string
+  /** Ephemeral FYI the observer surfaced via remark(); auto-clears after a few
+   *  seconds. Separate from `status` (activity) — this is a one-off message. */
+  remark: string
   /** The todo the executor is currently running, or null. */
   currentTodoId: string | null
   /** Canvas node id the avatar should hover near (active terminal), or null. */
@@ -25,8 +31,10 @@ export interface PetWsState {
 export const DEFAULT_PET_WS: PetWsState = {
   enabled: false,
   paused: false,
+  autoObserve: true,
   activity: 'off',
   status: '',
+  remark: '',
   currentTodoId: null,
   focusNodeId: null,
 }

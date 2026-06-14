@@ -4,7 +4,7 @@
 // Manual tasks (add / check / delete) plus the pet workflow surfaced as status
 // groups: Suggested (pet proposals → Approve & run / Dismiss), In progress (live
 // executor + jump-to-terminal), Review (the land gate → Merge / PR / Discard),
-// and Done/Failed history. A header summons/pauses/dismisses the pet.
+// and Done/Failed history. A gear in the header opens the Canvas Pet settings.
 // =============================================================================
 
 import React, { useEffect, useState } from 'react'
@@ -15,8 +15,7 @@ import {
   ListChecks,
   Play,
   Sparkle,
-  Pause,
-  ArrowsClockwise,
+  GearSix,
   GitMerge,
   GitPullRequest,
   Trash,
@@ -26,6 +25,7 @@ import {
 } from '@phosphor-icons/react'
 import { useTodosStore } from '../stores/todosStore'
 import { useAppStore } from '../stores/appStore'
+import { useUIStore } from '../stores/uiStore'
 import { usePetWs } from '../pet/petStore'
 import { petController } from '../pet/petController'
 import { mergeTodo, openPrTodo, discardTodo } from '../pet/petReviewActions'
@@ -83,22 +83,12 @@ export const TasksView: React.FC<TasksViewProps> = ({ rootPath }) => {
     setDraft('')
   }
 
-  // --- pet header controls ---
-  const petControls = pet.enabled ? (
-    <>
-      <SidebarHeaderButton
-        onClick={() => (pet.paused ? petController.resume(wsId, rootPath) : petController.pause(wsId, rootPath))}
-        title={pet.paused ? 'Resume pet' : 'Pause pet'}
-      >
-        {pet.paused ? <ArrowsClockwise size={13} /> : <Pause size={13} />}
-      </SidebarHeaderButton>
-      <SidebarHeaderButton onClick={() => petController.dismiss(wsId, rootPath)} title="Dismiss pet">
-        <X size={13} />
-      </SidebarHeaderButton>
-    </>
-  ) : (
-    <SidebarHeaderButton onClick={() => void petController.summon(wsId, rootPath)} title="Summon the Canvas Pet">
-      <Sparkle size={13} />
+  // --- pet header control ---
+  // A single gear opens the Canvas Pet settings (enable / observe mode / models);
+  // all pet controls live there now rather than as buttons in this header.
+  const petControls = (
+    <SidebarHeaderButton onClick={() => useUIStore.getState().openSettings('canvas pet')} title="Canvas Pet settings">
+      <GearSix size={13} />
     </SidebarHeaderButton>
   )
 
@@ -147,10 +137,10 @@ export const TasksView: React.FC<TasksViewProps> = ({ rootPath }) => {
             <span>No tasks yet</span>
             {!pet.enabled && (
               <button
-                onClick={() => void petController.summon(wsId, rootPath)}
+                onClick={() => useUIStore.getState().openSettings('canvas pet')}
                 className="mt-1 flex items-center gap-1.5 px-2.5 py-1 rounded text-secondary hover:text-primary bg-surface-5 hover:bg-hover transition-colors"
               >
-                <Sparkle size={12} /> Summon pet
+                <Sparkle size={12} /> Set up pet
               </button>
             )}
           </div>

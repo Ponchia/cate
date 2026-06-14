@@ -10,6 +10,9 @@
 export interface TriggerGateInput {
   enabled: boolean
   paused: boolean
+  /** Whether automatic observe turns are allowed. When false, only a manual
+   *  nudge (clicking the idle pet) observes — the timer never fires. */
+  autoObserve: boolean
   /** Something changed since the last observe turn (save/git/terminal/todo). */
   dirty: boolean
   /** An observer turn is already in flight. */
@@ -31,6 +34,7 @@ export const MAX_OPEN_SUGGESTIONS = 3
 
 export function shouldObserve(input: TriggerGateInput): boolean {
   if (!input.enabled || input.paused) return false
+  if (!input.autoObserve) return false
   if (!input.dirty) return false
   if (input.observerBusy || input.executorBusy) return false
   if (input.openSuggestions >= MAX_OPEN_SUGGESTIONS) return false

@@ -22,7 +22,7 @@ import WorktreeToolbarMenu from './WorktreeToolbarMenu'
 import { useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import { useUIStore } from '../stores/uiStore'
 import { useUIStateStore } from '../stores/uiStateStore'
-import { cornerFromPoint, nextFreeCorner } from '../lib/canvasCorners'
+import { cornerFromPoint } from '../lib/canvasCorners'
 import { useShortcutStore } from '../stores/shortcutStore'
 import { displayString, PANEL_DEFAULT_SIZES } from '../../shared/types'
 import { useAppStore } from '../stores/appStore'
@@ -237,11 +237,12 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       minimapDidDragRef.current = true
       const next = cornerFromPoint(ev.clientX, ev.clientY, rect)
       const store = useUIStateStore.getState()
-      if (next === store.minimapButtonCorner) return
+      const prev = store.minimapButtonCorner
+      if (next === prev) return
       store.setUIState('minimapButtonCorner', next)
-      // Landing on the pet's corner shoves the pet to the next free corner.
+      // Landing on the pet's corner swaps the pet into the corner we just left.
       if (next === store.petCorner) {
-        store.setUIState('petCorner', nextFreeCorner(store.petCorner, next))
+        store.setUIState('petCorner', prev)
       }
     }
     const onUp = () => {

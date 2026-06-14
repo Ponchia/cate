@@ -1,8 +1,8 @@
 // =============================================================================
-// petTerminalExits — records terminal exit codes so the pet's read_terminal /
-// wait_for_terminal tools can report lastExitCode. Main fires TERMINAL_EXIT once
-// and forgets it; we keep the last code per ptyId here. Its own tiny module so
-// petTools and petBridge can both use it without an import cycle.
+// petTerminalExits — records terminal exit codes so the pet's read_terminal tool
+// and the executor's wake logic can report/detect lastExitCode. Main fires
+// TERMINAL_EXIT once and forgets it; we keep the last code per ptyId here. Its own
+// tiny module so petTools and petBridge can both use it without an import cycle.
 // =============================================================================
 
 const exitByPty = new Map<string, number>()

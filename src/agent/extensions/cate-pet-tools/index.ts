@@ -3,8 +3,9 @@
 //
 // Two headless pet brains call these tools:
 //   - observer (Haiku): watches the user, proposes todos, never acts.
-//   - executor (strong model): orchestrates VISIBLE terminals in an isolated
-//     worktree to carry out one approved todo, then hands it to the review gate.
+//   - executor (strong model): orchestrates VISIBLE terminals (in an isolated
+//     worktree, prepared up-front by the controller for git repos) to carry out
+//     one approved todo, then hands it to the review gate.
 //
 // Every tool is a thin RPC: it packs {tool, params} into a `cate-pet-tools:`
 // envelope and does ONE ctx.ui.input round-trip. Cate's renderer-side pet bridge
@@ -54,16 +55,6 @@ export default function (pi: ExtensionAPI) {
   // --- Shared (both roles) ----------------------------------------------------
 
   pi.registerTool({
-    name: "list_todos",
-    label: "List todos",
-    description: "List the current workspace todos with their id, title, origin, and status.",
-    parameters: Type.Object({}),
-    async execute(_id, _params, _signal, _onUpdate, ctx) {
-      return call(ctx, "list_todos", {})
-    },
-  })
-
-  pi.registerTool({
     name: "read_terminal",
     label: "Read terminal",
     description:
@@ -78,27 +69,6 @@ export default function (pi: ExtensionAPI) {
 
   if (role === "observer") {
     pi.registerTool({
-      name: "get_user_activity",
-      label: "Get user activity",
-      description:
-        "Summarize what the user is currently doing: focused panel, recently opened files, and recent uncommitted git changes. Use this to ground proposals in real activity.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, _signal, _onUpdate, ctx) {
-        return call(ctx, "get_user_activity", {})
-      },
-    })
-
-    pi.registerTool({
-      name: "list_terminals",
-      label: "List terminals",
-      description: "List the workspace's terminals with id, title, and whether each is busy. Returns JSON.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, _signal, _onUpdate, ctx) {
-        return call(ctx, "list_terminals", {})
-      },
-    })
-
-    pi.registerTool({
       name: "propose_todo",
       label: "Propose todo",
       description:
@@ -111,27 +81,27 @@ export default function (pi: ExtensionAPI) {
         return call(ctx, "propose_todo", { title: params.title, rationale: params.rationale })
       },
     })
+
+    pi.registerTool({
+      name: "remark",
+      label: "Remark",
+      description:
+        "Give the user a brief, ephemeral update via the pet's speech bubble. Not saved or actionable — end every turn with one.",
+      parameters: Type.Object({
+        text: Type.String({ description: "One short, conversational sentence grounded in what the user is doing." }),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "remark", { text: params.text })
+      },
+    })
   }
 
   if (role === "executor") {
     pi.registerTool({
-      name: "create_worktree",
-      label: "Create worktree",
-      description:
-        "Create the isolated git worktree + branch this todo runs in (off the current HEAD). All terminals you spawn for the todo live here. Call this FIRST, before any terminal. Returns JSON {worktreeId, branch, path}.",
-      parameters: Type.Object({
-        todoId: Type.String({ description: "The id of the approved todo being executed." }),
-      }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "create_worktree", { todoId: params.todoId })
-      },
-    })
-
-    pi.registerTool({
       name: "set_plan",
       label: "Set plan",
       description:
-        "Record your decomposition of the todo as an ordered list of steps. Do this after creating the worktree and before executing. Re-call to update step completion.",
+        "Record your decomposition of the todo as an ordered list of steps. Do this first, before executing. Re-call to update step completion.",
       parameters: Type.Object({
         todoId: Type.String(),
         steps: Type.Array(
@@ -151,13 +121,14 @@ export default function (pi: ExtensionAPI) {
       name: "create_terminal",
       label: "Create terminal",
       description:
-        "Open a VISIBLE terminal on the canvas inside this todo's worktree and run a command in it. Use this for everything — shell commands (test/build/git) AND launching a coding-agent CLI of your choice. You have no direct shell/edit; all work happens through terminals. Returns JSON {terminalId}.",
+        "Open a VISIBLE terminal on the canvas for this todo (in its isolated worktree when one exists, otherwise the project root) and run a command in it. Use this for everything — shell commands (test/build/git) AND launching a coding-agent CLI of your choice. You have no direct shell/edit; all work happens through terminals. By DEFAULT it WAITS for the command to finish (the shell goes idle, or a coding-agent CLI parks awaiting input) and returns the terminal's screen + state. Pass background:true to launch and return immediately — use that to run several CLIs at once, then end your turn to be woken when one needs attention. Returns JSON {terminalId, output, agentState, ...}.",
       parameters: Type.Object({
         todoId: Type.String(),
         command: Type.String({ description: "The command line to run (a shell command or a CLI invocation)." }),
+        background: Type.Optional(Type.Boolean({ description: "Launch and return immediately instead of waiting for the command to finish (default false)." })),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "create_terminal", { todoId: params.todoId, command: params.command })
+        return call(ctx, "create_terminal", { todoId: params.todoId, command: params.command, background: params.background })
       },
     })
 
@@ -165,28 +136,15 @@ export default function (pi: ExtensionAPI) {
       name: "send_keys",
       label: "Send keys",
       description:
-        "Type input into a running terminal (e.g. answer a CLI prompt). Appends a newline unless you set enter:false.",
+        "Type input into a running terminal (e.g. give a coding-agent CLI its next instruction, or answer a prompt). Appends a newline unless you set enter:false. By DEFAULT it WAITS for the resulting work to finish and returns the terminal's screen + state. Pass background:true to send and return immediately (for fanning out across terminals). Returns JSON {output, agentState, ...}.",
       parameters: Type.Object({
         terminalId: Type.String(),
         keys: Type.String({ description: "Text to type into the terminal." }),
         enter: Type.Optional(Type.Boolean({ description: "Send a trailing Enter (default true)." })),
+        background: Type.Optional(Type.Boolean({ description: "Return immediately instead of waiting for the resulting work to finish (default false)." })),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "send_keys", { terminalId: params.terminalId, keys: params.keys, enter: params.enter })
-      },
-    })
-
-    pi.registerTool({
-      name: "wait_for_terminal",
-      label: "Wait for terminal",
-      description:
-        "Block until the terminal's current work finishes or the timeout elapses, then return its screen + state. For a coding-agent CLI this returns once it parks at 'waitingForInput' (its turn is done); for a plain command, once the shell goes idle. Returns JSON {output, isRunning, lastExitCode, agentState, timedOut}. Prefer this over polling read_terminal.",
-      parameters: Type.Object({
-        terminalId: Type.String(),
-        timeoutMs: Type.Optional(Type.Number({ description: "Max wait in ms (default 120000)." })),
-      }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "wait_for_terminal", { terminalId: params.terminalId, timeoutMs: params.timeoutMs })
+        return call(ctx, "send_keys", { terminalId: params.terminalId, keys: params.keys, enter: params.enter, background: params.background })
       },
     })
 

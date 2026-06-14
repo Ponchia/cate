@@ -24,33 +24,24 @@ export function saveDefaultModel(model: AgentModelRef | null): void {
  *  disconnected, so a stale pick doesn't resurface as a "reconnect" prompt. */
 export function clearModelPrefsForProvider(providerId: string): void {
   if (loadDefaultModel()?.provider === providerId) saveDefaultModel(null)
-  if (loadPetObserverModel()?.provider === providerId) savePetObserverModel(null)
-  if (loadPetExecutorModel()?.provider === providerId) savePetExecutorModel(null)
+  if (loadPetModel()?.provider === providerId) savePetModel(null)
 }
 
-// --- Canvas Pet models ------------------------------------------------------
-// The observer and executor run as separate headless sessions, each on its own
-// user-chosen model (Settings → Providers). null means "fall back to a default".
+// --- Canvas Pet model -------------------------------------------------------
+// Both headless pet brains (observer + executor) run on this single user-chosen
+// model (Settings → Canvas Pet). null means "fall back to a default".
 
 function readModel(value: AgentModelRef | null): AgentModelRef | null {
   if (value && typeof value.provider === 'string' && typeof value.model === 'string') return value
   return null
 }
 
-export function loadPetObserverModel(): AgentModelRef | null {
-  return readModel(useSettingsStore.getState().petObserverModel)
+export function loadPetModel(): AgentModelRef | null {
+  return readModel(useSettingsStore.getState().petModel)
 }
 
-export function savePetObserverModel(model: AgentModelRef | null): void {
-  useSettingsStore.getState().setSetting('petObserverModel', model)
-}
-
-export function loadPetExecutorModel(): AgentModelRef | null {
-  return readModel(useSettingsStore.getState().petExecutorModel)
-}
-
-export function savePetExecutorModel(model: AgentModelRef | null): void {
-  useSettingsStore.getState().setSetting('petExecutorModel', model)
+export function savePetModel(model: AgentModelRef | null): void {
+  useSettingsStore.getState().setSetting('petModel', model)
 }
 
 /** The coding agent (an AgentId) the executor launches in terminals, or '' to

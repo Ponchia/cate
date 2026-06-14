@@ -8,7 +8,7 @@
 // =============================================================================
 
 import type { AgentModelRef, PetRole } from '../../shared/types'
-import { loadDefaultModel, loadPetObserverModel, loadPetExecutorModel } from '../../agent/renderer/agentModelPrefs'
+import { loadDefaultModel, loadPetModel } from '../../agent/renderer/agentModelPrefs'
 import log from '../lib/logger'
 
 /** panelId for the always-on observer of a workspace. */
@@ -26,25 +26,26 @@ export function isPetPanelId(panelId: string): boolean {
   return panelId.startsWith('pet-observer:') || panelId.startsWith('pet-exec:')
 }
 
-/** Resolve the model for a role from settings, falling back to the default. null
- *  ⇒ undefined so pi picks its own first-available model. */
-function modelForRole(role: PetRole): AgentModelRef | undefined {
-  const pinned = role === 'observer' ? loadPetObserverModel() : loadPetExecutorModel()
-  return pinned ?? loadDefaultModel() ?? undefined
+/** Resolve the pet model from settings, falling back to the global default. null
+ *  ⇒ undefined so pi picks its own first-available model. Both roles share it. */
+function petModel(): AgentModelRef | undefined {
+  return loadPetModel() ?? loadDefaultModel() ?? undefined
 }
 
 const OBSERVER_SYSTEM_PROMPT = [
-  'You are the Canvas Pet OBSERVER for a coding workspace.',
-  'Watch what the user is doing and propose tasks sparingly, only with a clear, specific rationale grounded in their real activity (use get_user_activity, list_terminals, read_terminal).',
-  'NEVER act, edit, or run anything — you only propose via propose_todo. Check list_todos first and never duplicate an existing todo (suggested, pending, in progress, or done).',
-  'If nothing is clearly worth proposing, do nothing and end your turn.',
+  'You are the Canvas Pet OBSERVER for a coding workspace — an ambient companion.',
+  'Each turn, look at what the user is doing, then always remark with a short update. Propose a todo only when there is clearly worthwhile work (never a duplicate).',
+  'You never act, edit, or run anything — remark and propose_todo are all you can do.',
 ].join(' ')
 
 const EXECUTOR_SYSTEM_PROMPT = [
-  'You are the Canvas Pet ORCHESTRATOR. You carry out ONE approved todo by DELEGATING, never by doing the work yourself.',
-  'You do NOT write code, edit files, or run build/test/lint commands directly. Instead you spawn a CODING-AGENT CLI inside a visible terminal (create_terminal) and DRIVE it: give it the task, answer its prompts with send_keys, and monitor it with read_terminal / wait_for_terminal.',
-  'Your ONLY direct actions are the orchestration tools: create_worktree, set_plan, create_terminal, send_keys, read_terminal, wait_for_terminal, close_terminal, update_todo. The terminal agent does ALL real work (writing code, running tests, committing).',
-  'Flow: create_worktree → set_plan → create_terminal launching the coding-agent CLI with the task as its prompt → drive/monitor until it reports the work done and verified → update_todo status "review". Do NOT merge or push. If it cannot be done, update_todo status "failed" with a short note.',
+  'You are the Canvas Pet ORCHESTRATOR. You carry out ONE approved todo by DELEGATING — never by doing the work yourself.',
+  'You do NOT write code, edit files, or run build/test/lint commands directly. You spawn CODING-AGENT CLIs in visible terminals (create_terminal) and DRIVE them: give each its task, answer prompts with send_keys, inspect with read_terminal. The terminal agents do ALL real work — writing code, running tests, committing. For a complex todo, split it and run SEVERAL CLIs in parallel across terminals, then coordinate them.',
+  'An isolated worktree is prepared for the todo before you start (git repos only); every terminal you open runs inside it automatically — you do not create it.',
+  'create_terminal and send_keys WAIT for the result by default — they return once the command finishes or the CLI parks. To work in parallel, launch with background:true (returns immediately); then END YOUR TURN and you will be woken when a terminal finishes, needs input, or exits, with the current terminal states provided.',
+  'Your tools: set_plan, create_terminal, send_keys, read_terminal, close_terminal, update_todo.',
+  'Reuse terminals: drive a CLI you already opened with send_keys — only create_terminal for a genuinely new, parallel workstream. close_terminal when you are done with one.',
+  'Get oriented, set_plan once you understand the work, then drive the CLIs until the change is written AND verified. Then call update_todo status "review" — do NOT merge or push. If it genuinely cannot be done, update_todo status "failed" with a short note.',
 ].join(' ')
 
 export interface CreatePetSessionOpts {
@@ -62,7 +63,7 @@ export async function createPetSession(opts: CreatePetSessionOpts): Promise<bool
       panelId: opts.panelId,
       workspaceId: opts.workspaceId,
       cwd: opts.rootPath,
-      model: modelForRole(opts.role),
+      model: petModel(),
       systemPrompt: opts.role === 'observer' ? OBSERVER_SYSTEM_PROMPT : EXECUTOR_SYSTEM_PROMPT,
       env: { CATE_PET_ROLE: opts.role },
       // Isolate pet transcripts in .cate/pi-agent-pet so the agent panel's

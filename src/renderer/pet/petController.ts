@@ -15,6 +15,7 @@
 // resumed, after a restart.
 // =============================================================================
 
+import type { Todo } from '../../shared/types'
 import type { PetBridgeHost, PetContext } from './petTypes'
 import { setPetBridgeHost } from './petBridge'
 import {
@@ -26,6 +27,13 @@ import {
   disposePet,
 } from './petSession'
 import { shouldObserve } from './petTriggerGate'
+import {
+  ensureTodoWorktree,
+  buildObserveContext,
+  buildExecutorContext,
+  todoHasBusyTerminal,
+  waitForTerminalSignal,
+} from './petTools'
 import { loadPetExecutorAgentCommand } from '../../agent/renderer/agentModelPrefs'
 import { usePetStore } from './petStore'
 import { useTodosStore } from '../stores/todosStore'
@@ -45,12 +53,23 @@ interface WsRuntime {
   lastGitSig: string | null
   /** executor */
   runningTodoId: string | null
+  /** Number of FRESH-session re-grounds spent on the current todo (stall recovery). */
+  execContinuations: number
+  /** Number of event-driven wakes (terminal parked/exited) on the current todo. */
+  execWakes: number
   queue: string[]
   /** unsubscribe from this workspace's git-status dirty source */
   unsubGit: (() => void) | null
 }
 
 const OBSERVE_TICK_MS = 60_000
+/** Max FRESH-session re-grounds before we stop nudging an executor that keeps
+ *  stalling (ending its run with nothing running and the todo unsettled). Bounds
+ *  cost + infinite loops; when hit, the todo moves to a user-actionable state. */
+const MAX_EXEC_CONTINUATIONS = 10
+/** Runaway backstop on event-driven wakes (a flapping CLI), far above any real
+ *  orchestration. When hit, the todo is handed to review/failed like the cap above. */
+const MAX_EXEC_WAKES = 80
 
 /** A content signature of the working tree, so window-focus / poll refreshes that
  *  don't actually change anything don't count as "the user did something". */
@@ -60,21 +79,51 @@ function gitSignature(snap: { branch?: string | null; statusFiles: Array<{ path:
 }
 
 const OBSERVE_TURN_PROMPT =
-  'Take a look at what the user is doing right now. Use get_user_activity, list_terminals/read_terminal, and list_todos. If — and ONLY if — there is a clearly valuable, specific, non-duplicate task worth doing, call propose_todo with a concise rationale. Otherwise do nothing and end your turn.'
+  'Here is the current workspace state. read_terminal any terminal you want a closer look at, then remark with a short update. Propose a todo only if there is clearly worthwhile work.'
 
-function executePrompt(todoId: string, title: string): string {
+const WAKE_PROMPT =
+  'A terminal you are driving just parked, needs input, or exited. Here are the current terminal states — read_terminal any you need a closer look at, then drive them onward (or launch more CLIs). Call update_todo "review" only when the WHOLE todo is written and verified, or "failed" with a note if it cannot be done.'
+
+/** Prompt for a FRESH executor session picking up a partially-done todo. Each
+ *  loop iteration is a new session with a clean context window (not a retry), so
+ *  it must be re-grounded in the state the previous sessions left on the todo:
+ *  the worktree, the open terminals, and the plan. */
+function continuePrompt(todo: Todo): string {
+  const lines = [
+    `Continue an ALREADY-STARTED approved todo (id: ${todo.id}): "${todo.title}".`,
+    'This is a FRESH orchestration session: earlier sessions did partial work. Pick up where they left off — do NOT start over.',
+  ]
+  if (todo.branch) {
+    lines.push(
+      `Work continues in the isolated worktree on branch \`${todo.branch}\` — every terminal you open runs inside it automatically.`,
+    )
+  }
+  const terminals = todo.terminalNodeIds ?? []
+  if (terminals.length) {
+    lines.push(
+      `Terminals already open for this todo: ${terminals.join(', ')}. read_terminal each FIRST to learn what the coding-agent CLI has already done before doing anything else.`,
+    )
+  }
+  if (todo.plan?.length) {
+    const steps = todo.plan.map((s) => `${s.done ? '[x]' : '[ ]'} ${s.title}`).join('; ')
+    lines.push(`Plan so far: ${steps}.`)
+  }
+  if (todo.note) lines.push(`Last note: ${todo.note}`)
+  lines.push(
+    `Finish the remaining work, then settle the todo: update_todo status "review" once it is written and verified${todo.branch ? ' and committed on the branch' : ''}, or "failed" with a short note if it cannot be done.`,
+  )
+  return lines.join(' ')
+}
+
+function executePrompt(todoId: string, title: string, hasWorktree: boolean): string {
   const cmd = loadPetExecutorAgentCommand()
   const launch = cmd
-    ? `Launch the coding-agent CLI by running \`${cmd}\` in the terminal, then give it the task as its prompt.`
-    : 'Launch an installed coding-agent CLI in the terminal (e.g. `claude`, `codex`, or `aider`) and give it the task as its prompt.'
-  return [
-    `Orchestrate this approved todo (id: ${todoId}): "${title}".`,
-    'You are a PURE ORCHESTRATOR — do NOT do any of the work yourself. A coding-agent CLI in a terminal does everything.',
-    'Steps: (1) create_worktree. (2) set_plan with a short plan.',
-    `(3) create_terminal in the worktree. ${launch}`,
-    '(4) Drive and monitor it with send_keys / wait_for_terminal / read_terminal until it has written the change AND verified it (and committed on the worktree branch).',
-    '(5) update_todo status "review" once it is done. If it cannot be completed, update_todo status "failed" with a short note. Never write files or run build/test commands yourself.',
-  ].join(' ')
+    ? `Launch the coding-agent CLI with \`${cmd}\` and give it the task as its prompt.`
+    : 'Launch an installed coding-agent CLI (e.g. `claude`, `codex`, or `aider`) and give it the task as its prompt.'
+  const where = hasWorktree
+    ? 'An isolated worktree is ready; terminals run inside it, so have the agent commit on that branch.'
+    : 'This is not a git repo, so there is no worktree; terminals run in the project root.'
+  return [`Carry out this approved todo (id: ${todoId}): "${title}".`, where, launch].join(' ')
 }
 
 class PetController implements PetBridgeHost {
@@ -104,7 +153,7 @@ class PetController implements PetBridgeHost {
   private rt(wsId: string, rootPath?: string): WsRuntime {
     let r = this.ws.get(wsId)
     if (!r) {
-      r = { rootPath: rootPath ?? '', observerPanelId: null, dirty: false, lastObserveAt: 0, observerBusy: false, lastGitSig: null, runningTodoId: null, queue: [], unsubGit: null }
+      r = { rootPath: rootPath ?? '', observerPanelId: null, dirty: false, lastObserveAt: 0, observerBusy: false, lastGitSig: null, runningTodoId: null, execContinuations: 0, execWakes: 0, queue: [], unsubGit: null }
       this.ws.set(wsId, r)
     }
     if (rootPath) r.rootPath = rootPath
@@ -117,8 +166,11 @@ class PetController implements PetBridgeHost {
   async restore(wsId: string, rootPath: string): Promise<void> {
     try {
       const state = await window.electronAPI.projectPetLoad(rootPath)
+      // Mirror the persisted preference even when the pet stays dismissed, so the
+      // Settings toggle reflects the saved choice the moment a workspace opens.
+      usePetStore.getState().patch(wsId, { autoObserve: state.autoObserve })
       if (state.enabled) {
-        await this.summon(wsId, rootPath, state.paused)
+        await this.summon(wsId, rootPath, state.paused, state.autoObserve)
       }
     } catch (err) {
       log.warn('[petController] restore failed for %s: %O', wsId, err)
@@ -127,14 +179,21 @@ class PetController implements PetBridgeHost {
 
   private persist(wsId: string, rootPath: string): void {
     const p = usePetStore.getState().get(wsId)
-    void window.electronAPI.projectPetSave(rootPath, { version: 1, enabled: p.enabled, paused: p.paused })
+    void window.electronAPI.projectPetSave(rootPath, { version: 1, enabled: p.enabled, paused: p.paused, autoObserve: p.autoObserve })
   }
 
-  async summon(wsId: string, rootPath: string, paused = false): Promise<void> {
+  async summon(wsId: string, rootPath: string, paused = false, autoObserve?: boolean): Promise<void> {
     this.start()
     const r = this.rt(wsId, rootPath)
+    // Load this workspace's todos before the observer can read or mutate them.
+    // Otherwise propose_todo's upsert runs against an unloaded ([]) list and
+    // persists OVER todos.json, wiping the user's existing tasks. Idempotent
+    // with TasksView's own load (force-guarded).
+    await useTodosStore.getState().loadTodos(rootPath)
     console.info('[pet] summon', wsId, rootPath)
-    usePetStore.getState().patch(wsId, { enabled: true, paused, activity: paused ? 'paused' : 'resting', status: '' })
+    // Keep the current autoObserve preference unless the caller overrides it.
+    const auto = autoObserve ?? usePetStore.getState().get(wsId).autoObserve
+    usePetStore.getState().patch(wsId, { enabled: true, paused, autoObserve: auto, activity: paused ? 'paused' : 'resting', status: '' })
     this.persist(wsId, rootPath)
     // Git working-tree changes are the observer's main "user is doing something"
     // signal. Subscribe once per workspace; the listener just marks dirty.
@@ -178,7 +237,15 @@ class PetController implements PetBridgeHost {
     }
     console.info('[pet] observeNow', wsId)
     r.lastObserveAt = Date.now()
-    void promptPet(r.observerPanelId, OBSERVE_TURN_PROMPT)
+    void this.observe(wsId, r)
+  }
+
+  /** Take one observe turn: snapshot the workspace and prompt the observer with
+   *  it injected, so it doesn't burn tool calls rediscovering known state. */
+  private async observe(wsId: string, r: WsRuntime): Promise<void> {
+    if (!r.observerPanelId) return
+    const context = await buildObserveContext(wsId, r.rootPath)
+    void promptPet(r.observerPanelId, `${OBSERVE_TURN_PROMPT}\n\n${context}`)
   }
 
   async dismiss(wsId: string, rootPath: string): Promise<void> {
@@ -201,7 +268,7 @@ class PetController implements PetBridgeHost {
         r.unsubGit = null
       }
     }
-    usePetStore.getState().patch(wsId, { enabled: false, paused: false, activity: 'off', status: '', currentTodoId: null, focusNodeId: null })
+    usePetStore.getState().patch(wsId, { enabled: false, paused: false, activity: 'off', status: '', remark: '', currentTodoId: null, focusNodeId: null })
     this.persist(wsId, rootPath)
   }
 
@@ -219,6 +286,15 @@ class PetController implements PetBridgeHost {
     this.markDirty(wsId)
   }
 
+  /** Toggle automatic observe turns. When turned back on, prime a look so the pet
+   *  catches up on anything that changed while it was quiet. The manual nudge
+   *  (clicking the idle pet) works regardless of this setting. */
+  setAutoObserve(wsId: string, rootPath: string, value: boolean): void {
+    usePetStore.getState().patch(wsId, { autoObserve: value })
+    this.persist(wsId, rootPath)
+    if (value) this.markDirty(wsId)
+  }
+
   markDirty(wsId: string): void {
     const r = this.ws.get(wsId)
     if (r) r.dirty = true
@@ -230,6 +306,9 @@ class PetController implements PetBridgeHost {
   async runTodo(wsId: string, rootPath: string, todoId: string): Promise<void> {
     this.start()
     const r = this.rt(wsId, rootPath)
+    // Ensure todos are loaded before the executor reads/mutates them (summon
+    // also loads, but an already-enabled pet skips summon here).
+    await useTodosStore.getState().loadTodos(rootPath)
     const pet = usePetStore.getState().get(wsId)
     if (!pet.enabled) {
       // Allow "run with pet" to implicitly summon.
@@ -248,11 +327,16 @@ class PetController implements PetBridgeHost {
     if (!todo) return
     console.info('[pet] start executor', todoId, todo.title)
     r.runningTodoId = todoId
+    r.execContinuations = 0
+    r.execWakes = 0
     const panelId = executorPanelId(todoId)
     const ctx: PetContext = { panelId, workspaceId: wsId, rootPath, role: 'executor', todoId }
     this.ctxByPanel.set(panelId, ctx)
     useTodosStore.getState().setTodoStatus(rootPath, todoId, 'in_progress')
     usePetStore.getState().patch(wsId, { activity: 'working', currentTodoId: todoId, status: `Working: ${todo.title}` })
+    // Prepare the isolated worktree deterministically before the agent runs (a
+    // no-op for non-git workspaces, and idempotent so a todo gets only one).
+    const { worktreeId } = await ensureTodoWorktree(wsId, rootPath, todoId)
     const ok = await createPetSession({ panelId, rootPath, workspaceId: wsId, role: 'executor' })
     if (!ok) {
       this.ctxByPanel.delete(panelId)
@@ -262,7 +346,7 @@ class PetController implements PetBridgeHost {
       this.drainQueue(wsId, rootPath)
       return
     }
-    void promptPet(panelId, executePrompt(todoId, todo.title))
+    void promptPet(panelId, executePrompt(todoId, todo.title, worktreeId !== null))
   }
 
   private finalizeExecutor(ctx: PetContext): void {
@@ -284,6 +368,30 @@ class PetController implements PetBridgeHost {
     this.drainQueue(ctx.workspaceId, ctx.rootPath)
   }
 
+  /** Loop iteration: replace the spent executor session with a FRESH one for the
+   *  same todo and re-prompt it with the rebuilt state. The panelId is derived
+   *  from the todoId, so re-creating it disposes the old pi session and starts a
+   *  clean one (no transcript resume — a brand-new context window). */
+  private async continueExecutor(ctx: PetContext): Promise<void> {
+    const r = this.ws.get(ctx.workspaceId)
+    if (!r || r.runningTodoId !== ctx.todoId) return // dismissed / superseded
+    const todo = ctx.todoId ? useTodosStore.getState().getTodos(ctx.rootPath).find((t) => t.id === ctx.todoId) : undefined
+    if (!todo) {
+      this.finalizeExecutor(ctx)
+      return
+    }
+    // Reuse the existing worktree (or create one if a prior session never got
+    // far enough) so the continuation lands in the same isolated tree.
+    await ensureTodoWorktree(ctx.workspaceId, ctx.rootPath, todo.id)
+    const ok = await createPetSession({ panelId: ctx.panelId, rootPath: ctx.rootPath, workspaceId: ctx.workspaceId, role: 'executor' })
+    if (!ok) {
+      useTodosStore.getState().patchTodo(ctx.rootPath, todo.id, { status: 'failed', note: 'Could not start a follow-up executor session.' })
+      this.finalizeExecutor(ctx)
+      return
+    }
+    void promptPet(ctx.panelId, continuePrompt(todo))
+  }
+
   private drainQueue(wsId: string, rootPath: string): void {
     const r = this.ws.get(wsId)
     if (!r || r.runningTodoId || usePetStore.getState().get(wsId).paused) return
@@ -302,6 +410,7 @@ class PetController implements PetBridgeHost {
       const fire = shouldObserve({
         enabled: pet.enabled,
         paused: pet.paused,
+        autoObserve: pet.autoObserve,
         dirty: r.dirty,
         observerBusy: r.observerBusy,
         executorBusy: r.runningTodoId !== null,
@@ -313,7 +422,7 @@ class PetController implements PetBridgeHost {
       console.info('[pet] observe turn', wsId)
       r.dirty = false
       r.lastObserveAt = now
-      void promptPet(r.observerPanelId, OBSERVE_TURN_PROMPT)
+      void this.observe(wsId, r)
     }
   }
 
@@ -346,16 +455,43 @@ class PetController implements PetBridgeHost {
       }
       return
     }
-    // Executor turn ended (one prompt → one turn). Leave the todo in a clear,
-    // user-actionable state before disposing the session — never orphan it.
-    if (ctx.todoId) {
+    // Executor run ended. The orchestrator yields its turn whenever it has
+    // dispatched work and is waiting on the CLIs, so a run ending is NOT
+    // completion: only a todo that reached review/failed/done is settled.
+    if (ctx.todoId && r) {
       const todo = useTodosStore.getState().getTodos(ctx.rootPath).find((t) => t.id === ctx.todoId)
       const status = todo?.status
-      if (status === 'in_progress') {
-        // The executor stopped without explicitly finishing. If it got far enough
-        // to create a worktree, hand the partial work to the review gate;
-        // otherwise mark it failed so the user isn't left with a stuck task.
-        if (todo?.worktreeId) {
+      const settled = status === 'review' || status === 'failed' || status === 'done'
+      const paused = usePetStore.getState().get(ctx.workspaceId).paused
+      if (!settled && !paused) {
+        // Work still in flight → yield: wait (event-driven) for a terminal to park
+        // or exit, then wake the SAME session — preserves orchestration context and
+        // never busy-loops. Nothing running → the agent stalled, so re-ground it in
+        // a FRESH session (clean context window), bounded by the continuation cap.
+        if (todoHasBusyTerminal(ctx.workspaceId, ctx.rootPath, ctx.todoId)) {
+          void this.scheduleWake(ctx)
+          return
+        }
+        if (r.execContinuations < MAX_EXEC_CONTINUATIONS) {
+          r.execContinuations += 1
+          console.info('[pet] executor continue', ctx.todoId, r.execContinuations)
+          void this.continueExecutor(ctx)
+          return
+        }
+      }
+    }
+    this.settleStuckTodo(ctx)
+  }
+
+  /** Leave an unsettled todo in a clear, user-actionable state, then dispose the
+   *  executor — never orphan an in_progress one. */
+  private settleStuckTodo(ctx: PetContext): void {
+    if (ctx.todoId) {
+      const todo = useTodosStore.getState().getTodos(ctx.rootPath).find((t) => t.id === ctx.todoId)
+      if (todo?.status === 'in_progress') {
+        // Opened a terminal (started delegating) → hand the partial work to review;
+        // otherwise it never started, so fail it so the user isn't left stuck.
+        if (todo.terminalNodeIds?.length) {
           useTodosStore.getState().patchTodo(ctx.rootPath, ctx.todoId, {
             status: 'review',
             note: todo.note ?? 'Executor ended — review the partial work.',
@@ -369,6 +505,26 @@ class PetController implements PetBridgeHost {
       }
     }
     this.finalizeExecutor(ctx)
+  }
+
+  /** Executor yielded with CLIs still working. Wait (event-driven) until a
+   *  terminal parks/exits, then re-prompt the SAME live session with the current
+   *  terminal states injected. A wake cap backstops a flapping CLI. */
+  private async scheduleWake(ctx: PetContext): Promise<void> {
+    if (!ctx.todoId) return
+    await waitForTerminalSignal(ctx.workspaceId, ctx.rootPath, ctx.todoId)
+    const r = this.ws.get(ctx.workspaceId)
+    // Bail / settle if dismissed, superseded, paused, or already settled while we waited.
+    if (!r || r.runningTodoId !== ctx.todoId) return
+    const todo = useTodosStore.getState().getTodos(ctx.rootPath).find((t) => t.id === ctx.todoId)
+    const settled = todo?.status === 'review' || todo?.status === 'failed' || todo?.status === 'done'
+    if (settled || usePetStore.getState().get(ctx.workspaceId).paused || r.execWakes >= MAX_EXEC_WAKES) {
+      this.settleStuckTodo(ctx)
+      return
+    }
+    r.execWakes += 1
+    console.info('[pet] executor wake', ctx.todoId, r.execWakes)
+    void promptPet(ctx.panelId, `${WAKE_PROMPT}\n\n${buildExecutorContext(ctx.workspaceId, ctx.rootPath, ctx.todoId)}`)
   }
 
   onError(ctx: PetContext, message: string): void {

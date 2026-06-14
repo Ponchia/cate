@@ -5,6 +5,7 @@ function base(over: Partial<TriggerGateInput> = {}): TriggerGateInput {
   return {
     enabled: true,
     paused: false,
+    autoObserve: true,
     dirty: true,
     observerBusy: false,
     executorBusy: false,
@@ -27,6 +28,10 @@ describe('shouldObserve', () => {
 
   it('holds when not dirty', () => {
     expect(shouldObserve(base({ dirty: false }))).toBe(false)
+  })
+
+  it('holds when automatic observations are off', () => {
+    expect(shouldObserve(base({ autoObserve: false }))).toBe(false)
   })
 
   it('holds while observer or executor is busy', () => {

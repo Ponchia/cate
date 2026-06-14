@@ -20,7 +20,7 @@ import { isLocalLocator } from './companion/locator'
 const CATE_DIR = '.cate'
 const PET_FILE = 'pet.json'
 
-const DEFAULTS: ProjectPetFile = { version: 1, enabled: false, paused: false }
+const DEFAULTS: ProjectPetFile = { version: 1, enabled: false, paused: false, autoObserve: true }
 
 function cateDir(rootPath: string): string {
   return path.join(rootPath, CATE_DIR)
@@ -39,6 +39,8 @@ export async function loadPetState(rootPath: string): Promise<ProjectPetFile> {
       version: 1,
       enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : false,
       paused: typeof parsed.paused === 'boolean' ? parsed.paused : false,
+      // Absent in older files → default on, preserving the prior always-observe behaviour.
+      autoObserve: typeof parsed.autoObserve === 'boolean' ? parsed.autoObserve : true,
     }
   } catch {
     return { ...DEFAULTS }
@@ -48,7 +50,12 @@ export async function loadPetState(rootPath: string): Promise<ProjectPetFile> {
 export async function savePetState(rootPath: string, state: ProjectPetFile): Promise<void> {
   if (!isLocalLocator(rootPath)) return
   await ensureCateGitignore(cateDir(rootPath))
-  await writeJsonAtomic(petPath(rootPath), { version: 1, enabled: !!state.enabled, paused: !!state.paused })
+  await writeJsonAtomic(petPath(rootPath), {
+    version: 1,
+    enabled: !!state.enabled,
+    paused: !!state.paused,
+    autoObserve: state.autoObserve !== false,
+  })
 }
 
 export function registerProjectPetHandlers(): void {

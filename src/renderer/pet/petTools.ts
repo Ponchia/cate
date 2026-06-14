@@ -54,6 +54,72 @@ function worktreeMetaFor(wsId: string, worktreeId: string): WorktreeMeta | undef
   return ws?.worktrees?.find((w) => w.id === worktreeId)
 }
 
+/** Deterministically ensure a todo's isolated git worktree exists, BEFORE the
+ *  executor session runs. Idempotent — a todo that already has a worktree reuses
+ *  it, so a todo only ever gets ONE. Non-git workspaces get no worktree (the
+ *  feature still runs; terminals just use the repo root). Returns the cwd the
+ *  todo's terminals should run in and the worktree id (null when none). */
+export async function ensureTodoWorktree(
+  wsId: string,
+  rootPath: string,
+  todoId: string,
+): Promise<{ worktreeId: string | null; cwd: string }> {
+  const todo = todoById(rootPath, todoId)
+  if (!todo) return { worktreeId: null, cwd: rootPath }
+  // Reuse an already-created worktree — the single guarantee of one-per-todo.
+  if (todo.worktreeId) {
+    const meta = worktreeMetaFor(wsId, todo.worktreeId)
+    if (meta) return { worktreeId: meta.id, cwd: meta.path }
+  }
+  // Only git repos can have worktrees; everything else runs in the repo root.
+  let isRepo = false
+  try {
+    isRepo = await window.electronAPI.gitIsRepo(rootPath)
+  } catch {
+    isRepo = false
+  }
+  if (!isRepo) return { worktreeId: null, cwd: rootPath }
+
+  const branch = `pet/${toBranchName(todo.title)}`
+  const targetPath = worktreePathFor(rootPath, branch)
+  try {
+    await window.electronAPI.gitWorktreeAdd(rootPath, branch, targetPath, { createBranch: true })
+  } catch (err) {
+    log.warn('[petTools] worktree add failed for %s: %O', todoId, err)
+    return { worktreeId: null, cwd: rootPath }
+  }
+  const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
+  const meta: WorktreeMeta = {
+    id: `wt-${generateId()}`,
+    path: targetPath,
+    label: todo.title.slice(0, 40),
+    color: pickWorktreeColor(ws?.worktrees ?? []),
+  }
+  useAppStore.getState().upsertWorktree(wsId, meta)
+  useAppStore.getState().addAdditionalRoot(wsId, targetPath)
+  useTodosStore.getState().patchTodo(rootPath, todoId, { worktreeId: meta.id, branch })
+  gitStatusStore.refresh(rootPath)
+  return { worktreeId: meta.id, cwd: targetPath }
+}
+
+/** How long an observer remark lingers in its speech bubble before it fades. */
+const REMARK_TTL_MS = 9000
+const remarkTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Show an ephemeral FYI on the pet, replacing any current remark and resetting
+ *  its fade timer. Ephemeral by design — nothing is persisted. */
+function setRemark(wsId: string, text: string): void {
+  const prev = remarkTimers.get(wsId)
+  if (prev) clearTimeout(prev)
+  usePetStore.getState().patch(wsId, { remark: text })
+  const timer = setTimeout(() => {
+    remarkTimers.delete(wsId)
+    // Only clear if it's still the remark we set (a newer one owns its own timer).
+    if (usePetStore.getState().get(wsId).remark === text) usePetStore.getState().patch(wsId, { remark: '' })
+  }, REMARK_TTL_MS)
+  remarkTimers.set(wsId, timer)
+}
+
 /** Resolve the ptyId for a terminal handle (the handle IS the panelId). */
 function ptyFor(panelId: string): string | undefined {
   return terminalRegistry.ptyIdForPanel(panelId) ?? undefined
@@ -82,6 +148,15 @@ function terminalOnCanvas(wsId: string, panelId: string): boolean {
   const store = getWorkspaceCanvasStore(wsId)
   if (!store) return false
   return Object.values(store.getState().nodes).some((n) => n.panelId === panelId)
+}
+
+/** Move the world avatar to the terminal the pet is now interacting with, so it
+ *  visibly follows from terminal to terminal. On-canvas terminals get tethered;
+ *  a docked / detached one (no canvas node) CLEARS the anchor so the pet drops to
+ *  its corner instead of sitting on a stale, now-unrelated terminal. */
+function anchorPetTo(wsId: string, terminalId: string): void {
+  const tether = terminalId && terminalOnCanvas(wsId, terminalId) ? terminalId : null
+  usePetStore.getState().patch(wsId, { focusNodeId: tether })
 }
 
 function activityRunning(wsId: string, ptyId: string): boolean {
@@ -157,6 +232,142 @@ async function waitForPty(panelId: string, timeoutMs = 8000): Promise<string | u
   return ptyFor(panelId)
 }
 
+/** Snapshot of the workspace the observer needs every turn — activity, terminals,
+ *  and todos — built from the live stores and injected into the observe prompt so
+ *  the agent doesn't burn tool round-trips rediscovering known state. It still
+ *  calls read_terminal to look closely at a terminal it picks from this list. */
+export async function buildObserveContext(wsId: string, rootPath: string): Promise<string> {
+  const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
+  const panels = ws ? Object.values(ws.panels) : []
+  const openPanels = panels.map((p) => ({ type: p.type, title: p.title }))
+  const terminals = panels
+    .filter((p) => p.type === 'terminal')
+    .map((p) => {
+      const ptyId = ptyFor(p.id)
+      return { terminalId: p.id, title: p.title, busy: ptyId ? activityRunning(wsId, ptyId) : false }
+    })
+  let branch: string | null = null
+  let changedFiles: string[] = []
+  try {
+    const status = await window.electronAPI.gitStatus(rootPath)
+    branch = status.current
+    changedFiles = status.files.slice(0, 40).map((f) => f.path)
+  } catch {
+    /* not a git repo / unavailable */
+  }
+  const todoList = useTodosStore.getState().getTodos(rootPath).map((t) => ({ id: t.id, title: t.title, status: t.status }))
+  return json({ branch, changedFiles, openPanels, terminals, todos: todoList })
+}
+
+// --- executor wait/wake -----------------------------------------------------
+
+/** True while a terminal is doing work — a coding-agent CLI mid-turn or a live
+ *  shell command. Parked (waitingForInput/finished), exited, or idle => NOT busy,
+ *  i.e. it needs the orchestrator's attention. */
+function terminalBusy(wsId: string, panelId: string): boolean {
+  const ptyId = ptyFor(panelId)
+  if (!ptyId) return false
+  if (getExitCode(ptyId) !== null) return false
+  const aState = agentStateFor(wsId, ptyId)
+  if (aState) return aState === 'running'
+  return activityRunning(wsId, ptyId)
+}
+
+/** Any of this todo's terminals still working — so the executor should yield and
+ *  be woken on a terminal event rather than continued in a fresh session. */
+export function todoHasBusyTerminal(wsId: string, rootPath: string, todoId: string): boolean {
+  const todo = todoById(rootPath, todoId)
+  return (todo?.terminalNodeIds ?? []).some((p) => terminalBusy(wsId, p))
+}
+
+/** Safety cap on a single yield — bounds a genuinely long command and backstops
+ *  any terminal transition the activity poller misses. */
+const WAKE_TIMEOUT_MS = 5 * 60_000
+
+/** Resolve once any of the todo's currently-busy terminals stops being busy (a
+ *  driven CLI parks at waitingForInput/finished, or a command exits), or the
+ *  safety timeout elapses. This is what lets the executor yield its turn while
+ *  several CLIs work in parallel instead of blocking on one: the controller
+ *  awaits this and re-wakes the executor when a terminal needs attention. */
+export function waitForTerminalSignal(wsId: string, rootPath: string, todoId: string): Promise<void> {
+  const todo = todoById(rootPath, todoId)
+  const busyNow = (todo?.terminalNodeIds ?? []).filter((p) => terminalBusy(wsId, p))
+  return new Promise((resolve) => {
+    if (busyNow.length === 0) {
+      resolve()
+      return
+    }
+    let done = false
+    const finish = (): void => {
+      if (done) return
+      done = true
+      unsub()
+      clearTimeout(timer)
+      resolve()
+    }
+    // statusStore updates on every activity / agent-state poll, so re-checking on
+    // each change catches a terminal parking or exiting; the timeout backstops
+    // anything polling misses (and bounds a genuinely long-running command).
+    const unsub = useStatusStore.subscribe(() => {
+      if (busyNow.some((p) => !terminalBusy(wsId, p))) finish()
+    })
+    const timer = setTimeout(finish, WAKE_TIMEOUT_MS)
+  })
+}
+
+/** Compact status of every terminal the todo is driving — injected into the wake
+ *  prompt so the executor sees which CLIs parked/exited without rediscovering
+ *  them. It still read_terminal's the ones it wants a closer look at. */
+export function buildExecutorContext(wsId: string, rootPath: string, todoId: string): string {
+  const todo = todoById(rootPath, todoId)
+  const terminals = (todo?.terminalNodeIds ?? []).map((panelId) => {
+    const ptyId = ptyFor(panelId)
+    return {
+      terminalId: panelId,
+      busy: terminalBusy(wsId, panelId),
+      agentState: ptyId ? agentStateFor(wsId, ptyId) : null,
+      lastExitCode: ptyId ? getExitCode(ptyId) : null,
+    }
+  })
+  return json({ terminals })
+}
+
+/** Default inline wait (ms) for a foreground create_terminal/send_keys — long
+ *  enough for a coding-agent CLI turn, bounded so a hung command can't lock the
+ *  executor forever. The agent opts out of waiting entirely with background:true. */
+const ACTION_WAIT_MS = 5 * 60_000
+
+/** Wait inline until a terminal's current work settles — a coding-agent CLI parks
+ *  (waitingForInput/finished), a plain command's shell goes idle, or the process
+ *  exits — or the timeout elapses, then return its screen + state. This is what
+ *  makes waiting the DEFAULT for create_terminal/send_keys. */
+async function waitForTerminalIdle(
+  wsId: string,
+  panelId: string,
+): Promise<{ output: string; isRunning: boolean; lastExitCode: number | null; agentState: AgentState | null; timedOut: boolean }> {
+  const ptyId = ptyFor(panelId)
+  if (!ptyId) return { output: '', isRunning: false, lastExitCode: null, agentState: null, timedOut: false }
+  const start = Date.now()
+  await sleep(600) // let the command actually start before sampling
+  let timedOut = false
+  while (true) {
+    if (getExitCode(ptyId) !== null) break // process exited
+    const aState = agentStateFor(wsId, ptyId)
+    if (aState) {
+      // A coding-agent CLI stays foreground, so its OWN turn-state is the signal.
+      if (aState === 'waitingForInput' || aState === 'finished' || aState === 'notRunning') break
+    } else if (!activityRunning(wsId, ptyId)) {
+      break // plain command: the shell went idle
+    }
+    if (Date.now() - start > ACTION_WAIT_MS) {
+      timedOut = true
+      break
+    }
+    await sleep(500)
+  }
+  return { ...(await readTerminalState(wsId, panelId)), timedOut }
+}
+
 // --- tool dispatch ----------------------------------------------------------
 
 export async function runPetTool(ctx: PetContext, tool: string, params: Record<string, unknown>): Promise<string> {
@@ -165,59 +376,15 @@ export async function runPetTool(ctx: PetContext, tool: string, params: Record<s
 
   switch (tool) {
     // --- shared ---
-    case 'list_todos': {
-      const list = todos.getTodos(rootPath).map((t) => ({
-        id: t.id,
-        title: t.title,
-        origin: t.origin,
-        status: t.status,
-        note: t.note,
-      }))
-      return json({ todos: list })
-    }
-
     case 'read_terminal': {
       const terminalId = String(params.terminalId ?? '')
-      // Sit the pet on whatever it's currently reading, so the observer visibly
-      // moves to the terminal it's inspecting (only if that terminal is on canvas).
-      if (terminalId && terminalOnCanvas(wsId, terminalId)) {
-        usePetStore.getState().patch(wsId, { focusNodeId: terminalId })
-      }
+      // Sit the pet on whatever it's currently reading, so it visibly moves to
+      // the terminal it's inspecting.
+      anchorPetTo(wsId, terminalId)
       return json(await readTerminalState(wsId, terminalId))
     }
 
     // --- observer ---
-    case 'get_user_activity': {
-      const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
-      const panels = ws ? Object.values(ws.panels).map((p) => ({ type: p.type, title: p.title })) : []
-      let changed: string[] = []
-      let branch: string | null = null
-      try {
-        const status = await window.electronAPI.gitStatus(rootPath)
-        branch = status.current
-        changed = status.files.slice(0, 40).map((f) => f.path)
-      } catch {
-        /* not a git repo / unavailable */
-      }
-      return json({ branch, openPanels: panels, changedFiles: changed })
-    }
-
-    case 'list_terminals': {
-      const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
-      const wsStatus = useStatusStore.getState().workspaces[wsId]
-      const terminals = ws
-        ? Object.values(ws.panels)
-            .filter((p) => p.type === 'terminal')
-            .map((p) => {
-              const ptyId = ptyFor(p.id)
-              const running = ptyId ? activityRunning(wsId, ptyId) : false
-              return { terminalId: p.id, title: p.title, busy: running }
-            })
-        : []
-      void wsStatus
-      return json({ terminals })
-    }
-
     case 'propose_todo': {
       const title = String(params.title ?? '').trim()
       const rationale = String(params.rationale ?? '').trim()
@@ -236,36 +403,14 @@ export async function runPetTool(ctx: PetContext, tool: string, params: Record<s
       return json({ ok: true, id: todo.id })
     }
 
-    // --- executor ---
-    case 'create_worktree': {
-      const todoId = String(params.todoId ?? ctx.todoId ?? '')
-      const todo = todoById(rootPath, todoId)
-      if (!todo) return json({ ok: false, error: `no todo ${todoId}` })
-      if (todo.worktreeId && worktreeMetaFor(wsId, todo.worktreeId)) {
-        const meta = worktreeMetaFor(wsId, todo.worktreeId) as WorktreeMeta
-        return json({ ok: true, worktreeId: meta.id, branch: todo.branch, path: meta.path, reused: true })
-      }
-      const branch = `pet/${toBranchName(todo.title)}`
-      const targetPath = worktreePathFor(rootPath, branch)
-      try {
-        await window.electronAPI.gitWorktreeAdd(rootPath, branch, targetPath, { createBranch: true })
-      } catch (err) {
-        return json({ ok: false, error: `worktree add failed: ${err instanceof Error ? err.message : String(err)}` })
-      }
-      const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
-      const meta: WorktreeMeta = {
-        id: `wt-${generateId()}`,
-        path: targetPath,
-        label: todo.title.slice(0, 40),
-        color: pickWorktreeColor(ws?.worktrees ?? []),
-      }
-      useAppStore.getState().upsertWorktree(wsId, meta)
-      useAppStore.getState().addAdditionalRoot(wsId, targetPath)
-      todos.patchTodo(rootPath, todoId, { worktreeId: meta.id, branch, status: 'in_progress' })
-      gitStatusStore.refresh(rootPath)
-      return json({ ok: true, worktreeId: meta.id, branch, path: targetPath })
+    case 'remark': {
+      const text = String(params.text ?? '').trim()
+      if (!text) return json({ ok: false, error: 'text is required' })
+      setRemark(wsId, text.slice(0, 200))
+      return json({ ok: true })
     }
 
+    // --- executor ---
     case 'set_plan': {
       const todoId = String(params.todoId ?? ctx.todoId ?? '')
       const rawSteps = Array.isArray(params.steps) ? (params.steps as Array<Record<string, unknown>>) : []
@@ -281,16 +426,18 @@ export async function runPetTool(ctx: PetContext, tool: string, params: Record<s
       const todoId = String(params.todoId ?? ctx.todoId ?? '')
       const command = String(params.command ?? '')
       const todo = todoById(rootPath, todoId)
-      if (!todo?.worktreeId) return json({ ok: false, error: 'call create_worktree first' })
-      const meta = worktreeMetaFor(wsId, todo.worktreeId)
-      if (!meta) return json({ ok: false, error: 'worktree not found' })
+      if (!todo) return json({ ok: false, error: `no todo ${todoId}` })
+      // The worktree is prepared deterministically when the executor starts.
+      // Non-git workspaces have none, so terminals run in the repo root instead.
+      const meta = todo.worktreeId ? worktreeMetaFor(wsId, todo.worktreeId) : undefined
+      const cwd = meta?.path ?? rootPath
 
       const app = useAppStore.getState()
       // Explicit position → silent auto-place (no interactive ghost prompt).
       const priorCount = todoById(rootPath, todoId)?.terminalNodeIds?.length ?? 0
       const pos = terminalPosition(wsId, priorCount)
-      const panelId = app.createTerminal(wsId, undefined, pos, { target: 'canvas' }, meta.path)
-      app.setPanelWorktreeId(wsId, panelId, todo.worktreeId)
+      const panelId = app.createTerminal(wsId, undefined, pos, { target: 'canvas' }, cwd)
+      if (todo.worktreeId) app.setPanelWorktreeId(wsId, panelId, todo.worktreeId)
       // Track the terminal on the todo so the avatar + cleanup can find it, and
       // point the avatar at it (it tethers to this terminal while working).
       const existing = todoById(rootPath, todoId)?.terminalNodeIds ?? []
@@ -304,8 +451,11 @@ export async function runPetTool(ctx: PetContext, tool: string, params: Record<s
       } catch {
         /* activity polling is best-effort */
       }
+      const background = params.background === true
       if (command.trim()) {
         await window.electronAPI.terminalWrite(ptyId, command + '\r')
+        // Wait for the command to finish by default; background:true returns now.
+        if (!background) return json({ ok: true, terminalId: panelId, ...(await waitForTerminalIdle(wsId, panelId)) })
       }
       return json({ ok: true, terminalId: panelId })
     }
@@ -314,40 +464,15 @@ export async function runPetTool(ctx: PetContext, tool: string, params: Record<s
       const terminalId = String(params.terminalId ?? '')
       const keys = String(params.keys ?? '')
       const enter = params.enter !== false
+      const background = params.background === true
       const ptyId = ptyFor(terminalId)
       if (!ptyId) return json({ ok: false, error: 'terminal not found / not ready' })
+      // Follow the pet to the terminal it's driving.
+      anchorPetTo(wsId, terminalId)
       await window.electronAPI.terminalWrite(ptyId, enter ? keys + '\r' : keys)
-      return json({ ok: true })
-    }
-
-    case 'wait_for_terminal': {
-      const terminalId = String(params.terminalId ?? '')
-      const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 120_000
-      const ptyId = ptyFor(terminalId)
-      if (!ptyId) return json({ ok: false, error: 'terminal not found / not ready' })
-      const start = Date.now()
-      // Give the command a beat to actually start before we sample state.
-      await sleep(600)
-      let timedOut = false
-      while (true) {
-        if (getExitCode(ptyId) !== null) break // process exited
-        const aState = agentStateFor(wsId, ptyId)
-        if (aState) {
-          // A coding-agent CLI is running here. It stays foreground the whole
-          // session (so shell "idle" never fires), so its OWN turn-state is the
-          // signal: a turn is done once it parks at waitingForInput / finished.
-          if (aState === 'waitingForInput' || aState === 'finished' || aState === 'notRunning') break
-        } else if (!activityRunning(wsId, ptyId)) {
-          break // plain command: the shell went idle
-        }
-        if (Date.now() - start > timeoutMs) {
-          timedOut = true
-          break
-        }
-        await sleep(500)
-      }
-      const state = await readTerminalState(wsId, terminalId)
-      return json({ ...state, timedOut })
+      // Wait for the resulting work to finish by default; background:true returns now.
+      if (background) return json({ ok: true })
+      return json({ ok: true, ...(await waitForTerminalIdle(wsId, terminalId)) })
     }
 
     case 'close_terminal': {
