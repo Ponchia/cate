@@ -21,6 +21,7 @@ import { useAppStore } from '../stores/appStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useCanvasStoreContext, useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import { resolveTerminalFontSize } from '../lib/terminal/terminalSettings'
+import { useTerminalControlled } from '../cateAgent/cateAgentStore'
 
 // ---------------------------------------------------------------------------
 // Component
@@ -58,6 +59,7 @@ export default function TerminalPanel({
   const containerRef = useRef<HTMLDivElement>(null)
   const renderBoxRef = useRef<HTMLDivElement>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const controlled = useTerminalControlled(workspaceId, panelId)
   const fitRafRef = useRef<number | null>(null)
   const fitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastFitSizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 })
@@ -675,7 +677,10 @@ export default function TerminalPanel({
   // -------------------------------------------------------------------------
 
   return (
-    <div className="w-full h-full flex flex-col" style={{ padding: 0 }}>
+    <div className="relative w-full h-full flex flex-col" style={{ padding: 0 }}>
+      {controlled && (
+        <div className="cate-agent-terminal-glow absolute inset-0 z-20" aria-hidden />
+      )}
       {showSearch && (
         <div className="flex items-center gap-1 px-2 py-1 bg-surface-3 border-b border-subtle shrink-0">
           <input

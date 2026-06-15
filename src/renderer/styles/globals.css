@@ -290,3 +290,23 @@
   inset: 1px;
   border-radius: 9999px;
 }
+
+/* Slow, clearly-visible accent pulse on a terminal the Cate Agent is driving. */
+@keyframes cate-agent-terminal-glow {
+  0%, 100% {
+    box-shadow: 0 0 4px 1px rgb(var(--agent-rgb) / 0.45),
+                inset 0 0 6px 0 rgb(var(--agent-rgb) / 0.25);
+    border-color: rgb(var(--agent-rgb) / 0.55);
+  }
+  50% {
+    box-shadow: 0 0 16px 4px rgb(var(--agent-rgb) / 0.85),
+                inset 0 0 12px 0 rgb(var(--agent-rgb) / 0.45);
+    border-color: rgb(var(--agent-rgb) / 0.95);
+  }
+}
+.cate-agent-terminal-glow {
+  border: 1.5px solid rgb(var(--agent-rgb) / 0.55);
+  border-radius: 6px;
+  animation: cate-agent-terminal-glow 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
