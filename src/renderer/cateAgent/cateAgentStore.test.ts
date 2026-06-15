@@ -76,3 +76,41 @@ describe('cateAgentStore — appendFeed kinds', () => {
     expect(useCateAgentStore.getState().get('w').feed.map((f) => f.kind)).toEqual(['user', 'agent', 'error'])
   })
 })
+
+describe('cateAgentStore — unseen activity indicator', () => {
+  beforeEach(() => useCateAgentStore.setState({ byWs: {} }))
+
+  it('defaults to not unseen', () => {
+    expect(DEFAULT_CATE_AGENT_WS.unseen).toBe(false)
+  })
+
+  it('agent activity while the panel is closed marks unseen', () => {
+    useCateAgentStore.getState().appendFeed(WS, 'agent', 'remark')
+    expect(useCateAgentStore.getState().get(WS).unseen).toBe(true)
+  })
+
+  it("the user's own message never marks unseen", () => {
+    useCateAgentStore.getState().appendFeed(WS, 'user', 'hi')
+    expect(useCateAgentStore.getState().get(WS).unseen).toBe(false)
+  })
+
+  it('agent activity while the panel is open does not mark unseen', () => {
+    useCateAgentStore.getState().setInputOpen(WS, true)
+    useCateAgentStore.getState().appendFeed(WS, 'agent', 'remark')
+    expect(useCateAgentStore.getState().get(WS).unseen).toBe(false)
+  })
+
+  it('opening the panel clears unseen', () => {
+    useCateAgentStore.getState().appendFeed(WS, 'agent', 'remark')
+    expect(useCateAgentStore.getState().get(WS).unseen).toBe(true)
+    useCateAgentStore.getState().setInputOpen(WS, true)
+    expect(useCateAgentStore.getState().get(WS).unseen).toBe(false)
+  })
+
+  it('setUnseen sets and clears the flag', () => {
+    useCateAgentStore.getState().setUnseen(WS, true)
+    expect(useCateAgentStore.getState().get(WS).unseen).toBe(true)
+    useCateAgentStore.getState().setUnseen(WS, false)
+    expect(useCateAgentStore.getState().get(WS).unseen).toBe(false)
+  })
+})

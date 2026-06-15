@@ -280,6 +280,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             <CateAgentToolbarButton
               activity={cateAgent.activity}
               active={inputOpen}
+              attention={cateAgent.unseen && !inputOpen}
               onClick={toggleAgentInput}
             />
             {/* Content zone: the tools always render and define the toolbar's

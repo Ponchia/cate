@@ -42,6 +42,10 @@ export interface CateAgentWsState {
   feed: CateAgentFeedItem[]
   /** panelIds of terminals the executor is actively driving — drives the glow. */
   controlledTerminalIds: string[]
+  /** Agent activity has arrived (a remark, proposal, review, or error) that the
+   *  user hasn't seen because the feedback panel was closed. Drives the toolbar
+   *  button's attention glow + notification dot. Cleared when the panel opens. */
+  unseen: boolean
 }
 
 export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
@@ -53,6 +57,7 @@ export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
   inputOpen: false,
   feed: [],
   controlledTerminalIds: [],
+  unseen: false,
 }
 
 interface CateAgentStore {
@@ -63,6 +68,8 @@ interface CateAgentStore {
   setInputOpen: (wsId: string, open: boolean) => void
   appendFeed: (wsId: string, kind: CateAgentFeedKind, text: string) => void
   clearFeed: (wsId: string) => void
+  /** Flag/clear unseen agent activity (drives the toolbar attention indicator). */
+  setUnseen: (wsId: string, value: boolean) => void
   addControlledTerminal: (wsId: string, panelId: string) => void
   removeControlledTerminal: (wsId: string, panelId: string) => void
   clearControlledTerminals: (wsId: string) => void
@@ -85,7 +92,8 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
   setInputOpen(wsId, open) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      return { byWs: { ...s.byWs, [wsId]: { ...prev, inputOpen: open } } }
+      // Opening the panel means the user has now seen any pending activity.
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, inputOpen: open, unseen: open ? false : prev.unseen } } }
     })
   },
 
@@ -93,7 +101,17 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
       const item: CateAgentFeedItem = { id: ++feedSeq, kind, text, ts: Date.now() }
-      return { byWs: { ...s.byWs, [wsId]: { ...prev, feed: [...prev.feed, item].slice(-MAX_FEED) } } }
+      // Agent output (anything but the user's own line) arriving while the panel
+      // is closed becomes unseen activity → toolbar attention indicator.
+      const unseen = prev.unseen || (kind !== 'user' && !prev.inputOpen)
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, feed: [...prev.feed, item].slice(-MAX_FEED), unseen } } }
+    })
+  },
+
+  setUnseen(wsId, value) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, unseen: value } } }
     })
   },
 

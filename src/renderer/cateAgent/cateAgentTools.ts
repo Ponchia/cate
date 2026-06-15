@@ -368,6 +368,8 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
         note: rationale || undefined,
       }
       todos.upsertTodo(rootPath, todo)
+      // A new proposal is unseen activity when the panel is closed → toolbar dot.
+      if (!useCateAgentStore.getState().get(wsId).inputOpen) useCateAgentStore.getState().setUnseen(wsId, true)
       return json({ ok: true, id: todo.id })
     }
 
@@ -454,6 +456,12 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       // project root — so it completes directly to `done`, never `review`.
       if (patch.status === 'review' && !todoById(rootPath, todoId)?.worktreeId) patch.status = 'done'
       todos.patchTodo(rootPath, todoId, patch)
+      // Surface a settled todo in the feed (and flag the toolbar if the panel is
+      // closed). Review needs the user's land decision; done/failed are outcomes.
+      const title = todoById(rootPath, todoId)?.title ?? 'task'
+      if (patch.status === 'review') setRemark(wsId, `Ready for review: "${title}"`)
+      else if (patch.status === 'done') setRemark(wsId, `Done: "${title}"`)
+      else if (patch.status === 'failed') setRemark(wsId, `Couldn't finish: "${title}"`)
       return json({ ok: true })
     }
 

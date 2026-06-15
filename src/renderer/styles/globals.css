@@ -310,3 +310,18 @@
   animation: cate-agent-terminal-glow 2.4s ease-in-out infinite;
   pointer-events: none;
 }
+
+/* Attention pulse on the toolbar Cate Agent button when there's unseen activity
+   and the feedback panel is closed. Overrides the button's static ring while it
+   animates. */
+@keyframes cate-agent-attention {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgb(var(--agent-rgb) / 0.55), 0 0 6px 1px rgb(var(--agent-rgb) / 0.40);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgb(var(--agent-rgb) / 0.95), 0 0 16px 4px rgb(var(--agent-rgb) / 0.85);
+  }
+}
+.cate-agent-attention {
+  animation: cate-agent-attention 1.8s ease-in-out infinite;
+}
