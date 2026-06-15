@@ -83,16 +83,14 @@ export const CateAgentWorktreeSelect: React.FC<{
           WebkitTapHighlightColor: 'transparent',
           backgroundColor: `color-mix(in srgb, ${color} 20%, transparent)`,
           border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
-          // Match the CATE / send buttons' 36px height so it aligns with them
-          // whether the row is centered (single-line) or bottom-anchored (multi).
-          height: 36,
+          height: 28,
           gap: expanded ? 6 : 0,
-          padding: expanded ? '0 13px 0 11px' : '0 11px',
+          padding: expanded ? '0 11px 0 8px' : '0 7px',
           transition: 'gap 160ms ease, padding 160ms ease',
         }}
-        className="flex-shrink-0 inline-flex items-center rounded-full text-xs text-secondary overflow-hidden"
+        className="inline-flex items-center rounded-full text-xs text-secondary overflow-hidden"
       >
-        <ArrowsSplit size={15} weight="bold" style={{ color, flexShrink: 0 }} />
+        <ArrowsSplit size={13} weight="bold" style={{ color, flexShrink: 0 }} />
         <span
           className="truncate"
           style={{

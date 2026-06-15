@@ -93,13 +93,17 @@ export const CateAgentInputBar: React.FC<{
 
   return (
     <div className={`flex ${multiline ? 'items-end' : 'items-center'} gap-1.5 w-full pl-1`}>
-      {/* Select-only worktree target for the prompt (collapsible color tag). */}
-      <CateAgentWorktreeSelect
-        workspaceId={workspaceId}
-        rootPath={rootPath}
-        value={worktreeTarget}
-        onChange={onWorktreeTargetChange}
-      />
+      {/* Select-only worktree target for the prompt (collapsible color tag). The
+          fixed 36px slot keeps the small circle centered on the CATE/send line in
+          both single- and multi-line layouts. */}
+      <div className="flex-shrink-0 flex items-center" style={{ height: 36 }}>
+        <CateAgentWorktreeSelect
+          workspaceId={workspaceId}
+          rootPath={rootPath}
+          value={worktreeTarget}
+          onChange={onWorktreeTargetChange}
+        />
+      </div>
       <textarea
         ref={ref}
         rows={1}
