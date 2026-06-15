@@ -285,7 +285,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             {/* Content zone: the tools always render and define the toolbar's
                 width; the input bar fades in over them when open, so toggling
                 never changes the toolbar's width. */}
-            <div className="relative flex items-center gap-0.5">
+            <div className="relative flex items-center gap-0.5 ml-1.5">
               <div
                 className={`flex items-center gap-0.5 transition-opacity duration-150 ${
                   inputOpen ? 'pointer-events-none opacity-0' : 'opacity-100'
