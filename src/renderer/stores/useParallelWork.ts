@@ -18,6 +18,27 @@ import type { JoinedWorktree } from './useWorktrees'
 import type { PrListItem } from '../sidebar/CreateWorktreeForm'
 import type { NativeContextMenuItem } from '../../shared/electron-api'
 
+/** Apply a color/label change to a worktree's UI metadata, creating the metadata
+ *  record when none exists yet (a worktree discovered only from git has its path
+ *  as its id and no appStore record, so setWorktreeColor — which matches by id —
+ *  would silently no-op and never persist). Matching by id OR path makes the
+ *  change stick and survive a reload. */
+function upsertWorktreeMeta(
+  workspaceId: string,
+  wt: JoinedWorktree,
+  patch: { color?: string; label?: string },
+): void {
+  const s = useAppStore.getState()
+  const ws = s.workspaces.find((w) => w.id === workspaceId)
+  const existing = ws?.worktrees?.find((w) => w.id === wt.id || w.path === wt.path)
+  s.upsertWorktree(workspaceId, {
+    id: existing?.id ?? wt.id,
+    path: wt.path,
+    color: patch.color ?? existing?.color ?? wt.color ?? '#888888',
+    label: 'label' in patch ? patch.label : existing?.label ?? wt.label,
+  })
+}
+
 export interface WorktreeStatus {
   branch: string
   dirty: boolean
@@ -294,8 +315,8 @@ export function useParallelWork(
       onMerge: () => handleMerge(wt),
       onDelete: () => handleDelete(wt),
       onReveal: () => window.electronAPI.shellShowInFolder(wt.path),
-      onRename: (label) => workspaceId && useAppStore.getState().setWorktreeLabel(workspaceId, wt.id, label),
-      onRecolor: (color) => workspaceId && useAppStore.getState().setWorktreeColor(workspaceId, wt.id, color),
+      onRename: (label) => workspaceId && upsertWorktreeMeta(workspaceId, wt, { label: label?.trim() || undefined }),
+      onRecolor: (color) => workspaceId && upsertWorktreeMeta(workspaceId, wt, { color }),
       onOpenPr: (url) => window.electronAPI.openExternalUrl(url),
     }),
     [launchInWorktree, handlePublish, handleCreatePR, handleUpdateFromMain, handleMerge, handleDelete, workspaceId],
