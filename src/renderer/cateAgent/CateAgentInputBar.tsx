@@ -47,8 +47,12 @@ export const CateAgentInputBar: React.FC<{
   const ref = React.useRef<HTMLTextAreaElement>(null)
 
   const update = (value: string): void => {
-    setText(value)
-    saveDraft(workspaceId, value)
+    // Normalize line endings and drop leading blank lines — a paste that carried
+    // a leading newline (or CRLF endings) would otherwise open the bar on an empty
+    // first line above the text.
+    const normalized = value.replace(/\r\n?/g, '\n').replace(/^\n+/, '')
+    setText(normalized)
+    saveDraft(workspaceId, normalized)
   }
 
   // Grow the textarea to fit its content (measured by collapsing to 0 first) and
@@ -82,7 +86,7 @@ export const CateAgentInputBar: React.FC<{
   }
 
   return (
-    <div className="flex items-end gap-1.5 w-full px-1">
+    <div className="flex items-end gap-1.5 w-full pl-1">
       <textarea
         ref={ref}
         rows={1}
