@@ -18,6 +18,21 @@ export interface CateAgentRemark {
   text: string
 }
 
+/** One entry in the Cate Agent's persistent-per-session feedback log (rendered in
+ *  the feedback panel above the toolbar). Unlike `remarks` (ephemeral bubbles),
+ *  feed items stay until the feed is cleared or rolls past the cap. */
+export type CateAgentFeedKind = 'user' | 'agent' | 'status' | 'error'
+
+export interface CateAgentFeedItem {
+  id: number
+  kind: CateAgentFeedKind
+  text: string
+  ts: number
+}
+
+let feedSeq = 0
+const MAX_FEED = 50
+
 export interface CateAgentWsState {
   enabled: boolean
   /** Whether the observer runs automatically on the timer. When false the Cate Agent
@@ -32,6 +47,13 @@ export interface CateAgentWsState {
   remarks: CateAgentRemark[]
   /** The todo the executor is currently running, or null. */
   currentTodoId: string | null
+  /** Whether the toolbar is showing the prompt input bar (and the feedback panel
+   *  is forced visible). */
+  inputOpen: boolean
+  /** Persistent-per-session feedback log shown above the toolbar, newest last. */
+  feed: CateAgentFeedItem[]
+  /** panelIds of terminals the executor is actively driving — drives the glow. */
+  controlledTerminalIds: string[]
 }
 
 export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
@@ -41,6 +63,9 @@ export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
   status: '',
   remarks: [],
   currentTodoId: null,
+  inputOpen: false,
+  feed: [],
+  controlledTerminalIds: [],
 }
 
 interface CateAgentStore {
@@ -51,6 +76,12 @@ interface CateAgentStore {
    *  harmless no-op since it filters by id. */
   popRemark: (wsId: string, id: number) => void
   reset: (wsId: string) => void
+  setInputOpen: (wsId: string, open: boolean) => void
+  appendFeed: (wsId: string, kind: CateAgentFeedKind, text: string) => void
+  clearFeed: (wsId: string) => void
+  addControlledTerminal: (wsId: string, panelId: string) => void
+  removeControlledTerminal: (wsId: string, panelId: string) => void
+  clearControlledTerminals: (wsId: string) => void
 }
 
 export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
@@ -74,6 +105,50 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
     })
   },
 
+  setInputOpen(wsId, open) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, inputOpen: open } } }
+    })
+  },
+
+  appendFeed(wsId, kind, text) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      const item: CateAgentFeedItem = { id: ++feedSeq, kind, text, ts: Date.now() }
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, feed: [...prev.feed, item].slice(-MAX_FEED) } } }
+    })
+  },
+
+  clearFeed(wsId) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, feed: [] } } }
+    })
+  },
+
+  addControlledTerminal(wsId, panelId) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      if (prev.controlledTerminalIds.includes(panelId)) return s
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminalIds: [...prev.controlledTerminalIds, panelId] } } }
+    })
+  },
+
+  removeControlledTerminal(wsId, panelId) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminalIds: prev.controlledTerminalIds.filter((p) => p !== panelId) } } }
+    })
+  },
+
+  clearControlledTerminals(wsId) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminalIds: [] } } }
+    })
+  },
+
   reset(wsId) {
     set((s) => ({ byWs: { ...s.byWs, [wsId]: { ...DEFAULT_CATE_AGENT_WS } } }))
   },
@@ -82,4 +157,11 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
 /** Hook: subscribe to one workspace's Cate Agent state (stable default when absent). */
 export function useCateAgentWs(wsId: string | null | undefined): CateAgentWsState {
   return useCateAgentStore((s) => (wsId ? s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS : DEFAULT_CATE_AGENT_WS))
+}
+
+/** Hook: true while the given terminal panel is being driven by the executor. */
+export function useTerminalControlled(wsId: string | null | undefined, panelId: string): boolean {
+  return useCateAgentStore((s) =>
+    wsId ? (s.byWs[wsId]?.controlledTerminalIds ?? []).includes(panelId) : false,
+  )
 }
