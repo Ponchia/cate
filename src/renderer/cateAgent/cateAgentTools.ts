@@ -445,6 +445,13 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       return json({ ok: true })
     }
 
+    case 'set_topic': {
+      const todoId = String(params.todoId ?? ctx.todoId ?? '')
+      const topic = String(params.topic ?? '').trim()
+      if (todoId && topic) todos.patchTodo(rootPath, todoId, { topic: topic.slice(0, 60) })
+      return json({ ok: true })
+    }
+
     case 'update_todo': {
       const todoId = String(params.todoId ?? ctx.todoId ?? '')
       const patch: Partial<Todo> = {}

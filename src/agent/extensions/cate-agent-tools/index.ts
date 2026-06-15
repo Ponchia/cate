@@ -139,6 +139,20 @@ export default function (pi: ExtensionAPI) {
     })
 
     pi.registerTool({
+      name: "set_topic",
+      label: "Set topic",
+      description:
+        "Set a short 2–5 word topic that titles this job in the UI (e.g. 'Fix login redirect'). Call this ONCE at the very start, before doing anything else.",
+      parameters: Type.Object({
+        todoId: Type.String(),
+        topic: Type.String({ description: "A concise 2–5 word title for the task." }),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "set_topic", { todoId: params.todoId, topic: params.topic })
+      },
+    })
+
+    pi.registerTool({
       name: "update_todo",
       label: "Update todo",
       description:
