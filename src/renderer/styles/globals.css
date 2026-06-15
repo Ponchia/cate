@@ -294,13 +294,13 @@
 /* Slow, clearly-visible accent pulse on a terminal the Cate Agent is driving. */
 @keyframes cate-agent-terminal-glow {
   0%, 100% {
-    box-shadow: 0 0 4px 1px rgb(var(--agent-rgb) / 0.45),
-                inset 0 0 6px 0 rgb(var(--agent-rgb) / 0.25);
-    border-color: rgb(var(--agent-rgb) / 0.55);
+    box-shadow: 0 0 3px 0 rgb(var(--agent-rgb) / 0.30),
+                inset 0 0 12px 1px rgb(var(--agent-rgb) / 0.40);
+    border-color: rgb(var(--agent-rgb) / 0.50);
   }
   50% {
-    box-shadow: 0 0 16px 4px rgb(var(--agent-rgb) / 0.85),
-                inset 0 0 12px 0 rgb(var(--agent-rgb) / 0.45);
+    box-shadow: 0 0 7px 1px rgb(var(--agent-rgb) / 0.55),
+                inset 0 0 26px 4px rgb(var(--agent-rgb) / 0.75);
     border-color: rgb(var(--agent-rgb) / 0.95);
   }
 }

@@ -5,7 +5,7 @@
 // =============================================================================
 
 import React from 'react'
-import { PaperPlaneTilt } from '@phosphor-icons/react'
+import { ArrowUp } from '@phosphor-icons/react'
 
 export const CateAgentInputBar: React.FC<{
   onSend: (text: string) => void
@@ -43,7 +43,7 @@ export const CateAgentInputBar: React.FC<{
         aria-label="Send"
         className="w-8 h-8 flex items-center justify-center rounded-full text-secondary hover:text-primary hover:bg-hover-strong active:scale-[0.92] transition-all duration-100 disabled:opacity-30"
       >
-        <PaperPlaneTilt size={16} weight="fill" />
+        <ArrowUp size={16} weight="bold" />
       </button>
     </div>
   )
