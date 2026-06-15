@@ -52,7 +52,7 @@ export const CateAgentInputBar: React.FC<{
   }
 
   return (
-    <div className="flex items-end gap-1.5 w-full h-full px-1">
+    <div className="flex items-end gap-1.5 w-full px-1">
       <textarea
         ref={ref}
         rows={1}

@@ -3,7 +3,7 @@
 // Ported from CanvasToolbar.swift.
 // =============================================================================
 
-import React, { useState, useRef, useLayoutEffect, useEffect } from 'react'
+import React, { useState, useRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Terminal,
@@ -235,12 +235,11 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   // grow from there. `agentInputH` is the textarea's reported content height.
   const agentToolsRef = useRef<HTMLDivElement>(null)
   const [agentToolsSize, setAgentToolsSize] = useState({ w: 0, h: 36 })
-  const [agentInputH, setAgentInputH] = useState(36)
-  // Always measure the tools' natural size — even while the input is open (the
-  // tools stay in-flow, just faded out, so offsetWidth is still valid). Measuring
+  // Measure the tools' natural size — even while the input is open (the tools
+  // stay laid out, just hidden, so offsetWidth is still valid). Measuring
   // only-when-closed broke if the toolbar first mounted with the input already
-  // open (e.g. after an HMR reload, or a second toolbar sharing the open state):
-  // the width stayed 0 and the bar collapsed. Dedupe to avoid a measure→render loop.
+  // open (HMR, or a second toolbar sharing state): the width stayed 0 and the bar
+  // collapsed. Dedupe to avoid a measure→render loop.
   useLayoutEffect(() => {
     const el = agentToolsRef.current
     if (!el) return
@@ -255,16 +254,13 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  // Collapse the remembered input height when closed, so reopening always starts
-  // at one line (the textarea re-reports its real height on mount) instead of
-  // briefly flashing a stale tall box.
-  useEffect(() => {
-    if (!inputOpen) setAgentInputH(agentToolsSize.h)
-  }, [inputOpen, agentToolsSize.h])
   const AGENT_INPUT_EXTRA = 96 // how much wider than the toolbar the input grows
-  const agentZoneStyle: React.CSSProperties = inputOpen
-    ? { width: agentToolsSize.w + AGENT_INPUT_EXTRA, height: Math.max(agentToolsSize.h, agentInputH) }
-    : { width: agentToolsSize.w || undefined, height: agentToolsSize.h || undefined }
+  // Only the WIDTH is explicit (so it animates). HEIGHT is left to the in-flow
+  // input content, so the bar is exactly as tall as the text inside — one line
+  // when empty, growing only as the textarea wraps.
+  const agentZoneStyle: React.CSSProperties = {
+    width: inputOpen ? agentToolsSize.w + AGENT_INPUT_EXTRA : agentToolsSize.w || undefined,
+  }
   // Pin the pill's corner radius to the COLLAPSED height/2 so a one-line bar is
   // fully rounded and the radius stays constant as it grows taller (instead of
   // `rounded-full`, which tracks the current height and over-rounds when tall).
@@ -339,13 +335,13 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 agentToolsRef); opening grows it wider for the input and taller as
                 text wraps. Width + height are explicit so every change animates. */}
             <div
-              className="relative flex items-center ml-1.5 overflow-hidden transition-[width,height] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              className="relative flex items-stretch ml-1.5 overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
               style={agentZoneStyle}
             >
               <div
                 ref={agentToolsRef}
-                className={`flex items-center gap-0.5 transition-opacity duration-150 ${
-                  inputOpen ? 'pointer-events-none opacity-0' : 'opacity-100'
+                className={`flex items-center gap-0.5 ${
+                  inputOpen ? 'absolute left-0 top-0 opacity-0 pointer-events-none' : ''
                 }`}
               >
             {/* Interaction tools (Select / Hand) */}
@@ -410,8 +406,8 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             </ToolbarButton>
               </div>
               {inputOpen && (
-                <div className="absolute inset-0 flex items-stretch">
-                  <CateAgentInputBar onSend={sendAgentPrompt} onClose={closeAgentInput} onHeightChange={setAgentInputH} />
+                <div className="flex-1 min-w-0">
+                  <CateAgentInputBar onSend={sendAgentPrompt} onClose={closeAgentInput} />
                 </div>
               )}
             </div>
