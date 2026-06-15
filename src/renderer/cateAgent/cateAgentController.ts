@@ -258,6 +258,28 @@ class CateAgentController implements CateAgentBridgeHost {
     void this.observe(wsId, r)
   }
 
+  /** Handle a free-form user prompt typed into the toolbar input bar. Summons the
+   *  Cate Agent if needed, echoes the user's message into the feed, then prompts
+   *  the always-on observer session with the request + current workspace context.
+   *  The observer can `remark` (→ feed) and `propose_todo` (→ suggested todos the
+   *  user approves in the feedback panel). */
+  async prompt(wsId: string, rootPath: string, text: string): Promise<void> {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    this.start()
+    useCateAgentStore.getState().appendFeed(wsId, 'user', trimmed)
+    const enabled = useCateAgentStore.getState().get(wsId).enabled
+    if (!enabled) await this.summon(wsId, rootPath)
+    const r = this.ws.get(wsId)
+    if (!r?.observerPanelId) {
+      useCateAgentStore.getState().appendFeed(wsId, 'error', 'Cate Agent could not start (check provider sign-in).')
+      return
+    }
+    const context = await buildObserveContext(wsId, r.rootPath)
+    const ask = `The user asked: "${trimmed}". Respond with a short remark, and propose_todo for any concrete work you would take on (the user approves todos before anything runs).`
+    void promptCateAgent(r.observerPanelId, `${ask}\n\n${context}`)
+  }
+
   /** Take one observe turn: snapshot the workspace and prompt the observer with
    *  it injected, so it doesn't burn tool calls rediscovering known state. */
   private async observe(wsId: string, r: WsRuntime): Promise<void> {
@@ -338,6 +360,7 @@ class CateAgentController implements CateAgentBridgeHost {
     this.ctxByPanel.set(panelId, ctx)
     useTodosStore.getState().setTodoStatus(rootPath, todoId, 'in_progress')
     useCateAgentStore.getState().patch(wsId, { activity: 'working', currentTodoId: todoId, status: pick(WORKING_STATUSES)(todo.title) })
+    useCateAgentStore.getState().appendFeed(wsId, 'status', `Working on "${todo.title}"`)
     // Prepare the isolated worktree deterministically before the agent runs (a
     // no-op for non-git workspaces, and idempotent so a todo gets only one).
     const { worktreeId } = await ensureTodoWorktree(wsId, rootPath, todoId)
@@ -367,6 +390,7 @@ class CateAgentController implements CateAgentBridgeHost {
       currentTodoId: null,
       status: '',
     })
+    useCateAgentStore.getState().clearControlledTerminals(ctx.workspaceId)
     this.markDirty(ctx.workspaceId) // a finished todo is a follow-up signal
     this.drainQueue(ctx.workspaceId, ctx.rootPath)
   }
@@ -532,6 +556,7 @@ class CateAgentController implements CateAgentBridgeHost {
   onError(ctx: CateAgentContext, message: string): void {
     log.warn('[cateAgentController] %s error: %s', ctx.panelId, message)
     if (ctx.role === 'executor' && ctx.todoId) {
+      useCateAgentStore.getState().appendFeed(ctx.workspaceId, 'error', message.slice(0, 200))
       useTodosStore.getState().patchTodo(ctx.rootPath, ctx.todoId, { status: 'failed', note: message.slice(0, 200) })
       this.finalizeExecutor(ctx)
     } else {
