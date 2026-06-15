@@ -1,20 +1,44 @@
 // =============================================================================
 // CateAgentInputBar — replaces the toolbar's tool buttons while the Cate Agent
-// input is open. A single text field + send button that prompts the Cate Agent.
-// Enter sends; Escape closes input mode.
+// input is open. An auto-growing textarea (wraps long text onto multiple lines)
+// + send button. Enter sends; Shift+Enter inserts a newline; Escape closes.
+// Reports its content height via onHeightChange so the toolbar can grow/shrink
+// to fit (and animate that change).
 // =============================================================================
 
 import React from 'react'
 import { ArrowUp } from '@phosphor-icons/react'
 
+/** Cap the textarea growth; beyond this it scrolls internally. */
+const MAX_HEIGHT = 160
+
 export const CateAgentInputBar: React.FC<{
   onSend: (text: string) => void
   onClose: () => void
-}> = ({ onSend, onClose }) => {
+  /** Reports the textarea's current content height (px) so the toolbar resizes. */
+  onHeightChange?: (px: number) => void
+}> = ({ onSend, onClose, onHeightChange }) => {
   const [text, setText] = React.useState('')
-  const inputRef = React.useRef<HTMLInputElement>(null)
+  const ref = React.useRef<HTMLTextAreaElement>(null)
 
-  React.useEffect(() => { inputRef.current?.focus() }, [])
+  // Grow the textarea to fit its content (measured by collapsing to 0 first) and
+  // report that height upward so the toolbar zone can match it.
+  const resize = React.useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = '0px'
+    const h = Math.min(el.scrollHeight, MAX_HEIGHT)
+    el.style.height = `${h}px`
+    onHeightChange?.(h)
+  }, [onHeightChange])
+
+  React.useEffect(() => {
+    ref.current?.focus()
+    resize()
+  }, [resize])
+  React.useEffect(() => {
+    resize()
+  }, [text, resize])
 
   const send = () => {
     const t = text.trim()
@@ -24,24 +48,31 @@ export const CateAgentInputBar: React.FC<{
   }
 
   return (
-    <div className="flex items-center gap-1.5 w-full pl-1 pr-1">
-      <input
-        ref={inputRef}
+    <div className="flex items-end gap-1.5 w-full h-full px-1">
+      <textarea
+        ref={ref}
+        rows={1}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); send() }
-          else if (e.key === 'Escape') { e.preventDefault(); onClose() }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            send()
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            onClose()
+          }
         }}
         placeholder="Ask the Cate Agent…"
-        className="flex-1 min-w-0 bg-transparent text-sm text-primary px-2 py-1.5 outline-none placeholder:text-muted"
+        className="flex-1 min-w-0 resize-none bg-transparent text-sm leading-snug text-primary px-2 py-1.5 outline-none placeholder:text-muted"
+        style={{ maxHeight: MAX_HEIGHT }}
       />
       <button
         type="button"
         onClick={send}
         disabled={!text.trim()}
         aria-label="Send"
-        className="w-8 h-8 flex items-center justify-center rounded-full text-secondary hover:text-primary hover:bg-hover-strong active:scale-[0.92] transition-all duration-100 disabled:opacity-30"
+        className="mb-1 w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-full text-secondary hover:text-primary hover:bg-hover-strong active:scale-[0.92] transition-all duration-100 disabled:opacity-30"
       >
         <ArrowUp size={16} weight="bold" />
       </button>

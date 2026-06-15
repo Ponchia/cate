@@ -326,26 +326,3 @@
   animation: cate-agent-attention 1.8s ease-in-out infinite;
 }
 
-/* Bobbly spring as the toolbar grows into the prompt input — a damped wobble
-   (over/undershoot a few times) that settles at the final padding (96px). Open
-   uses this keyframe; close falls back to the element's smooth padding
-   transition. */
-@keyframes cate-agent-input-grow {
-  0%   { padding-right: 0; }
-  60%  { padding-right: 102px; }
-  82%  { padding-right: 94px; }
-  100% { padding-right: 96px; }
-}
-.cate-agent-input-grow {
-  animation: cate-agent-input-grow 420ms cubic-bezier(0.4, 0, 0.2, 1) both;
-}
-/* Gentle collapse back to the toolbar: ease toward 0 with one soft rebound. */
-@keyframes cate-agent-input-shrink {
-  0%   { padding-right: 96px; }
-  62%  { padding-right: 0; }
-  82%  { padding-right: 6px; }
-  100% { padding-right: 0; }
-}
-.cate-agent-input-shrink {
-  animation: cate-agent-input-shrink 360ms cubic-bezier(0.4, 0, 0.2, 1) both;
-}

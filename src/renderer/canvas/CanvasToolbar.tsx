@@ -3,7 +3,7 @@
 // Ported from CanvasToolbar.swift.
 // =============================================================================
 
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Terminal,
@@ -229,15 +229,26 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const todosForRoot = useTodosStore((s) => s.todosByRoot[rootPath])
   const hasActionableTodos = (todosForRoot ?? []).some((t) => ATTENTION_STATUSES.includes(t.status))
   const agentAttention = !inputOpen && (hasActionableTodos || cateAgent.unseen)
-  // Track whether the input has ever been opened, so the bobbly collapse only
-  // plays after a real open — never as a phantom shrink on first render.
-  const agentInputEverOpened = useRef(false)
-  if (inputOpen) agentInputEverOpened.current = true
-  const agentGrowClass = inputOpen
-    ? 'cate-agent-input-grow'
-    : agentInputEverOpened.current
-      ? 'cate-agent-input-shrink'
-      : ''
+  // The content zone is sized explicitly so opening (wider for the input), typing
+  // (taller as text wraps), and closing all animate via the width/height
+  // transition. The tools define the closed size; we measure it while closed and
+  // grow from there. `agentInputH` is the textarea's reported content height.
+  const agentToolsRef = useRef<HTMLDivElement>(null)
+  const [agentToolsSize, setAgentToolsSize] = useState({ w: 0, h: 36 })
+  const [agentInputH, setAgentInputH] = useState(36)
+  useLayoutEffect(() => {
+    const el = agentToolsRef.current
+    if (!el || inputOpen) return
+    const measure = () => setAgentToolsSize({ w: Math.round(el.offsetWidth), h: Math.round(el.offsetHeight) })
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [inputOpen])
+  const AGENT_INPUT_EXTRA = 96 // how much wider than the toolbar the input grows
+  const agentZoneStyle: React.CSSProperties = inputOpen
+    ? { width: agentToolsSize.w + AGENT_INPUT_EXTRA, height: Math.max(agentToolsSize.h, agentInputH) }
+    : { width: agentToolsSize.w || undefined, height: agentToolsSize.h || undefined }
 
   // Minimap pill docking corner + drag-to-dock handling. The corner is driven
   // straight from the UI-state store so an external shove (the Cate Agent landing on
@@ -303,15 +314,15 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
               attention={agentAttention}
               onClick={toggleAgentInput}
             />
-            {/* Content zone: the tools always render and define the toolbar's
-                base width; the input bar fades in over them when open. Opening
-                grows the zone slightly (animated padding) so the input is a bit
-                wider than the toolbar, then collapses back on close. */}
+            {/* Content zone: the tools define the closed size (measured via
+                agentToolsRef); opening grows it wider for the input and taller as
+                text wraps. Width + height are explicit so every change animates. */}
             <div
-              className={`relative flex items-center gap-0.5 ml-1.5 ${agentGrowClass}`}
-              style={{ paddingRight: inputOpen ? 96 : 0 }}
+              className="relative flex items-center ml-1.5 overflow-hidden transition-[width,height] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              style={agentZoneStyle}
             >
               <div
+                ref={agentToolsRef}
                 className={`flex items-center gap-0.5 transition-opacity duration-150 ${
                   inputOpen ? 'pointer-events-none opacity-0' : 'opacity-100'
                 }`}
@@ -378,8 +389,8 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             </ToolbarButton>
               </div>
               {inputOpen && (
-                <div className="absolute inset-0 flex items-center">
-                  <CateAgentInputBar onSend={sendAgentPrompt} onClose={closeAgentInput} />
+                <div className="absolute inset-0 flex items-stretch">
+                  <CateAgentInputBar onSend={sendAgentPrompt} onClose={closeAgentInput} onHeightChange={setAgentInputH} />
                 </div>
               )}
             </div>
