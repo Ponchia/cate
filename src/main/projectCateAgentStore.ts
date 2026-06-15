@@ -15,7 +15,7 @@ import { PROJECT_CATE_AGENT_LOAD, PROJECT_CATE_AGENT_SAVE } from '../shared/ipc-
 import type { ProjectCateAgentFile } from '../shared/types'
 import { writeJsonAtomic } from './writeJsonAtomic'
 import { ensureCateGitignore } from './cateGitignore'
-import { isLocalLocator } from './companion/locator'
+import { isLocalLocator } from './runtime/locator'
 
 const CATE_DIR = '.cate'
 const CATE_AGENT_FILE = 'cateAgent.json'

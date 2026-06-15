@@ -85,25 +85,25 @@ export default function TerminalPanel({
     return unsubscribe
   }, [panelId])
 
-  // A create failure usually means the host's companion is down (the local
+  // A create failure usually means the host's runtime is down (the local
   // daemon failed to start, or a remote dropped) — re-running create alone can
-  // never fix that. Re-kick the companion first, then re-run create either way
+  // never fix that. Re-kick the runtime first, then re-run create either way
   // so the freshest error surfaces if it still fails.
   const [retrying, setRetrying] = useState(false)
-  const retryCompanion = useAppStore((state) => state.retryCompanion)
+  const retryRuntime = useAppStore((state) => state.retryRuntime)
   const handleRetry = useCallback(() => {
     if (retrying) return
     setRetrying(true)
     void (async () => {
       try {
-        await retryCompanion(workspaceId)
+        await retryRuntime(workspaceId)
       } finally {
         setRetrying(false)
         setCreateError(null)
         setRetryKey((k) => k + 1)
       }
     })()
-  }, [retrying, retryCompanion, workspaceId])
+  }, [retrying, retryRuntime, workspaceId])
 
   const workspaces = useAppStore((state) => state.workspaces)
   const panelCwd = useAppStore(

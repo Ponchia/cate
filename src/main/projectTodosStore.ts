@@ -20,7 +20,7 @@ import { PROJECT_TODOS_LOAD, PROJECT_TODOS_SAVE } from '../shared/ipc-channels'
 import type { Todo, ProjectTodosFile } from '../shared/types'
 import { writeJsonAtomic } from './writeJsonAtomic'
 import { ensureCateGitignore } from './cateGitignore'
-import { isLocalLocator } from './companion/locator'
+import { isLocalLocator } from './runtime/locator'
 
 const CATE_DIR = '.cate'
 const TODOS_FILE = 'todos.json'
