@@ -259,28 +259,16 @@ class CateAgentController implements CateAgentBridgeHost {
     void this.observe(wsId, r)
   }
 
-  /** Handle a free-form user prompt typed into the toolbar input bar.
-   *  - If an executor is already running, the message is sent DIRECTLY to that
-   *    live run as a follow-up it will consider while continuing (not a new todo).
-   *  - Otherwise the chat drives the executor directly: the request becomes a todo
-   *    that runs immediately (no approval gate).
-   *  The autonomous observer is unaffected either way. */
+  /** Handle a free-form user prompt typed into the toolbar input bar. The chat
+   *  drives the EXECUTOR directly: the request becomes a todo that runs
+   *  immediately (no approval gate). The UI only allows sending while idle (you
+   *  must Stop a running task first), so this always starts a fresh run. The
+   *  autonomous observer is unaffected. */
   async prompt(wsId: string, rootPath: string, text: string): Promise<void> {
     const trimmed = text.trim()
     if (!trimmed) return
     this.start()
     useCateAgentStore.getState().appendFeed(wsId, 'user', trimmed)
-    const r = this.ws.get(wsId)
-    if (r?.runningTodoId) {
-      // Hand it to the running orchestrator as a follow-up turn — queued onto the
-      // current run rather than spun up as a separate todo.
-      const panelId = executorPanelId(r.runningTodoId)
-      void promptCateAgent(
-        panelId,
-        `The user sent a follow-up while you are working: "${trimmed}". Take it into account as you continue this task.`,
-      )
-      return
-    }
     await useTodosStore.getState().loadTodos(rootPath)
     const now = Date.now()
     const todo: Todo = {
