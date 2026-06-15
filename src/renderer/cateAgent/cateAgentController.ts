@@ -37,6 +37,7 @@ import { loadCateAgentExecutorAgentCommand } from '../../agent/renderer/agentMod
 import { useCateAgentStore } from './cateAgentStore'
 import { useTodosStore } from '../stores/todosStore'
 import { generateId } from '../stores/canvas/helpers'
+import { terminalRegistry } from '../lib/terminal/terminalRegistry'
 import { workspaceIdForTerminal } from '../stores/statusStore'
 import { gitStatusStore } from '../stores/gitStatusStore'
 import log from '../lib/logger'
@@ -298,6 +299,19 @@ class CateAgentController implements CateAgentBridgeHost {
     this.ctxByPanel.delete(panelId)
     void disposeCateAgent(panelId)
     const todo = useTodosStore.getState().getTodos(r.rootPath).find((t) => t.id === todoId)
+    // Disposing the orchestrator doesn't touch the CLIs it spawned, so interrupt
+    // each of the run's terminals (Ctrl-C) — otherwise a coding-agent CLI keeps
+    // running and the task looks "stuck" even after Stop.
+    for (const tid of todo?.terminalNodeIds ?? []) {
+      const ptyId = terminalRegistry.ptyIdForPanel(tid)
+      if (ptyId) {
+        try {
+          void window.electronAPI.terminalWrite(ptyId, '\x03')
+        } catch {
+          /* terminal already gone */
+        }
+      }
+    }
     if (todo?.status === 'in_progress') {
       // Keep any partial work reviewable (worktree) or done (non-git); a run that
       // never opened a terminal just failed.
