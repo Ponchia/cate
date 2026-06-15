@@ -11,7 +11,7 @@
 // =============================================================================
 
 import React from 'react'
-import { ArrowUp } from '@phosphor-icons/react'
+import { ArrowUp, Stop } from '@phosphor-icons/react'
 
 /** Cap the textarea growth; beyond this it scrolls internally. */
 const MAX_HEIGHT = 160
@@ -36,11 +36,15 @@ const saveDraft = (wsId: string, value: string): void => {
 
 export const CateAgentInputBar: React.FC<{
   workspaceId: string
+  /** True while the Cate Agent is running a task — shows the Stop button and
+   *  reframes Send as a follow-up. */
+  busy: boolean
   onSend: (text: string) => void
+  onStop: () => void
   onClose: () => void
   /** Reports the textarea's current content height (px) so the toolbar resizes. */
   onHeightChange?: (px: number) => void
-}> = ({ workspaceId, onSend, onClose, onHeightChange }) => {
+}> = ({ workspaceId, busy, onSend, onStop, onClose, onHeightChange }) => {
   // Seed from the persisted draft so a reopened bar (or a fresh app launch)
   // restores whatever was typed but not sent.
   const [text, setText] = React.useState(() => loadDraft(workspaceId))
@@ -101,15 +105,28 @@ export const CateAgentInputBar: React.FC<{
             onClose()
           }
         }}
-        placeholder="Ask the Cate Agent…"
+        placeholder={busy ? 'Send a follow-up…' : 'Ask the Cate Agent…'}
         className="flex-1 min-w-0 resize-none bg-transparent text-sm leading-snug text-primary px-2 py-1.5 outline-none placeholder:text-muted"
         style={{ maxHeight: MAX_HEIGHT }}
       />
+      {busy && (
+        <button
+          type="button"
+          onClick={onStop}
+          aria-label="Stop"
+          title="Stop the current task"
+          style={{ WebkitTapHighlightColor: 'transparent' }}
+          className="w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-full border border-strong bg-transparent text-secondary hover:text-primary hover:bg-hover-strong active:scale-[0.92] transition-all duration-100"
+        >
+          <Stop size={15} weight="fill" />
+        </button>
+      )}
       <button
         type="button"
         onClick={send}
         disabled={!text.trim()}
-        aria-label="Send"
+        aria-label={busy ? 'Send follow-up' : 'Send'}
+        title={busy ? 'Send a follow-up to the current task' : 'Send'}
         style={{ WebkitTapHighlightColor: 'transparent' }}
         className="w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-full border border-strong bg-transparent text-secondary hover:text-primary hover:bg-hover-strong active:scale-[0.92] transition-all duration-100 disabled:opacity-30"
       >

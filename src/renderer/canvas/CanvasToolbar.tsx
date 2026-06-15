@@ -422,7 +422,14 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
               </div>
               {inputOpen && (
                 <div className="flex-1 min-w-0 flex items-end">
-                  <CateAgentInputBar workspaceId={workspaceId} onSend={sendAgentPrompt} onClose={closeAgentInput} onHeightChange={setAgentInputH} />
+                  <CateAgentInputBar
+                    workspaceId={workspaceId}
+                    busy={cateAgent.activity === 'working'}
+                    onSend={sendAgentPrompt}
+                    onStop={() => cateAgentController.stop(workspaceId)}
+                    onClose={closeAgentInput}
+                    onHeightChange={setAgentInputH}
+                  />
                 </div>
               )}
             </div>

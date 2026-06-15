@@ -259,16 +259,28 @@ class CateAgentController implements CateAgentBridgeHost {
     void this.observe(wsId, r)
   }
 
-  /** Handle a free-form user prompt typed into the toolbar input bar. The chat
-   *  drives the EXECUTOR directly: the request becomes a todo that runs
-   *  immediately (no approval gate), spinning up the orchestrator just like an
-   *  approved todo would. The autonomous observer is unaffected — it keeps
-   *  observing and proposing suggestions on its own loop. */
+  /** Handle a free-form user prompt typed into the toolbar input bar.
+   *  - If an executor is already running, the message is sent DIRECTLY to that
+   *    live run as a follow-up it will consider while continuing (not a new todo).
+   *  - Otherwise the chat drives the executor directly: the request becomes a todo
+   *    that runs immediately (no approval gate).
+   *  The autonomous observer is unaffected either way. */
   async prompt(wsId: string, rootPath: string, text: string): Promise<void> {
     const trimmed = text.trim()
     if (!trimmed) return
     this.start()
     useCateAgentStore.getState().appendFeed(wsId, 'user', trimmed)
+    const r = this.ws.get(wsId)
+    if (r?.runningTodoId) {
+      // Hand it to the running orchestrator as a follow-up turn — queued onto the
+      // current run rather than spun up as a separate todo.
+      const panelId = executorPanelId(r.runningTodoId)
+      void promptCateAgent(
+        panelId,
+        `The user sent a follow-up while you are working: "${trimmed}". Take it into account as you continue this task.`,
+      )
+      return
+    }
     await useTodosStore.getState().loadTodos(rootPath)
     const now = Date.now()
     const todo: Todo = {
@@ -280,9 +292,36 @@ class CateAgentController implements CateAgentBridgeHost {
       updatedAt: now,
     }
     useTodosStore.getState().upsertTodo(rootPath, todo)
-    // runTodo summons the Cate Agent if it isn't enabled yet, then starts (or
-    // queues) the executor for this todo.
+    // runTodo summons the Cate Agent if it isn't enabled yet, then starts the
+    // executor for this todo.
     await this.runTodo(wsId, rootPath, todo.id)
+  }
+
+  /** Stop the running executor on demand. Clearing runningTodoId first makes the
+   *  trailing agent_end a no-op (no continue/settle race), then we dispose the
+   *  session, settle the todo, and clear the working state + glow. */
+  stop(wsId: string): void {
+    const r = this.ws.get(wsId)
+    if (!r?.runningTodoId) return
+    const todoId = r.runningTodoId
+    const panelId = executorPanelId(todoId)
+    r.runningTodoId = null
+    r.queue = []
+    this.ctxByPanel.delete(panelId)
+    void disposeCateAgent(panelId)
+    const todo = useTodosStore.getState().getTodos(r.rootPath).find((t) => t.id === todoId)
+    if (todo?.status === 'in_progress') {
+      // Keep any partial work reviewable (worktree) or done (non-git); a run that
+      // never opened a terminal just failed.
+      useTodosStore.getState().patchTodo(r.rootPath, todoId, {
+        status: todo.terminalNodeIds?.length ? (todo.worktreeId ? 'review' : 'done') : 'failed',
+        note: 'Stopped by you.',
+      })
+    }
+    useCateAgentStore.getState().clearControlledTerminals(wsId)
+    useCateAgentStore.getState().appendFeed(wsId, 'status', 'Stopped.')
+    const stillEnabled = useCateAgentStore.getState().get(wsId).enabled
+    useCateAgentStore.getState().patch(wsId, { activity: stillEnabled ? 'resting' : 'off', currentTodoId: null, status: '' })
   }
 
   /** Take one observe turn: snapshot the workspace and prompt the observer with
