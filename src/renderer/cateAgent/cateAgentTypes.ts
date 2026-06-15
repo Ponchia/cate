@@ -14,6 +14,11 @@ export interface CateAgentContext {
   role: CateAgentRole
   /** The todo this executor session is running (executor sessions only). */
   todoId?: string
+  /** Monotonic run token (executor only). A todo can be stopped and restarted
+   *  (editJob) reusing the same todoId/panelId; the epoch distinguishes the new
+   *  run from the old, so an in-flight wake/continuation from the old run bails
+   *  instead of driving the new one. */
+  epoch?: number
 }
 
 /** The controller implements this so the bridge can resolve session context and

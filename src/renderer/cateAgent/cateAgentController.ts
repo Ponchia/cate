@@ -5,14 +5,15 @@
 //   - Observer: an always-on session per enabled workspace. A 60s tick consults
 //     the pure trigger gate; when it passes, the observer takes ONE turn and may
 //     propose_todo. Proposals land as `suggested` todos for the user to approve.
-//   - Executor: an ephemeral session per todo the user starts (runTodo). One at a
-//     time per workspace (the rest queue). It orchestrates terminals in an
-//     isolated worktree and ends by moving the todo to `review`.
+//   - Executor: an ephemeral session per todo the user starts (runTodo). Multiple
+//     run CONCURRENTLY per workspace (tracked in WsRuntime.runs, keyed by todoId).
+//     Each orchestrates terminals in an isolated worktree and ends by moving the
+//     todo to `review`.
 //
 // Implements CateAgentBridgeHost so the bridge can resolve session context and
 // report turn lifecycle. State here is per-workspace and not persisted beyond the
-// enabled + autoObserve flags (.cate/cateAgent.json); in-flight executors are
-// re-queued, not resumed, after a restart.
+// enabled + autoObserve flags (.cate/cateAgent.json); in-flight executors are NOT
+// resumed after a restart — restore() reconciles their orphaned in_progress todos.
 // =============================================================================
 
 import type { Todo, CateAgentActivity } from '../../shared/types'
@@ -49,6 +50,10 @@ interface RunState {
   continuations: number
   /** Event-driven wakes (terminal parked/exited) on this todo. */
   wakes: number
+  /** Monotonic run token. A todo can be stopped + restarted (editJob) reusing the
+   *  same todoId/panelId; the epoch lets an in-flight wake/continuation from the
+   *  old run detect that it was superseded and bail. */
+  epoch: number
 }
 
 interface WsRuntime {
@@ -155,6 +160,8 @@ class CateAgentController implements CateAgentBridgeHost {
   private ctxByPanel = new Map<string, CateAgentContext>()
   private tick: ReturnType<typeof setInterval> | null = null
   private started = false
+  /** Monotonic run-token source for RunState.epoch (see RunState). */
+  private execEpoch = 0
 
   /** Wire the bridge + start the observe tick. Idempotent. */
   start(): void {
@@ -189,6 +196,10 @@ class CateAgentController implements CateAgentBridgeHost {
   /** Read .cate/cateAgent.json on workspace open; re-summon if it was enabled. */
   async restore(wsId: string, rootPath: string): Promise<void> {
     try {
+      // Executors are NOT resumed across restarts (their CLIs' PTYs die on quit),
+      // so any todo persisted as in_progress is an orphan from a prior session —
+      // settle it instead of leaving a dead run spinning forever.
+      await this.reconcileOrphans(rootPath)
       const state = await window.electronAPI.projectCateAgentLoad(rootPath)
       // Mirror the persisted preference even when the Cate Agent stays dismissed, so the
       // Settings toggle reflects the saved choice the moment a workspace opens.
@@ -198,6 +209,22 @@ class CateAgentController implements CateAgentBridgeHost {
       }
     } catch (err) {
       log.warn('[cateAgentController] restore failed for %s: %O', wsId, err)
+    }
+  }
+
+  /** Settle todos left in_progress by a previous session that has no live run:
+   *  worktree work goes to review (inspect/land), everything else fails so the
+   *  user can rerun. Idempotent — only touches in_progress with no active run. */
+  private async reconcileOrphans(rootPath: string): Promise<void> {
+    await useTodosStore.getState().loadTodos(rootPath)
+    const hasLiveRun = (id: string): boolean => [...this.ws.values()].some((r) => r.runs.has(id))
+    for (const t of useTodosStore.getState().getTodos(rootPath)) {
+      if (t.status === 'in_progress' && !hasLiveRun(t.id)) {
+        useTodosStore.getState().patchTodo(rootPath, t.id, {
+          status: t.worktreeId ? 'review' : 'failed',
+          note: t.note ?? 'Interrupted — the app was restarted.',
+        })
+      }
     }
   }
 
@@ -298,6 +325,9 @@ class CateAgentController implements CateAgentBridgeHost {
     if (!trimmed) return
     const r = this.ws.get(wsId)
     if (r?.runs.has(todoId)) this.stop(wsId, todoId)
+    // Fully tear down the old session before reusing its panelId, so a trailing
+    // event from it can't attach to the restarted run.
+    await disposeCateAgent(executorPanelId(todoId))
     useTodosStore.getState().patchTodo(rootPath, todoId, { title: trimmed, topic: undefined, status: 'pending', note: undefined })
     useCateAgentStore.getState().appendFeed(wsId, 'user', `Edited: ${trimmed}`)
     await this.runTodo(wsId, rootPath, todoId)
@@ -309,7 +339,9 @@ class CateAgentController implements CateAgentBridgeHost {
   stop(wsId: string, todoId?: string): void {
     const r = this.ws.get(wsId)
     if (!r) return
-    const ids = todoId ? (r.runs.has(todoId) ? [todoId] : []) : [...r.runs.keys()]
+    // For a specific todo, tear it down even if there's no live run entry (e.g. an
+    // orphaned in_progress todo from a prior session) so Stop always settles it.
+    const ids = todoId ? [todoId] : [...r.runs.keys()]
     for (const id of ids) this.stopOne(wsId, r, id)
   }
 
@@ -371,7 +403,7 @@ class CateAgentController implements CateAgentBridgeHost {
         r.unsubGit = null
       }
     }
-    useCateAgentStore.getState().patch(wsId, { enabled: false, activity: 'off', status: '', currentTodoId: null })
+    useCateAgentStore.getState().patch(wsId, { enabled: false, activity: 'off', status: '' })
     this.persist(wsId, rootPath)
   }
 
@@ -389,17 +421,16 @@ class CateAgentController implements CateAgentBridgeHost {
     if (r) r.dirty = true
   }
 
-  /** Reflect the running-set into the workspace-level activity + currentTodoId.
-   *  Working wins while any executor runs; otherwise observing (observer mid-turn)
-   *  then resting/off. Called whenever the running set changes. */
+  /** Reflect the running-set into the workspace-level activity. Working wins while
+   *  any executor runs; otherwise observing (observer mid-turn) then resting/off.
+   *  Called whenever the running set changes. */
   private syncActivity(wsId: string): void {
     const r = this.ws.get(wsId)
     if (!r) return
     const cur = useCateAgentStore.getState().get(wsId)
     const anyRun = r.runs.size > 0
-    const firstRun = anyRun ? ((r.runs.keys().next().value as string) ?? null) : null
     const activity: CateAgentActivity = anyRun ? 'working' : r.observerBusy ? 'observing' : cur.enabled ? 'resting' : 'off'
-    useCateAgentStore.getState().patch(wsId, { activity, currentTodoId: firstRun, status: anyRun ? cur.status : '' })
+    useCateAgentStore.getState().patch(wsId, { activity, status: anyRun ? cur.status : '' })
   }
 
   // --- executors (run concurrently) -----------------------------------------
@@ -426,12 +457,13 @@ class CateAgentController implements CateAgentBridgeHost {
     const todo = useTodosStore.getState().getTodos(rootPath).find((t) => t.id === todoId)
     if (!todo) return
     console.info('[cateAgent] start executor', todoId, todo.title)
-    r.runs.set(todoId, { continuations: 0, wakes: 0 })
+    const epoch = ++this.execEpoch
+    r.runs.set(todoId, { continuations: 0, wakes: 0, epoch })
     const panelId = executorPanelId(todoId)
-    const ctx: CateAgentContext = { panelId, workspaceId: wsId, rootPath, role: 'executor', todoId }
+    const ctx: CateAgentContext = { panelId, workspaceId: wsId, rootPath, role: 'executor', todoId, epoch }
     this.ctxByPanel.set(panelId, ctx)
     useTodosStore.getState().setTodoStatus(rootPath, todoId, 'in_progress')
-    useCateAgentStore.getState().patch(wsId, { activity: 'working', currentTodoId: todoId, status: pick(WORKING_STATUSES)(todo.title) })
+    useCateAgentStore.getState().patch(wsId, { activity: 'working', status: pick(WORKING_STATUSES)(todo.title) })
     useCateAgentStore.getState().appendFeed(wsId, 'status', `Working on "${todo.title}"`)
     // Prepare the isolated worktree deterministically before the agent runs (a
     // no-op for non-git workspaces, and idempotent so a todo gets only one).
@@ -468,7 +500,7 @@ class CateAgentController implements CateAgentBridgeHost {
    *  clean one (no transcript resume — a brand-new context window). */
   private async continueExecutor(ctx: CateAgentContext): Promise<void> {
     const r = this.ws.get(ctx.workspaceId)
-    if (!r || !ctx.todoId || !r.runs.has(ctx.todoId)) return // dismissed / stopped
+    if (!r || !ctx.todoId || r.runs.get(ctx.todoId)?.epoch !== ctx.epoch) return // dismissed / stopped / restarted
     const todo = ctx.todoId ? useTodosStore.getState().getTodos(ctx.rootPath).find((t) => t.id === ctx.todoId) : undefined
     if (!todo) {
       this.finalizeExecutor(ctx)
@@ -477,12 +509,15 @@ class CateAgentController implements CateAgentBridgeHost {
     // Reuse the existing worktree (or create one if a prior session never got
     // far enough) so the continuation lands in the same isolated tree.
     await ensureTodoWorktree(ctx.workspaceId, ctx.rootPath, todo.id)
+    // The run may have been stopped/restarted while we awaited the worktree.
+    if (r.runs.get(ctx.todoId)?.epoch !== ctx.epoch) return
     const ok = await createCateAgentSession({ panelId: ctx.panelId, rootPath: ctx.rootPath, workspaceId: ctx.workspaceId, role: 'executor' })
     if (!ok) {
       useTodosStore.getState().patchTodo(ctx.rootPath, todo.id, { status: 'failed', note: 'Could not start a follow-up executor session.' })
       this.finalizeExecutor(ctx)
       return
     }
+    if (r.runs.get(ctx.todoId)?.epoch !== ctx.epoch) return // superseded while creating the session
     void promptCateAgent(ctx.panelId, continuePrompt(todo))
   }
 
@@ -601,8 +636,8 @@ class CateAgentController implements CateAgentBridgeHost {
     if (!ctx.todoId) return
     await waitForTerminalSignal(ctx.workspaceId, ctx.rootPath, ctx.todoId)
     const r = this.ws.get(ctx.workspaceId)
-    // Bail / settle if dismissed, stopped, or already settled while we waited.
-    if (!r || !r.runs.has(ctx.todoId)) return
+    // Bail if dismissed, stopped, or restarted (epoch changed) while we waited.
+    if (!r || r.runs.get(ctx.todoId)?.epoch !== ctx.epoch) return
     const todo = useTodosStore.getState().getTodos(ctx.rootPath).find((t) => t.id === ctx.todoId)
     const settled = todo?.status === 'review' || todo?.status === 'failed' || todo?.status === 'done'
     const runState = r.runs.get(ctx.todoId)

@@ -33,8 +33,6 @@ export interface CateAgentWsState {
   activity: CateAgentActivity
   /** Short status-bubble text, e.g. "Running tests…" or "Proposing: update docs". */
   status: string
-  /** The todo the executor is currently running, or null. */
-  currentTodoId: string | null
   /** Whether the toolbar is showing the prompt input bar (and the feedback panel
    *  is forced visible). */
   inputOpen: boolean
@@ -53,7 +51,6 @@ export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
   autoObserve: true,
   activity: 'off',
   status: '',
-  currentTodoId: null,
   inputOpen: false,
   feed: [],
   controlledTerminalIds: [],

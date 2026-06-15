@@ -105,7 +105,7 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
   const btn = 'flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors disabled:opacity-40'
 
   return (
-    <div className="rounded-2xl border border-subtle bg-surface-0/95 shadow-[0_8px_24px_-6px_var(--shadow-node)] px-3 py-2.5 flex flex-col gap-1.5">
+    <div className="rounded-2xl border border-subtle bg-surface-1 shadow-[0_8px_24px_-6px_var(--shadow-node)] px-3 py-2.5 flex flex-col gap-1.5">
       {/* Title row: status glyph + topic, with worktree pill on the right. */}
       <div className="flex items-start gap-2">
         <StatusGlyph status={job.status} />
@@ -144,7 +144,7 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-secondary hover:text-primary bg-surface-1 hover:bg-hover transition-colors"
               title="Jump to terminal"
             >
-              <TerminalIcon size={11} /> Terminal {terminals.length > 1 ? i + 1 : ''}
+              <TerminalIcon size={11} /> {terminals.length > 1 ? `Terminal ${i + 1}` : 'Terminal'}
             </button>
           ))}
         </div>
@@ -167,7 +167,8 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
               }
             }}
             rows={2}
-            className="w-full resize-none rounded-lg border border-subtle bg-surface-1 text-sm text-primary px-2 py-1.5 outline-none focus:border-blue-500/50"
+            placeholder="Edit the prompt…"
+            className="w-full resize-none rounded-lg border border-subtle bg-surface-0 text-sm text-primary px-2 py-1.5 outline-none focus:border-blue-500/50 placeholder:text-muted"
           />
           <div className="flex items-center gap-1.5">
             <button onClick={submitEdit} className={`${btn} text-white bg-blue-500 hover:bg-blue-600`}>
