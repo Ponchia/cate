@@ -332,27 +332,20 @@
    transition. */
 @keyframes cate-agent-input-grow {
   0%   { padding-right: 0; }
-  38%  { padding-right: 120px; }
-  58%  { padding-right: 82px; }
-  74%  { padding-right: 106px; }
-  87%  { padding-right: 90px; }
-  95%  { padding-right: 99px; }
+  60%  { padding-right: 102px; }
+  82%  { padding-right: 94px; }
   100% { padding-right: 96px; }
 }
 .cate-agent-input-grow {
-  animation: cate-agent-input-grow 680ms cubic-bezier(0.33, 0, 0.2, 1) both;
+  animation: cate-agent-input-grow 820ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
-/* Bobbly collapse back to the toolbar: shrink past the target, rebound a couple
-   of times, settle at 0. (Padding can't go negative, so the wobble lives on the
-   positive side as small rebounds.) */
+/* Gentle collapse back to the toolbar: ease toward 0 with one soft rebound. */
 @keyframes cate-agent-input-shrink {
   0%   { padding-right: 96px; }
-  42%  { padding-right: 0; }
-  60%  { padding-right: 18px; }
-  78%  { padding-right: 0; }
-  90%  { padding-right: 7px; }
+  62%  { padding-right: 0; }
+  82%  { padding-right: 6px; }
   100% { padding-right: 0; }
 }
 .cate-agent-input-shrink {
-  animation: cate-agent-input-shrink 620ms cubic-bezier(0.33, 0, 0.2, 1) both;
+  animation: cate-agent-input-shrink 740ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
