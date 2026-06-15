@@ -27,8 +27,12 @@ export const CateAgentInputBar: React.FC<{
     const el = ref.current
     if (!el) return
     el.style.height = '0px'
-    const h = Math.min(el.scrollHeight, MAX_HEIGHT)
+    const full = el.scrollHeight
+    const h = Math.min(full, MAX_HEIGHT)
     el.style.height = `${h}px`
+    // Only show a scrollbar once the content actually exceeds the cap; otherwise
+    // the textarea fits its content exactly and a scrollbar would be spurious.
+    el.style.overflowY = full > MAX_HEIGHT ? 'auto' : 'hidden'
     onHeightChange?.(h)
   }, [onHeightChange])
 
