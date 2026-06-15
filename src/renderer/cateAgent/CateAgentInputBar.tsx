@@ -40,11 +40,13 @@ export const CateAgentInputBar: React.FC<{
   rootPath: string
   worktreeTarget: WorktreeTarget
   onWorktreeTargetChange: (target: WorktreeTarget) => void
+  /** Bottom-anchor controls when the input has wrapped (else vertically center). */
+  multiline: boolean
   onSend: (text: string) => void
   onClose: () => void
   /** Reports the textarea's current content height (px) so the toolbar resizes. */
   onHeightChange?: (px: number) => void
-}> = ({ workspaceId, rootPath, worktreeTarget, onWorktreeTargetChange, onSend, onClose, onHeightChange }) => {
+}> = ({ workspaceId, rootPath, worktreeTarget, onWorktreeTargetChange, multiline, onSend, onClose, onHeightChange }) => {
   // Seed from the persisted draft so a reopened bar (or a fresh app launch)
   // restores whatever was typed but not sent.
   const [text, setText] = React.useState(() => loadDraft(workspaceId))
@@ -90,7 +92,7 @@ export const CateAgentInputBar: React.FC<{
   }
 
   return (
-    <div className="flex items-center gap-1.5 w-full pl-1">
+    <div className={`flex ${multiline ? 'items-end' : 'items-center'} gap-1.5 w-full pl-1`}>
       {/* Select-only worktree target for the prompt (collapsible color tag). */}
       <CateAgentWorktreeSelect
         workspaceId={workspaceId}

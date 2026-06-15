@@ -279,6 +279,10 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     width: inputOpen ? agentToolsSize.w + AGENT_INPUT_EXTRA : agentToolsSize.w || undefined,
     height: inputOpen ? Math.max(AGENT_ROW_H, agentInputH) : AGENT_ROW_H,
   }
+  // Single-line: center everything vertically. Multi-line (the input wrapped):
+  // anchor the controls to the bottom so they stay put as the textarea grows up.
+  const agentMultiline = inputOpen && agentInputH > AGENT_ROW_H + 6
+  const agentAlign = agentMultiline ? 'items-end' : 'items-center'
   // Pin the pill's corner radius to the COLLAPSED height/2 so a one-line bar is
   // fully rounded and the radius stays constant as it grows taller. Collapsed
   // pill height = row height + the row's py-1 (8px).
@@ -340,7 +344,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       <div data-onboarding="toolbar" className="relative pointer-events-auto">
         <CateAgentFeedback workspaceId={workspaceId} rootPath={rootPath} />
         <div className="border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]" style={{ borderRadius: agentPillRadius }}>
-          <div className="flex items-center gap-0.5 px-1 py-1">
+          <div className={`flex ${agentAlign} gap-0.5 px-1 py-1`}>
             {/* Cate Agent — always leftmost; toggles the prompt input. */}
             <CateAgentToolbarButton
               activity={cateAgent.activity}
@@ -423,12 +427,13 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             </ToolbarButton>
               </div>
               {inputOpen && (
-                <div className="flex-1 min-w-0 flex items-center">
+                <div className={`flex-1 min-w-0 flex ${agentAlign}`}>
                   <CateAgentInputBar
                     workspaceId={workspaceId}
                     rootPath={rootPath}
                     worktreeTarget={agentWorktreeTarget}
                     onWorktreeTargetChange={setAgentWorktreeTarget}
+                    multiline={agentMultiline}
                     onSend={sendAgentPrompt}
                     onClose={closeAgentInput}
                     onHeightChange={setAgentInputH}
