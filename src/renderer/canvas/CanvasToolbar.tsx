@@ -249,6 +249,11 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const agentZoneStyle: React.CSSProperties = inputOpen
     ? { width: agentToolsSize.w + AGENT_INPUT_EXTRA, height: Math.max(agentToolsSize.h, agentInputH) }
     : { width: agentToolsSize.w || undefined, height: agentToolsSize.h || undefined }
+  // Pin the pill's corner radius to the COLLAPSED height/2 so a one-line bar is
+  // fully rounded and the radius stays constant as it grows taller (instead of
+  // `rounded-full`, which tracks the current height and over-rounds when tall).
+  // Collapsed pill height = tools height + the row's py-1 (8px).
+  const agentPillRadius = ((agentToolsSize.h || 36) + 8) / 2
 
   // Minimap pill docking corner + drag-to-dock handling. The corner is driven
   // straight from the UI-state store so an external shove (the Cate Agent landing on
@@ -305,7 +310,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     <div className="absolute inset-x-0 bottom-4 z-50 flex justify-center pointer-events-none">
       <div data-onboarding="toolbar" className="relative pointer-events-auto">
         <CateAgentFeedback workspaceId={workspaceId} rootPath={rootPath} />
-        <div className="rounded-full border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]">
+        <div className="border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]" style={{ borderRadius: agentPillRadius }}>
           <div className="flex items-center gap-0.5 px-1 py-1">
             {/* Cate Agent — always leftmost; toggles the prompt input. */}
             <CateAgentToolbarButton
