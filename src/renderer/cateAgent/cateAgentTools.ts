@@ -116,6 +116,9 @@ function setRemark(wsId: string, text: string): void {
   const id = ++remarkSeq
   const cur = useCateAgentStore.getState().get(wsId).remarks
   useCateAgentStore.getState().patch(wsId, { remarks: [...cur, { id, text }].slice(-MAX_REMARKS) })
+  // Mirror into the persistent feedback log so the panel above the toolbar keeps a
+  // running record even after the bubble fades.
+  useCateAgentStore.getState().appendFeed(wsId, 'agent', text)
   setTimeout(() => {
     const remarks = useCateAgentStore.getState().get(wsId).remarks.filter((r) => r.id !== id)
     useCateAgentStore.getState().patch(wsId, { remarks })
@@ -411,6 +414,8 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       // Track the terminal on the todo so cleanup can find it.
       const existing = todoById(rootPath, todoId)?.terminalNodeIds ?? []
       todos.patchTodo(rootPath, todoId, { terminalNodeIds: [...existing, panelId] })
+      // The executor is now driving this terminal — light it up until the run ends.
+      if (ctx.role === 'executor') useCateAgentStore.getState().addControlledTerminal(wsId, panelId)
 
       const ptyId = await waitForPty(panelId)
       if (!ptyId) return json({ ok: true, terminalId: panelId, warning: 'terminal not ready; command not sent yet' })
@@ -449,6 +454,7 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       } catch (err) {
         log.warn('[cateAgentTools] close_terminal failed: %O', err)
       }
+      useCateAgentStore.getState().removeControlledTerminal(wsId, terminalId)
       if (ptyId) clearExit(ptyId)
       return json({ ok: true })
     }
