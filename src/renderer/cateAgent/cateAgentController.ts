@@ -452,7 +452,31 @@ class CateAgentController implements CateAgentBridgeHost {
       await this.summon(wsId, rootPath)
     }
     if (r.runs.has(todoId)) return // already running this job
+    // One agent per worktree (or per project root for no-worktree jobs). A 'new'
+    // job mints its own fresh worktree, so it never conflicts; only a job pinned
+    // to an existing worktree or the root can collide with a running one.
+    const todo = useTodosStore.getState().getTodos(rootPath).find((t) => t.id === todoId)
+    const key = this.worktreeKeyOf(todo)
+    if (key) {
+      const occupied = [...r.runs.keys()].some(
+        (rid) => rid !== todoId && this.worktreeKeyOf(useTodosStore.getState().getTodos(rootPath).find((t) => t.id === rid)) === key,
+      )
+      if (occupied) {
+        const where = key === 'root' ? 'the project root' : 'that worktree'
+        useCateAgentStore.getState().appendFeed(wsId, 'error', `A job is already running in ${where} — stop it before starting another.`)
+        return
+      }
+    }
     await this.startExecutor(wsId, rootPath, todoId)
+  }
+
+  /** The worktree a todo will run in, as a conflict key: 'root' for a no-worktree
+   *  job, the worktreeId for a pinned one, or null when it'll mint a fresh
+   *  worktree (which can never conflict). */
+  private worktreeKeyOf(todo: Todo | undefined): string | null {
+    if (!todo) return null
+    if (todo.noWorktree) return 'root'
+    return todo.worktreeId ?? null
   }
 
   private async startExecutor(wsId: string, rootPath: string, todoId: string): Promise<void> {
