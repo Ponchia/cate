@@ -3,7 +3,7 @@
 // Ported from CanvasToolbar.swift.
 // =============================================================================
 
-import React, { useState, useRef, useLayoutEffect } from 'react'
+import React, { useState, useRef, useLayoutEffect, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Terminal,
@@ -255,6 +255,12 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+  // Collapse the remembered input height when closed, so reopening always starts
+  // at one line (the textarea re-reports its real height on mount) instead of
+  // briefly flashing a stale tall box.
+  useEffect(() => {
+    if (!inputOpen) setAgentInputH(agentToolsSize.h)
+  }, [inputOpen, agentToolsSize.h])
   const AGENT_INPUT_EXTRA = 96 // how much wider than the toolbar the input grows
   const agentZoneStyle: React.CSSProperties = inputOpen
     ? { width: agentToolsSize.w + AGENT_INPUT_EXTRA, height: Math.max(agentToolsSize.h, agentInputH) }
@@ -321,7 +327,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       <div data-onboarding="toolbar" className="relative pointer-events-auto">
         <CateAgentFeedback workspaceId={workspaceId} rootPath={rootPath} />
         <div className="border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]" style={{ borderRadius: agentPillRadius }}>
-          <div className="flex items-center gap-0.5 px-1 py-1">
+          <div className="flex items-end gap-0.5 px-1 py-1">
             {/* Cate Agent — always leftmost; toggles the prompt input. */}
             <CateAgentToolbarButton
               activity={cateAgent.activity}
