@@ -1088,6 +1088,9 @@ export interface Todo {
   /** Short 2–5 word title the executor derives for this job (UI card title). Falls
    *  back to `title` (the original prompt) when absent. */
   topic?: string
+  /** When true the executor runs in the project root with NO isolated worktree
+   *  (user chose "No worktree"). Otherwise a worktree is reused/minted. */
+  noWorktree?: boolean
 }
 
 export interface ProjectTodosFile {

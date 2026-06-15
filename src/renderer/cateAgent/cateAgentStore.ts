@@ -38,8 +38,10 @@ export interface CateAgentWsState {
   inputOpen: boolean
   /** Persistent-per-session feedback log shown above the toolbar, newest last. */
   feed: CateAgentFeedItem[]
-  /** panelIds of terminals the executor is actively driving — drives the glow. */
-  controlledTerminalIds: string[]
+  /** Terminals the executor is actively driving → their pulsing glow color, keyed
+   *  by panelId. The color is the job's worktree color, or the theme accent
+   *  (`rgb(var(--agent-rgb))`) when the job runs with no worktree. */
+  controlledTerminals: Record<string, string>
   /** Agent activity has arrived (a remark, proposal, review, or error) that the
    *  user hasn't seen because the feedback panel was closed. Drives the toolbar
    *  button's attention glow + notification dot. Cleared when the panel opens. */
@@ -53,7 +55,7 @@ export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
   status: '',
   inputOpen: false,
   feed: [],
-  controlledTerminalIds: [],
+  controlledTerminals: {},
   unseen: false,
 }
 
@@ -67,7 +69,7 @@ interface CateAgentStore {
   clearFeed: (wsId: string) => void
   /** Flag/clear unseen agent activity (drives the toolbar attention indicator). */
   setUnseen: (wsId: string, value: boolean) => void
-  addControlledTerminal: (wsId: string, panelId: string) => void
+  addControlledTerminal: (wsId: string, panelId: string, color: string) => void
   removeControlledTerminal: (wsId: string, panelId: string) => void
   clearControlledTerminals: (wsId: string) => void
 }
@@ -119,25 +121,28 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
     })
   },
 
-  addControlledTerminal(wsId, panelId) {
+  addControlledTerminal(wsId, panelId, color) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      if (prev.controlledTerminalIds.includes(panelId)) return s
-      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminalIds: [...prev.controlledTerminalIds, panelId] } } }
+      if (prev.controlledTerminals[panelId] === color) return s
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminals: { ...prev.controlledTerminals, [panelId]: color } } } }
     })
   },
 
   removeControlledTerminal(wsId, panelId) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminalIds: prev.controlledTerminalIds.filter((p) => p !== panelId) } } }
+      if (!(panelId in prev.controlledTerminals)) return s
+      const next = { ...prev.controlledTerminals }
+      delete next[panelId]
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminals: next } } }
     })
   },
 
   clearControlledTerminals(wsId) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminalIds: [] } } }
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, controlledTerminals: {} } } }
     })
   },
 
@@ -151,9 +156,9 @@ export function useCateAgentWs(wsId: string | null | undefined): CateAgentWsStat
   return useCateAgentStore((s) => (wsId ? s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS : DEFAULT_CATE_AGENT_WS))
 }
 
-/** Hook: true while the given terminal panel is being driven by the executor. */
-export function useTerminalControlled(wsId: string | null | undefined, panelId: string): boolean {
-  return useCateAgentStore((s) =>
-    wsId ? (s.byWs[wsId]?.controlledTerminalIds ?? []).includes(panelId) : false,
-  )
+/** Hook: the glow color for a terminal the executor is driving, or null when it
+ *  isn't controlled. The color is the job's worktree color (theme accent when the
+ *  job has no worktree). */
+export function useTerminalGlow(wsId: string | null | undefined, panelId: string): string | null {
+  return useCateAgentStore((s) => (wsId ? s.byWs[wsId]?.controlledTerminals?.[panelId] ?? null : null))
 }

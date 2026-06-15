@@ -67,6 +67,8 @@ export async function ensureTodoWorktree(
 ): Promise<{ worktreeId: string | null; cwd: string }> {
   const todo = todoById(rootPath, todoId)
   if (!todo) return { worktreeId: null, cwd: rootPath }
+  // User chose "No worktree" — run straight in the project root, no isolation.
+  if (todo.noWorktree) return { worktreeId: null, cwd: rootPath }
   // Reuse an already-created worktree — the single guarantee of one-per-todo.
   if (todo.worktreeId) {
     const meta = worktreeMetaFor(wsId, todo.worktreeId)
@@ -400,8 +402,12 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       // Track the terminal on the todo so cleanup can find it.
       const existing = todoById(rootPath, todoId)?.terminalNodeIds ?? []
       todos.patchTodo(rootPath, todoId, { terminalNodeIds: [...existing, panelId] })
-      // The executor is now driving this terminal — light it up until the run ends.
-      if (ctx.role === 'executor') useCateAgentStore.getState().addControlledTerminal(wsId, panelId)
+      // The executor is now driving this terminal — light it up (in the job's
+      // worktree color, or the theme accent when it has no worktree) until the run ends.
+      if (ctx.role === 'executor') {
+        const glow = meta?.color ?? 'rgb(var(--agent-rgb))'
+        useCateAgentStore.getState().addControlledTerminal(wsId, panelId, glow)
+      }
 
       const ptyId = await waitForPty(panelId)
       if (!ptyId) return json({ ok: true, terminalId: panelId, warning: 'terminal not ready; command not sent yet' })

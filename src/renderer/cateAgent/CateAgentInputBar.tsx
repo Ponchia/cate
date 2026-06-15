@@ -12,7 +12,7 @@
 
 import React from 'react'
 import { ArrowUp } from '@phosphor-icons/react'
-import WorktreeToolbarMenu from '../canvas/WorktreeToolbarMenu'
+import { CateAgentWorktreeSelect, type WorktreeTarget } from './CateAgentWorktreeSelect'
 
 /** Cap the textarea growth; beyond this it scrolls internally. */
 const MAX_HEIGHT = 160
@@ -37,13 +37,13 @@ const saveDraft = (wsId: string, value: string): void => {
 
 export const CateAgentInputBar: React.FC<{
   workspaceId: string
-  canvasPanelId: string
-  rootPath: string
+  worktreeTarget: WorktreeTarget
+  onWorktreeTargetChange: (target: WorktreeTarget) => void
   onSend: (text: string) => void
   onClose: () => void
   /** Reports the textarea's current content height (px) so the toolbar resizes. */
   onHeightChange?: (px: number) => void
-}> = ({ workspaceId, canvasPanelId, rootPath, onSend, onClose, onHeightChange }) => {
+}> = ({ workspaceId, worktreeTarget, onWorktreeTargetChange, onSend, onClose, onHeightChange }) => {
   // Seed from the persisted draft so a reopened bar (or a fresh app launch)
   // restores whatever was typed but not sent.
   const [text, setText] = React.useState(() => loadDraft(workspaceId))
@@ -90,11 +90,8 @@ export const CateAgentInputBar: React.FC<{
 
   return (
     <div className="flex items-end gap-1.5 w-full pl-1">
-      {/* Worktree selector/manager — same control as the toolbar, so a prompt can
-          be aimed at a chosen worktree. */}
-      <div className="flex-shrink-0">
-        <WorktreeToolbarMenu canvasPanelId={canvasPanelId} workspaceId={workspaceId} rootPath={rootPath} />
-      </div>
+      {/* Select-only worktree target for the prompt (tag with title). */}
+      <CateAgentWorktreeSelect workspaceId={workspaceId} value={worktreeTarget} onChange={onWorktreeTargetChange} />
       <textarea
         ref={ref}
         rows={1}

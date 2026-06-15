@@ -296,7 +296,7 @@ class CateAgentController implements CateAgentBridgeHost {
    *  immediately (no approval gate). The UI only allows sending while idle (you
    *  must Stop a running task first), so this always starts a fresh run. The
    *  autonomous observer is unaffected. */
-  async prompt(wsId: string, rootPath: string, text: string): Promise<void> {
+  async prompt(wsId: string, rootPath: string, text: string, target: 'new' | 'root' | string = 'new'): Promise<void> {
     const trimmed = text.trim()
     if (!trimmed) return
     this.start()
@@ -310,6 +310,9 @@ class CateAgentController implements CateAgentBridgeHost {
       status: 'pending',
       createdAt: now,
       updatedAt: now,
+      // 'new' → mint a fresh worktree (default); 'root' → run with no worktree;
+      // otherwise an existing worktree id to reuse.
+      ...(target === 'root' ? { noWorktree: true } : target !== 'new' ? { worktreeId: target } : {}),
     }
     useTodosStore.getState().upsertTodo(rootPath, todo)
     // runTodo summons the Cate Agent if it isn't enabled yet, then starts the

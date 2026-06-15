@@ -11,7 +11,7 @@ describe('cateAgentStore — feedback + control state', () => {
   it('defaults include inputOpen=false, empty feed and controlled terminals', () => {
     expect(DEFAULT_CATE_AGENT_WS.inputOpen).toBe(false)
     expect(DEFAULT_CATE_AGENT_WS.feed).toEqual([])
-    expect(DEFAULT_CATE_AGENT_WS.controlledTerminalIds).toEqual([])
+    expect(DEFAULT_CATE_AGENT_WS.controlledTerminals).toEqual({})
   })
 
   it('setInputOpen toggles per workspace', () => {
@@ -36,32 +36,32 @@ describe('cateAgentStore — feedback + control state', () => {
     expect(useCateAgentStore.getState().get(WS).feed).toEqual([])
   })
 
-  it('addControlledTerminal is idempotent; removeControlledTerminal removes one', () => {
+  it('addControlledTerminal stores the glow color per panel; removeControlledTerminal removes one', () => {
     const s = useCateAgentStore.getState()
-    s.addControlledTerminal(WS, 'p1')
-    s.addControlledTerminal(WS, 'p1')
-    s.addControlledTerminal(WS, 'p2')
-    expect(useCateAgentStore.getState().get(WS).controlledTerminalIds).toEqual(['p1', 'p2'])
+    s.addControlledTerminal(WS, 'p1', '#abc')
+    s.addControlledTerminal(WS, 'p1', '#abc')
+    s.addControlledTerminal(WS, 'p2', '#def')
+    expect(useCateAgentStore.getState().get(WS).controlledTerminals).toEqual({ p1: '#abc', p2: '#def' })
     s.removeControlledTerminal(WS, 'p1')
-    expect(useCateAgentStore.getState().get(WS).controlledTerminalIds).toEqual(['p2'])
+    expect(useCateAgentStore.getState().get(WS).controlledTerminals).toEqual({ p2: '#def' })
   })
 
   it('clearControlledTerminals empties the set', () => {
-    useCateAgentStore.getState().addControlledTerminal(WS, 'p1')
+    useCateAgentStore.getState().addControlledTerminal(WS, 'p1', '#abc')
     useCateAgentStore.getState().clearControlledTerminals(WS)
-    expect(useCateAgentStore.getState().get(WS).controlledTerminalIds).toEqual([])
+    expect(useCateAgentStore.getState().get(WS).controlledTerminals).toEqual({})
   })
 
   it('reset restores all new fields to defaults', () => {
     const s = useCateAgentStore.getState()
     s.setInputOpen(WS, true)
     s.appendFeed(WS, 'agent', 'x')
-    s.addControlledTerminal(WS, 'p1')
+    s.addControlledTerminal(WS, 'p1', '#abc')
     s.reset(WS)
     const after = useCateAgentStore.getState().get(WS)
     expect(after.inputOpen).toBe(false)
     expect(after.feed).toEqual([])
-    expect(after.controlledTerminalIds).toEqual([])
+    expect(after.controlledTerminals).toEqual({})
   })
 })
 
