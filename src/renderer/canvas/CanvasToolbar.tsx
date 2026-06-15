@@ -251,10 +251,6 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       const prev = store.minimapButtonCorner
       if (next === prev) return
       store.setUIState('minimapButtonCorner', next)
-      // Landing on the Cate Agent's corner swaps the Cate Agent into the corner we just left.
-      if (next === store.cateAgentCorner) {
-        store.setUIState('cateAgentCorner', prev)
-      }
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)

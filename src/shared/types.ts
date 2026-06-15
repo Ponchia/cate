@@ -1166,7 +1166,7 @@ export const FILE_EXCLUSIONS: string[] = [
 ]
 
 /** A sidebar view (left/right rail tabs). */
-export type SidebarView = 'workspaces' | 'explorer' | 'git' | 'search' | 'tasks'
+export type SidebarView = 'workspaces' | 'explorer' | 'git' | 'search'
 
 /** Which sidebar views live in the left vs. right rail. Persisted in settings. */
 export interface SidebarLayout {

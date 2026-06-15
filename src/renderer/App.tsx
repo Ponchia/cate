@@ -22,7 +22,6 @@ import { renderPanelComponent, PANEL_REGISTRY } from './panels/registry'
 import { PanelSuspense } from './panels/PanelSuspense'
 const CanvasPanel = PANEL_REGISTRY.canvas.Component
 import { RuntimeLockOverlay } from './ui/RuntimeLockOverlay'
-import { CateAgentAvatar } from './cateAgent/CateAgentAvatar'
 import WindowChrome from './shells/WindowChrome'
 import { PostUpdateFeedbackDialog } from './dialogs/PostUpdateFeedbackDialog'
 import { UpdateReadyDialog } from './dialogs/UpdateReadyDialog'
@@ -454,10 +453,6 @@ function MainApp() {
           workspace's runtime is down. Sits inside the shell wrapper so it
           never covers the sidebars. Renders nothing for local/healthy ws. */}
       <RuntimeLockOverlay />
-
-      {/* Cate Agent avatar — floats over the canvas area (not the sidebars),
-          reflecting the Cate Agent's activity. Renders nothing when not summoned. */}
-      <CateAgentAvatar />
       </div>
 
       {/* Right sidebar — real flex item, pushes the shell from the right. */}

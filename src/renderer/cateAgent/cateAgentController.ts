@@ -206,7 +206,7 @@ class CateAgentController implements CateAgentBridgeHost {
     // Load this workspace's todos before the observer can read or mutate them.
     // Otherwise propose_todo's upsert runs against an unloaded ([]) list and
     // persists OVER todos.json, wiping the user's existing tasks. Idempotent
-    // with TasksView's own load (force-guarded).
+    // with any other todos load (force-guarded).
     await useTodosStore.getState().loadTodos(rootPath)
     console.info('[cateAgent] summon', wsId, rootPath)
     // Keep the current autoObserve preference unless the caller overrides it.
