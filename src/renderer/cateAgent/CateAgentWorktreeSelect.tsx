@@ -1,39 +1,51 @@
 // =============================================================================
 // CateAgentWorktreeSelect — a minimal worktree picker for the Cate Agent input
-// bar. Unlike the toolbar's WorktreeToolbarMenu (statuses, per-row actions,
-// create), this is select-only: it shows the chosen target as a small tag (color
-// dot + title) and opens a plain list to pick where the next prompt runs:
+// bar. Select-only (no statuses / per-row actions / create). Collapsed it's just
+// the worktree-fork icon tinted in the target's color; on hover (or while open)
+// it expands to reveal the name. Picks where the next prompt runs:
 //   'new'  → a fresh isolated worktree per job (default)
-//   'root' → no worktree, straight in the project root
+//   'root' → the primary checkout, no worktree
 //   <id>   → an existing worktree
+// The full live worktree list comes from useWorktrees (same source as the
+// toolbar's worktree menu), so existing worktrees are selectable.
 // =============================================================================
 
 import React from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ArrowsSplit } from '@phosphor-icons/react'
-import { useAppStore } from '../stores/appStore'
-import type { WorktreeMeta } from '../../shared/types'
+import { useWorktrees, type JoinedWorktree } from '../stores/useWorktrees'
 
-/** Where a prompt runs: new isolated worktree, no worktree (root), or an id. */
 export type WorktreeTarget = 'new' | 'root' | string
 const ACCENT = 'rgb(var(--agent-rgb))'
 const MUTED = 'var(--surface-5)'
-const wtTitle = (wt: WorktreeMeta): string => wt.label || wt.path.split(/[/\\]/).pop() || 'worktree'
+const wtTitle = (wt: JoinedWorktree): string => wt.label || wt.branch || wt.path.split(/[/\\]/).pop() || 'worktree'
 
 export const CateAgentWorktreeSelect: React.FC<{
   workspaceId: string
+  rootPath: string
   value: WorktreeTarget
   onChange: (target: WorktreeTarget) => void
-}> = ({ workspaceId, value, onChange }) => {
-  const worktrees = useAppStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.worktrees) ?? []
+}> = ({ workspaceId, rootPath, value, onChange }) => {
+  const worktrees = useWorktrees(rootPath, workspaceId)
+  const primary = worktrees.find((w) => w.isPrimary)
+  const others = worktrees.filter((w) => !w.isPrimary)
+
   const [open, setOpen] = React.useState(false)
+  const [hovered, setHovered] = React.useState(false)
   const btnRef = React.useRef<HTMLButtonElement>(null)
   const menuRef = React.useRef<HTMLDivElement>(null)
   const [pos, setPos] = React.useState<{ left: number; bottom: number } | null>(null)
 
-  const selectedWt = value !== 'new' && value !== 'root' ? worktrees.find((w) => w.id === value) ?? null : null
-  const title = selectedWt ? wtTitle(selectedWt) : value === 'root' ? 'No worktree' : 'New worktree'
-  const dot = selectedWt?.color ?? (value === 'root' ? MUTED : ACCENT)
+  const selectedWt = value !== 'new' && value !== 'root' ? others.find((w) => w.id === value) ?? null : null
+  const title = selectedWt
+    ? wtTitle(selectedWt)
+    : value === 'root'
+      ? primary
+        ? wtTitle(primary)
+        : 'No worktree'
+      : 'New worktree'
+  const color = selectedWt?.color ?? (value === 'root' ? primary?.color ?? MUTED : ACCENT)
+  const expanded = hovered || open
 
   React.useEffect(() => {
     if (!open) return
@@ -50,43 +62,59 @@ export const CateAgentWorktreeSelect: React.FC<{
     if (r) setPos({ left: r.left, bottom: window.innerHeight - r.top + 6 })
     setOpen((v) => !v)
   }
-
-  const pick = (target: WorktreeTarget) => {
-    onChange(target)
+  const pick = (t: WorktreeTarget) => {
+    onChange(t)
     setOpen(false)
   }
 
   return (
     <>
-      {/* Worktree pill — same size/position as before, with the worktree-fork
-          icon and title, tinted in the worktree color. */}
       <button
         ref={btnRef}
         type="button"
         onClick={toggle}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         aria-label={`Run in worktree: ${title}`}
         style={{
           WebkitTapHighlightColor: 'transparent',
-          backgroundColor: `color-mix(in srgb, ${dot} 20%, transparent)`,
-          border: `1px solid color-mix(in srgb, ${dot} 45%, transparent)`,
+          backgroundColor: `color-mix(in srgb, ${color} 20%, transparent)`,
+          border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
+          gap: expanded ? 6 : 0,
+          padding: expanded ? '5px 10px 5px 8px' : '5px',
+          transition: 'gap 150ms ease, padding 150ms ease',
         }}
-        className="flex-shrink-0 inline-flex items-center gap-1.5 max-w-[160px] rounded-full px-2 py-1 text-xs text-secondary"
+        className="flex-shrink-0 inline-flex items-center rounded-full text-xs text-secondary overflow-hidden"
       >
-        <ArrowsSplit size={12} weight="bold" className="flex-shrink-0" style={{ color: dot }} />
-        <span className="truncate">{title}</span>
+        <ArrowsSplit size={13} weight="bold" style={{ color, flexShrink: 0 }} />
+        <span
+          className="truncate"
+          style={{
+            maxWidth: expanded ? 150 : 0,
+            opacity: expanded ? 1 : 0,
+            transition: 'max-width 150ms ease, opacity 150ms ease',
+          }}
+        >
+          {title}
+        </span>
       </button>
       {open &&
         pos &&
         createPortal(
           <div
             ref={menuRef}
-            className="fixed z-[2147483000] min-w-[180px] max-w-[260px] rounded-xl border border-subtle bg-surface-1 shadow-[0_8px_24px_-6px_var(--shadow-node)] py-1"
+            className="fixed z-[2147483000] min-w-[200px] max-w-[280px] rounded-xl border border-subtle bg-surface-1 shadow-[0_8px_24px_-6px_var(--shadow-node)] py-1"
             style={{ left: pos.left, bottom: pos.bottom }}
           >
             <Row label="New worktree" color={ACCENT} selected={value === 'new'} onClick={() => pick('new')} />
-            <Row label="No worktree" color={MUTED} selected={value === 'root'} onClick={() => pick('root')} />
-            {worktrees.map((wt) => (
-              <Row key={wt.id} label={wtTitle(wt)} color={wt.color} selected={value === wt.id} onClick={() => pick(wt.id)} />
+            <Row
+              label={primary ? `${wtTitle(primary)} (no worktree)` : 'No worktree'}
+              color={primary?.color ?? MUTED}
+              selected={value === 'root'}
+              onClick={() => pick('root')}
+            />
+            {others.map((wt) => (
+              <Row key={wt.id} label={wtTitle(wt)} color={wt.color ?? MUTED} selected={value === wt.id} onClick={() => pick(wt.id)} />
             ))}
           </div>,
           document.body,

@@ -426,6 +426,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 <div className="flex-1 min-w-0 flex items-end">
                   <CateAgentInputBar
                     workspaceId={workspaceId}
+                    rootPath={rootPath}
                     worktreeTarget={agentWorktreeTarget}
                     onWorktreeTargetChange={setAgentWorktreeTarget}
                     onSend={sendAgentPrompt}

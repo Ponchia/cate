@@ -37,17 +37,17 @@ const saveDraft = (wsId: string, value: string): void => {
 
 export const CateAgentInputBar: React.FC<{
   workspaceId: string
+  rootPath: string
   worktreeTarget: WorktreeTarget
   onWorktreeTargetChange: (target: WorktreeTarget) => void
   onSend: (text: string) => void
   onClose: () => void
   /** Reports the textarea's current content height (px) so the toolbar resizes. */
   onHeightChange?: (px: number) => void
-}> = ({ workspaceId, worktreeTarget, onWorktreeTargetChange, onSend, onClose, onHeightChange }) => {
+}> = ({ workspaceId, rootPath, worktreeTarget, onWorktreeTargetChange, onSend, onClose, onHeightChange }) => {
   // Seed from the persisted draft so a reopened bar (or a fresh app launch)
   // restores whatever was typed but not sent.
   const [text, setText] = React.useState(() => loadDraft(workspaceId))
-  const [multiline, setMultiline] = React.useState(false)
   const ref = React.useRef<HTMLTextAreaElement>(null)
 
   const update = (value: string): void => {
@@ -71,10 +71,6 @@ export const CateAgentInputBar: React.FC<{
     // Only show a scrollbar once the content actually exceeds the cap; otherwise
     // the textarea fits its content exactly and a scrollbar would be spurious.
     el.style.overflowY = full > MAX_HEIGHT ? 'auto' : 'hidden'
-    // One line of text-sm is ~31px; past ~42px the input has wrapped. Single-line
-    // is vertically centered; multi-line anchors controls to the bottom so they
-    // don't drift as the textarea grows upward.
-    setMultiline(full > 42)
     onHeightChange?.(h)
   }, [onHeightChange])
 
@@ -94,9 +90,14 @@ export const CateAgentInputBar: React.FC<{
   }
 
   return (
-    <div className={`flex ${multiline ? 'items-end' : 'items-center'} gap-1.5 w-full pl-1`}>
-      {/* Select-only worktree target for the prompt (tag with title). */}
-      <CateAgentWorktreeSelect workspaceId={workspaceId} value={worktreeTarget} onChange={onWorktreeTargetChange} />
+    <div className="flex items-end gap-1.5 w-full pl-1">
+      {/* Select-only worktree target for the prompt (collapsible color tag). */}
+      <CateAgentWorktreeSelect
+        workspaceId={workspaceId}
+        rootPath={rootPath}
+        value={worktreeTarget}
+        onChange={onWorktreeTargetChange}
+      />
       <textarea
         ref={ref}
         rows={1}
