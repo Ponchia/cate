@@ -32,6 +32,11 @@ import { CateAgentInputBar } from '../cateAgent/CateAgentInputBar'
 import { CateAgentFeedback } from '../cateAgent/CateAgentFeedback'
 import { useCateAgentWs, useCateAgentStore } from '../cateAgent/cateAgentStore'
 import { cateAgentController } from '../cateAgent/cateAgentController'
+import { useTodosStore } from '../stores/todosStore'
+
+// Todo statuses that need a user decision — while any exist the toolbar keeps
+// its notification dot lit (even after the panel has been opened once).
+const ATTENTION_STATUSES = ['suggested', 'review', 'pending', 'failed']
 
 interface CanvasToolbarProps {
   canvasPanelId: string
@@ -218,6 +223,12 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const toggleAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, !inputOpen)
   const closeAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, false)
   const sendAgentPrompt = (text: string) => void cateAgentController.prompt(workspaceId, rootPath, text)
+  // Attention persists while any todo still needs a decision; transient remarks
+  // (the `unseen` flag) flash it until the panel is opened. Either way, an open
+  // panel means the user is already looking, so no indicator then.
+  const todosForRoot = useTodosStore((s) => s.todosByRoot[rootPath])
+  const hasActionableTodos = (todosForRoot ?? []).some((t) => ATTENTION_STATUSES.includes(t.status))
+  const agentAttention = !inputOpen && (hasActionableTodos || cateAgent.unseen)
 
   // Minimap pill docking corner + drag-to-dock handling. The corner is driven
   // straight from the UI-state store so an external shove (the Cate Agent landing on
@@ -280,7 +291,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             <CateAgentToolbarButton
               activity={cateAgent.activity}
               active={inputOpen}
-              attention={cateAgent.unseen && !inputOpen}
+              attention={agentAttention}
               onClick={toggleAgentInput}
             />
             {/* Content zone: the tools always render and define the toolbar's
@@ -288,7 +299,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 grows the zone slightly (animated padding) so the input is a bit
                 wider than the toolbar, then collapses back on close. */}
             <div
-              className="relative flex items-center gap-0.5 ml-1.5 transition-[padding] duration-200 ease-out"
+              className="relative flex items-center gap-0.5 ml-1.5 transition-[padding] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
               style={{ paddingRight: inputOpen ? 96 : 0 }}
             >
               <div
