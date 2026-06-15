@@ -340,7 +340,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       <div data-onboarding="toolbar" className="relative pointer-events-auto">
         <CateAgentFeedback workspaceId={workspaceId} rootPath={rootPath} />
         <div className="border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]" style={{ borderRadius: agentPillRadius }}>
-          <div className="flex items-end gap-0.5 px-1 py-1">
+          <div className="flex items-center gap-0.5 px-1 py-1">
             {/* Cate Agent — always leftmost; toggles the prompt input. */}
             <CateAgentToolbarButton
               activity={cateAgent.activity}
@@ -423,7 +423,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             </ToolbarButton>
               </div>
               {inputOpen && (
-                <div className="flex-1 min-w-0 flex items-end">
+                <div className="flex-1 min-w-0 flex items-center">
                   <CateAgentInputBar
                     workspaceId={workspaceId}
                     rootPath={rootPath}

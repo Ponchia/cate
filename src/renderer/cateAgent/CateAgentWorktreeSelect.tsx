@@ -80,11 +80,15 @@ export const CateAgentWorktreeSelect: React.FC<{
           WebkitTapHighlightColor: 'transparent',
           backgroundColor: `color-mix(in srgb, ${color} 20%, transparent)`,
           border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
+          // Collapsed: a fixed 28px circle (just the icon). Expanded: auto width
+          // with padding + the name. Height stays constant so it never shifts.
+          height: 28,
+          width: expanded ? undefined : 28,
           gap: expanded ? 6 : 0,
-          padding: expanded ? '5px 10px 5px 8px' : '5px',
+          padding: expanded ? '0 10px 0 8px' : 0,
           transition: 'gap 150ms ease, padding 150ms ease',
         }}
-        className="flex-shrink-0 inline-flex items-center rounded-full text-xs text-secondary overflow-hidden"
+        className="flex-shrink-0 inline-flex items-center justify-center rounded-full text-xs text-secondary overflow-hidden"
       >
         <ArrowsSplit size={13} weight="bold" style={{ color, flexShrink: 0 }} />
         <span

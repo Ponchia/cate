@@ -90,7 +90,7 @@ export const CateAgentInputBar: React.FC<{
   }
 
   return (
-    <div className="flex items-end gap-1.5 w-full pl-1">
+    <div className="flex items-center gap-1.5 w-full pl-1">
       {/* Select-only worktree target for the prompt (collapsible color tag). */}
       <CateAgentWorktreeSelect
         workspaceId={workspaceId}
