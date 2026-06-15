@@ -229,6 +229,15 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const todosForRoot = useTodosStore((s) => s.todosByRoot[rootPath])
   const hasActionableTodos = (todosForRoot ?? []).some((t) => ATTENTION_STATUSES.includes(t.status))
   const agentAttention = !inputOpen && (hasActionableTodos || cateAgent.unseen)
+  // Track whether the input has ever been opened, so the bobbly collapse only
+  // plays after a real open — never as a phantom shrink on first render.
+  const agentInputEverOpened = useRef(false)
+  if (inputOpen) agentInputEverOpened.current = true
+  const agentGrowClass = inputOpen
+    ? 'cate-agent-input-grow'
+    : agentInputEverOpened.current
+      ? 'cate-agent-input-shrink'
+      : ''
 
   // Minimap pill docking corner + drag-to-dock handling. The corner is driven
   // straight from the UI-state store so an external shove (the Cate Agent landing on
@@ -299,7 +308,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 grows the zone slightly (animated padding) so the input is a bit
                 wider than the toolbar, then collapses back on close. */}
             <div
-              className="relative flex items-center gap-0.5 ml-1.5 transition-[padding] duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+              className={`relative flex items-center gap-0.5 ml-1.5 ${agentGrowClass}`}
               style={{ paddingRight: inputOpen ? 96 : 0 }}
             >
               <div

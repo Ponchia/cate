@@ -71,7 +71,7 @@ export const CateAgentFeedback: React.FC<{ workspaceId: string; rootPath: string
     <div className="absolute bottom-full left-0 right-0 mb-2 rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)] overflow-hidden">
       <div ref={scrollRef} className="max-h-[50vh] overflow-y-auto px-3 py-2 flex flex-col gap-1.5">
         {visibleFeed.map((item) => (
-          <div key={item.id} className={`text-[12px] leading-snug break-words ${KIND_CLASS[item.kind]}`}>
+          <div key={item.id} className={`text-sm leading-snug break-words ${KIND_CLASS[item.kind]}`}>
             {item.kind === 'user' ? <span className="text-muted">You: </span> : null}
             {item.text}
           </div>
@@ -101,7 +101,7 @@ const TodoCard: React.FC<{ todo: Todo; wsId: string; rootPath: string }> = ({ to
   }
 
   const terminalId = todo.terminalNodeIds?.[todo.terminalNodeIds.length - 1]
-  const btn = 'flex items-center gap-1 px-2 py-0.5 rounded text-[11.5px] transition-colors disabled:opacity-40'
+  const btn = 'flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors disabled:opacity-40'
 
   const actions = (() => {
     switch (todo.status) {
@@ -176,11 +176,11 @@ const TodoCard: React.FC<{ todo: Todo; wsId: string; rootPath: string }> = ({ to
     <div className="rounded-lg border border-subtle bg-surface-1 px-2.5 py-2 flex flex-col gap-1.5">
       <div className="flex items-start gap-1.5">
         {glyph}
-        <span className="flex-1 min-w-0 text-[12.5px] leading-snug text-primary break-words">{todo.title}</span>
+        <span className="flex-1 min-w-0 text-sm leading-snug text-primary break-words">{todo.title}</span>
       </div>
-      {todo.branch && <div className="text-[11px] text-muted truncate font-mono">{todo.branch}</div>}
+      {todo.branch && <div className="text-xs text-muted truncate font-mono">{todo.branch}</div>}
       {todo.note && (
-        <div className={`text-[11.5px] leading-snug break-words ${todo.status === 'review' ? 'text-amber-400/90' : 'text-muted'}`}>
+        <div className={`text-xs leading-snug break-words ${todo.status === 'review' ? 'text-amber-400/90' : 'text-muted'}`}>
           {todo.note}
         </div>
       )}

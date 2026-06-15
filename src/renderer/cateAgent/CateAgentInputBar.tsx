@@ -34,7 +34,7 @@ export const CateAgentInputBar: React.FC<{
           else if (e.key === 'Escape') { e.preventDefault(); onClose() }
         }}
         placeholder="Ask the Cate Agent…"
-        className="flex-1 min-w-0 bg-transparent text-[13px] text-primary px-2 py-1.5 outline-none placeholder:text-muted"
+        className="flex-1 min-w-0 bg-transparent text-sm text-primary px-2 py-1.5 outline-none placeholder:text-muted"
       />
       <button
         type="button"
