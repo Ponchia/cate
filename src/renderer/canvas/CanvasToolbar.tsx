@@ -27,6 +27,11 @@ import { useShortcutStore } from '../stores/shortcutStore'
 import { displayString, PANEL_DEFAULT_SIZES } from '../../shared/types'
 import { useAppStore } from '../stores/appStore'
 import { Tooltip } from '../ui/Tooltip'
+import { CateAgentToolbarButton } from '../cateAgent/CateAgentToolbarButton'
+import { CateAgentInputBar } from '../cateAgent/CateAgentInputBar'
+import { CateAgentFeedback } from '../cateAgent/CateAgentFeedback'
+import { useCateAgentWs, useCateAgentStore } from '../cateAgent/cateAgentStore'
+import { cateAgentController } from '../cateAgent/cateAgentController'
 
 interface CanvasToolbarProps {
   canvasPanelId: string
@@ -208,6 +213,12 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const zoomResetKey = useShortcutStore((s) => displayString(s.shortcuts.zoomReset))
   const zoomText = `${Math.round(zoom * 100)}%`
 
+  const cateAgent = useCateAgentWs(workspaceId)
+  const inputOpen = cateAgent.inputOpen
+  const toggleAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, !inputOpen)
+  const closeAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, false)
+  const sendAgentPrompt = (text: string) => void cateAgentController.prompt(workspaceId, rootPath, text)
+
   // Minimap pill docking corner + drag-to-dock handling. The corner is driven
   // straight from the UI-state store so an external shove (the Cate Agent landing on
   // this corner) moves the pill immediately. The toggle button doubles as a
@@ -265,9 +276,22 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   return (
     <>
     <div className="absolute inset-x-0 bottom-4 z-50 flex justify-center pointer-events-none">
-      <div data-onboarding="toolbar" className="relative pointer-events-auto">
+      <div data-onboarding="toolbar" className="relative pointer-events-auto flex flex-col items-stretch">
+        <CateAgentFeedback rootPath={rootPath} />
         <div className="rounded-full border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]">
           <div className="flex items-center gap-0.5 px-1 py-1">
+            {/* Cate Agent — always leftmost; toggles the prompt input. */}
+            <CateAgentToolbarButton
+              activity={cateAgent.activity}
+              active={inputOpen}
+              onClick={toggleAgentInput}
+            />
+            <div className="w-px h-5 bg-surface-5 mx-1" />
+
+            {inputOpen ? (
+              <CateAgentInputBar onSend={sendAgentPrompt} onClose={closeAgentInput} />
+            ) : (
+              <>
             {/* Interaction tools (Select / Hand) */}
             <ModeButton
               onClick={() => setActiveTool('select')}
@@ -328,6 +352,8 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             <ToolbarButton onClick={onZoomIn} title={`Zoom In (${zoomInKey})`} size="zoom">
               <Plus size={16} />
             </ToolbarButton>
+              </>
+            )}
           </div>
         </div>
       </div>
