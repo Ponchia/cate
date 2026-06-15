@@ -236,15 +236,25 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const agentToolsRef = useRef<HTMLDivElement>(null)
   const [agentToolsSize, setAgentToolsSize] = useState({ w: 0, h: 36 })
   const [agentInputH, setAgentInputH] = useState(36)
+  // Always measure the tools' natural size — even while the input is open (the
+  // tools stay in-flow, just faded out, so offsetWidth is still valid). Measuring
+  // only-when-closed broke if the toolbar first mounted with the input already
+  // open (e.g. after an HMR reload, or a second toolbar sharing the open state):
+  // the width stayed 0 and the bar collapsed. Dedupe to avoid a measure→render loop.
   useLayoutEffect(() => {
     const el = agentToolsRef.current
-    if (!el || inputOpen) return
-    const measure = () => setAgentToolsSize({ w: Math.round(el.offsetWidth), h: Math.round(el.offsetHeight) })
+    if (!el) return
+    const measure = () =>
+      setAgentToolsSize((prev) => {
+        const w = Math.round(el.offsetWidth)
+        const h = Math.round(el.offsetHeight)
+        return prev.w === w && prev.h === h ? prev : { w, h }
+      })
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [inputOpen])
+  }, [])
   const AGENT_INPUT_EXTRA = 96 // how much wider than the toolbar the input grows
   const agentZoneStyle: React.CSSProperties = inputOpen
     ? { width: agentToolsSize.w + AGENT_INPUT_EXTRA, height: Math.max(agentToolsSize.h, agentInputH) }
