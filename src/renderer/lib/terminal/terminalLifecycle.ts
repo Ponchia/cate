@@ -34,6 +34,7 @@ import {
 } from './terminalSettings'
 import { createTerminalLinkHandler, makeTerminalKeyEventHandler } from './terminalInput'
 import { createFileLinkProvider, resolveLinkRoot } from './terminalFileLinkProvider'
+import { clearWebglDisabled } from './terminalDom'
 import { getActiveTheme } from '../themeManager'
 import { useStatusStore } from '../../stores/statusStore'
 import { awaitWorkspaceSync, useAppStore } from '../../stores/appStore'
@@ -545,6 +546,7 @@ export function dispose(panelId: string): void {
   registry.delete(panelId)
   if (entry.ptyId) ptyToPanel.delete(entry.ptyId)
   pendingTransfers.delete(panelId) // stale transfer would hijack a future fresh mount
+  clearWebglDisabled(panelId)
 
   const { ptyId } = entry
   const { electronAPI } = window

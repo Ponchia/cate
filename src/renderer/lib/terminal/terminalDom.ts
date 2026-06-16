@@ -10,6 +10,18 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { registry, has, type RegistryEntry } from './registryState'
 import { finalizeReconnect } from './terminalLifecycle'
 
+/** Panels whose WebGL context was lost — Chromium caps simultaneous WebGL
+ *  contexts (~16), and many open terminals (e.g. an agent driving several at
+ *  once) blow past it, dropping contexts. Re-acquiring just loses them again, so
+ *  once a terminal loses its context we keep it on xterm's DOM renderer for the
+ *  rest of the session. */
+const webglDisabledPanels = new Set<string>()
+
+/** Forget a panel's WebGL-disabled flag when its terminal is disposed. */
+export function clearWebglDisabled(panelId: string): void {
+  webglDisabledPanels.delete(panelId)
+}
+
 /**
  * Rebuild the WebGL glyph atlas and force a full redraw — across EVERY live
  * terminal in this window, not just the one named by panelId.
@@ -208,17 +220,26 @@ export function attach(panelId: string, container: HTMLDivElement): void {
     try { entry.webglAddon.dispose() } catch { /* ignore */ }
     entry.webglAddon = null
   }
-  try {
-    const newWebgl = new WebglAddon()
-    newWebgl.onContextLoss(() => {
-      newWebgl.dispose()
-      const e = registry.get(panelId)
-      if (e) e.webglAddon = null
-    })
-    terminal.loadAddon(newWebgl)
-    entry.webglAddon = newWebgl
-  } catch {
-    // Canvas renderer fallback — no action needed
+  // Skip WebGL for terminals that already lost a context — they stay on the DOM
+  // renderer so they don't churn (re-acquire → re-lose) and never go blank.
+  if (!webglDisabledPanels.has(panelId)) {
+    try {
+      const newWebgl = new WebglAddon()
+      newWebgl.onContextLoss(() => {
+        try { newWebgl.dispose() } catch { /* ignore */ }
+        const e = registry.get(panelId)
+        if (e) e.webglAddon = null
+        // Don't fight the context limit: fall back to the DOM renderer and force a
+        // repaint, otherwise the dead WebGL canvas leaves the terminal blank/white.
+        webglDisabledPanels.add(panelId)
+        try { terminal.refresh(0, terminal.rows - 1) } catch { /* ignore */ }
+      })
+      terminal.loadAddon(newWebgl)
+      entry.webglAddon = newWebgl
+    } catch {
+      // Context creation failed outright — DOM renderer fallback; don't retry.
+      webglDisabledPanels.add(panelId)
+    }
   }
 
   // Fit after the next frame — the container may still be mid-layout during
