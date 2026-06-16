@@ -23,6 +23,7 @@ import {
   Trash,
   Terminal as TerminalIcon,
   CircleNotch,
+  CheckCircle,
 } from '@phosphor-icons/react'
 import { useTodosStore } from '../stores/todosStore'
 import { useCateAgentWs } from './cateAgentStore'
@@ -33,8 +34,17 @@ import { useWorktrees, type JoinedWorktree } from '../stores/useWorktrees'
 import type { Todo } from '../../shared/types'
 
 // Actionable statuses shown as job cards, in display order. done/discarded are
-// history and omitted from this transient surface.
+// history and omitted from this transient surface — EXCEPT a `done` job that
+// produced an `answer` (output), which lingers (last) so the user can read it
+// until they dismiss it.
 const JOB_STATUSES: Todo['status'][] = ['in_progress', 'review', 'suggested', 'pending', 'failed']
+
+const jobRank = (t: Todo): number => {
+  const i = JOB_STATUSES.indexOf(t.status)
+  return i === -1 ? JOB_STATUSES.length : i
+}
+
+const isAnsweredJob = (t: Todo): boolean => t.status === 'done' && !!t.output
 
 const wtTitle = (wt: JoinedWorktree): string => wt.label || wt.branch || wt.path.split(/[/\\]/).pop() || 'worktree'
 
@@ -45,8 +55,8 @@ export const CateAgentFeedback: React.FC<{ workspaceId: string; rootPath: string
   const worktrees = useWorktrees(rootPath, wsId)
 
   const jobs = (todos ?? [])
-    .filter((t) => JOB_STATUSES.includes(t.status))
-    .sort((a, b) => JOB_STATUSES.indexOf(a.status) - JOB_STATUSES.indexOf(b.status))
+    .filter((t) => JOB_STATUSES.includes(t.status) || isAnsweredJob(t))
+    .sort((a, b) => jobRank(a) - jobRank(b))
 
   if (!wsId || !cateAgent.inputOpen || jobs.length === 0) return null
 
@@ -65,6 +75,8 @@ const StatusGlyph: React.FC<{ status: Todo['status'] }> = ({ status }) => {
       return <CircleNotch size={14} className="mt-[1px] flex-shrink-0 text-green-400 animate-spin" />
     case 'review':
       return <GitMerge size={14} className="mt-[1px] flex-shrink-0 text-amber-400" />
+    case 'done':
+      return <CheckCircle size={14} weight="fill" className="mt-[1px] flex-shrink-0 text-green-400" />
     case 'failed':
       return <X size={14} className="mt-[1px] flex-shrink-0 text-red-400/80" />
     default: // suggested / pending
@@ -140,6 +152,13 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
         </div>
       )}
 
+      {/* Answer / output — the user-facing result, selectable and kept until dismissed. */}
+      {job.output && (
+        <div className="mt-0.5 rounded-lg bg-surface-0 border border-subtle px-2.5 py-2 text-xs leading-relaxed text-primary whitespace-pre-wrap break-words select-text max-h-60 overflow-y-auto">
+          {job.output}
+        </div>
+      )}
+
       {/* Controlled terminals. */}
       {terminals.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -207,7 +226,17 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
               </button>
             </>
           )}
-          {job.status === 'review' && (
+          {job.interrupted && (
+            <>
+              <button onClick={() => void cateAgentController.continueJob(wsId, rootPath, job.id)} className={`${btn} text-white bg-blue-500 hover:bg-blue-600`}>
+                <Play size={10} weight="fill" /> Continue
+              </button>
+              <button disabled={busy} onClick={() => void runReview(discardTodo)} className={`${btn} text-muted hover:text-red-400 hover:bg-hover`}>
+                <Trash size={11} /> Discard
+              </button>
+            </>
+          )}
+          {job.status === 'review' && !job.interrupted && (
             <>
               <button disabled={busy} onClick={() => void runReview(mergeTodo)} className={`${btn} text-white bg-green-600 hover:bg-green-700`}>
                 <GitMerge size={11} /> Merge
@@ -220,7 +249,12 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
               </button>
             </>
           )}
-          {(job.status === 'pending' || job.status === 'failed') && (
+          {job.status === 'done' && (
+            <button onClick={() => removeTodo(rootPath, job.id)} className={`${btn} text-muted hover:text-primary hover:bg-hover`}>
+              <X size={10} /> Dismiss
+            </button>
+          )}
+          {(job.status === 'pending' || job.status === 'failed') && !job.interrupted && (
             <>
               <button onClick={() => void cateAgentController.runTodo(wsId, rootPath, job.id)} className={`${btn} text-secondary hover:text-blue-400 hover:bg-hover`}>
                 <Play size={11} /> {job.status === 'failed' ? 'Rerun' : 'Run'}

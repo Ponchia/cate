@@ -83,7 +83,12 @@ export async function ensureTodoWorktree(
   }
   if (!isRepo) return { worktreeId: null, cwd: rootPath }
 
-  const branch = `cate-agent/${toBranchName(todo.title)}`
+  // Name the worktree from the short derived topic when the executor has set it
+  // (it calls set_topic before opening any terminal, which is when we get here),
+  // falling back to the prompt only when there is no topic yet. Keeps the branch
+  // + pill short instead of echoing the whole user prompt.
+  const nameSource = todo.topic?.trim() || todo.title
+  const branch = `cate-agent/${toBranchName(nameSource)}`
   const targetPath = worktreePathFor(rootPath, branch)
   try {
     await window.electronAPI.gitWorktreeAdd(rootPath, branch, targetPath, { createBranch: true })
@@ -95,7 +100,7 @@ export async function ensureTodoWorktree(
   const meta: WorktreeMeta = {
     id: `wt-${generateId()}`,
     path: targetPath,
-    label: todo.title.slice(0, 40),
+    label: nameSource.slice(0, 40),
     color: pickWorktreeColor(ws?.worktrees ?? []),
   }
   useAppStore.getState().upsertWorktree(wsId, meta)
@@ -114,6 +119,20 @@ function setRemark(wsId: string, text: string): void {
 /** Resolve the ptyId for a terminal handle (the handle IS the panelId). */
 function ptyFor(panelId: string): string | undefined {
   return terminalRegistry.ptyIdForPanel(panelId) ?? undefined
+}
+
+/** Close ANY canvas panel (terminal or otherwise) through the single disposal
+ *  path, and clean up the per-terminal bookkeeping (glow set + exit tracking)
+ *  when it happens to be a terminal. Shared by close_terminal and close_panel. */
+function closeCanvasPanel(wsId: string, panelId: string): void {
+  const ptyId = ptyFor(panelId)
+  try {
+    useAppStore.getState().closePanel(wsId, panelId)
+  } catch (err) {
+    log.warn('[cateAgentTools] closePanel failed: %O', err)
+  }
+  useCateAgentStore.getState().removeControlledTerminal(wsId, panelId)
+  if (ptyId) clearExit(ptyId)
 }
 
 /** Compute an EXPLICIT canvas-space position for a Cate Agent terminal so it auto-places
@@ -388,17 +407,18 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       const command = String(params.command ?? '')
       const todo = todoById(rootPath, todoId)
       if (!todo) return json({ ok: false, error: `no todo ${todoId}` })
-      // The worktree is prepared deterministically when the executor starts.
-      // Non-git workspaces have none, so terminals run in the repo root instead.
-      const meta = todo.worktreeId ? worktreeMetaFor(wsId, todo.worktreeId) : undefined
-      const cwd = meta?.path ?? rootPath
+      // The worktree is created LAZILY — the first terminal a job opens is its
+      // first real (code) work, so prepare the isolated worktree now. Idempotent:
+      // later terminals reuse it. Non-git / "no worktree" jobs run in the repo root.
+      const { worktreeId, cwd } = await ensureTodoWorktree(wsId, rootPath, todoId)
+      const meta = worktreeId ? worktreeMetaFor(wsId, worktreeId) : undefined
 
       const app = useAppStore.getState()
       // Explicit position → silent auto-place (no interactive ghost prompt).
       const priorCount = todoById(rootPath, todoId)?.terminalNodeIds?.length ?? 0
       const pos = terminalPosition(wsId, priorCount)
       const panelId = app.createTerminal(wsId, undefined, pos, { target: 'canvas' }, cwd)
-      if (todo.worktreeId) app.setPanelWorktreeId(wsId, panelId, todo.worktreeId)
+      if (worktreeId) app.setPanelWorktreeId(wsId, panelId, worktreeId)
       // Track the terminal on the todo so cleanup can find it.
       const existing = todoById(rootPath, todoId)?.terminalNodeIds ?? []
       todos.patchTodo(rootPath, todoId, { terminalNodeIds: [...existing, panelId] })
@@ -438,23 +458,71 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       return json({ ok: true, ...(await waitForTerminalIdle(wsId, terminalId)) })
     }
 
+    case 'list_terminals': {
+      const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
+      const terminals = (ws ? Object.values(ws.panels) : [])
+        .filter((p) => p.type === 'terminal')
+        .map((p) => {
+          const ptyId = ptyFor(p.id)
+          return { terminalId: p.id, title: p.title, busy: ptyId ? activityRunning(wsId, ptyId) : false }
+        })
+      return json({ terminals })
+    }
+
+    case 'list_panels': {
+      const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
+      const panels = (ws ? Object.values(ws.panels) : []).map((p) => ({ panelId: p.id, type: p.type, title: p.title }))
+      return json({ panels })
+    }
+
     case 'close_terminal': {
       const terminalId = String(params.terminalId ?? '')
-      const ptyId = ptyFor(terminalId)
-      try {
-        useAppStore.getState().closePanel(wsId, terminalId)
-      } catch (err) {
-        log.warn('[cateAgentTools] close_terminal failed: %O', err)
-      }
-      useCateAgentStore.getState().removeControlledTerminal(wsId, terminalId)
-      if (ptyId) clearExit(ptyId)
+      closeCanvasPanel(wsId, terminalId)
+      return json({ ok: true })
+    }
+
+    case 'close_panel': {
+      const panelId = String(params.panelId ?? '')
+      if (!panelId) return json({ ok: false, error: 'panelId is required' })
+      closeCanvasPanel(wsId, panelId)
+      return json({ ok: true })
+    }
+
+    case 'focus_panel': {
+      const panelId = String(params.panelId ?? '')
+      if (!panelId) return json({ ok: false, error: 'panelId is required' })
+      const store = getWorkspaceCanvasStore(wsId)
+      if (!store) return json({ ok: false, error: 'no canvas in this workspace' })
+      const s = store.getState()
+      const nodeId = s.nodeForPanel(panelId)
+      if (!nodeId) return json({ ok: false, error: `no canvas node for panel ${panelId}` })
+      s.focusNode(nodeId)
       return json({ ok: true })
     }
 
     case 'set_topic': {
       const todoId = String(params.todoId ?? ctx.todoId ?? '')
       const topic = String(params.topic ?? '').trim()
-      if (todoId && topic) todos.patchTodo(rootPath, todoId, { topic: topic.slice(0, 60) })
+      if (todoId && topic) {
+        todos.patchTodo(rootPath, todoId, { topic: topic.slice(0, 60) })
+        // If a worktree was already minted (a terminal opened before set_topic),
+        // relabel its pill to the short topic too — the branch keeps its name.
+        const wtId = todoById(rootPath, todoId)?.worktreeId
+        const meta = wtId ? worktreeMetaFor(wsId, wtId) : undefined
+        if (meta) useAppStore.getState().upsertWorktree(wsId, { ...meta, label: topic.slice(0, 40) })
+      }
+      return json({ ok: true })
+    }
+
+    case 'answer': {
+      const todoId = String(params.todoId ?? ctx.todoId ?? '')
+      const text = String(params.text ?? '').trim()
+      if (!todoId || !text) return json({ ok: false, error: 'todoId and text are required' })
+      // An answer is the user-facing result AND completes the job — a question or
+      // read-only task has nothing to land, so it settles to `done` (never review).
+      todos.patchTodo(rootPath, todoId, { output: text, status: 'done' })
+      const title = todoById(rootPath, todoId)?.title ?? 'task'
+      setRemark(wsId, `Answered: "${title}"`)
       return json({ ok: true })
     }
 

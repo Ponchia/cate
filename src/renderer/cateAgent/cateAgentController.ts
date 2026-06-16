@@ -28,7 +28,6 @@ import {
 } from './cateAgentSession'
 import { shouldObserve } from './cateAgentTriggerGate'
 import {
-  ensureTodoWorktree,
   buildObserveContext,
   buildExecutorContext,
   todoHasBusyTerminal,
@@ -147,12 +146,16 @@ function continuePrompt(todo: Todo): string {
 function executePrompt(todoId: string, title: string, hasWorktree: boolean): string {
   const cmd = loadCateAgentExecutorAgentCommand()
   const launch = cmd
-    ? `Launch the coding-agent CLI with \`${cmd}\` and give it the task as its prompt.`
-    : 'Launch an installed coding-agent CLI (e.g. `claude`, `codex`, or `aider`) and give it the task as its prompt.'
+    ? `When code work is needed, launch the coding-agent CLI with \`${cmd}\` and give it the task as its prompt.`
+    : 'When code work is needed, launch an installed coding-agent CLI (e.g. `claude`, `codex`, or `aider`) and give it the task as its prompt.'
   const where = hasWorktree
-    ? 'An isolated worktree is ready; terminals run inside it, so have the agent commit on that branch.'
+    ? 'For code work, an isolated worktree is prepared automatically when you open your first terminal; terminals run inside it, so have the agent commit on that branch.'
     : 'This is not a git repo, so there is no worktree; terminals run in the project root.'
-  return [`Carry out this approved todo (id: ${todoId}): "${title}".`, where, launch].join(' ')
+  return [
+    `Carry out this approved todo (id: ${todoId}): "${title}".`,
+    'Decide what it needs: if it is a question or a canvas/terminal management request (e.g. close, focus, or list terminals/panels), do it DIRECTLY with your own tools — do not spawn a CLI — and finish with answer (for a question/result) or update_todo.',
+    `If it requires code changes, delegate. ${where} ${launch}`,
+  ].join(' ')
 }
 
 class CateAgentController implements CateAgentBridgeHost {
@@ -222,7 +225,8 @@ class CateAgentController implements CateAgentBridgeHost {
       if (t.status === 'in_progress' && !hasLiveRun(t.id)) {
         useTodosStore.getState().patchTodo(rootPath, t.id, {
           status: t.worktreeId ? 'review' : 'failed',
-          note: t.note ?? 'Interrupted — the app was restarted.',
+          note: 'Interrupted — the app was restarted.',
+          interrupted: true,
         })
       }
     }
@@ -440,7 +444,7 @@ class CateAgentController implements CateAgentBridgeHost {
 
   /** Start execution of an approved/started todo. Multiple run concurrently, each
    *  in its own worktree + session; a todo already running is a no-op. */
-  async runTodo(wsId: string, rootPath: string, todoId: string): Promise<void> {
+  async runTodo(wsId: string, rootPath: string, todoId: string, resume = false): Promise<void> {
     this.start()
     const r = this.rt(wsId, rootPath)
     // Ensure todos are loaded before the executor reads/mutates them (summon
@@ -467,7 +471,20 @@ class CateAgentController implements CateAgentBridgeHost {
         return
       }
     }
-    await this.startExecutor(wsId, rootPath, todoId)
+    await this.startExecutor(wsId, rootPath, todoId, resume)
+  }
+
+  /** Resume a job that was cut short (interrupted by an app restart). Re-runs the
+   *  executor in CONTINUE mode — a fresh session re-grounded in the existing
+   *  worktree + terminals to pick up where it left off, not a from-scratch run. */
+  async continueJob(wsId: string, rootPath: string, todoId: string): Promise<void> {
+    await useTodosStore.getState().loadTodos(rootPath)
+    // Clear the interrupted marker + its note so the card stops presenting it as
+    // settled the moment we resume.
+    useTodosStore.getState().patchTodo(rootPath, todoId, { interrupted: false, note: undefined })
+    const title = useTodosStore.getState().getTodos(rootPath).find((t) => t.id === todoId)?.title ?? 'task'
+    useCateAgentStore.getState().appendFeed(wsId, 'status', `Resuming "${title}"`)
+    await this.runTodo(wsId, rootPath, todoId, true)
   }
 
   /** The worktree a todo will run in, as a conflict key: 'root' for a no-worktree
@@ -479,7 +496,21 @@ class CateAgentController implements CateAgentBridgeHost {
     return todo.worktreeId ?? null
   }
 
-  private async startExecutor(wsId: string, rootPath: string, todoId: string): Promise<void> {
+  /** Whether this todo will run in an isolated worktree once it does code work —
+   *  true if it already has one, or it's a git repo and the user didn't opt out.
+   *  Read-only: used only to phrase the executor prompt (the worktree itself is
+   *  created lazily on the first create_terminal). */
+  private async willHaveWorktree(rootPath: string, todo: Todo): Promise<boolean> {
+    if (todo.worktreeId) return true
+    if (todo.noWorktree) return false
+    try {
+      return await window.electronAPI.gitIsRepo(rootPath)
+    } catch {
+      return false
+    }
+  }
+
+  private async startExecutor(wsId: string, rootPath: string, todoId: string, resume = false): Promise<void> {
     const r = this.rt(wsId, rootPath)
     const todo = useTodosStore.getState().getTodos(rootPath).find((t) => t.id === todoId)
     if (!todo) return
@@ -492,9 +523,10 @@ class CateAgentController implements CateAgentBridgeHost {
     useTodosStore.getState().setTodoStatus(rootPath, todoId, 'in_progress')
     useCateAgentStore.getState().patch(wsId, { activity: 'working', status: pick(WORKING_STATUSES)(todo.title) })
     useCateAgentStore.getState().appendFeed(wsId, 'status', `Working on "${todo.title}"`)
-    // Prepare the isolated worktree deterministically before the agent runs (a
-    // no-op for non-git workspaces, and idempotent so a todo gets only one).
-    const { worktreeId } = await ensureTodoWorktree(wsId, rootPath, todoId)
+    // The worktree is created LAZILY (on the first create_terminal) so a pure
+    // question or management job never mints a throwaway branch. Here we only
+    // determine WHETHER one will appear — to phrase the prompt — without creating it.
+    const willHaveWorktree = await this.willHaveWorktree(rootPath, todo)
     const ok = await createCateAgentSession({ panelId, rootPath, workspaceId: wsId, role: 'executor' })
     if (!ok) {
       this.ctxByPanel.delete(panelId)
@@ -503,7 +535,9 @@ class CateAgentController implements CateAgentBridgeHost {
       this.syncActivity(wsId)
       return
     }
-    void promptCateAgent(panelId, executePrompt(todoId, todo.title, worktreeId !== null))
+    // Resuming an interrupted job re-grounds a fresh session in the work the prior
+    // session left behind (worktree + terminals); a normal run starts from scratch.
+    void promptCateAgent(panelId, resume ? continuePrompt(todo) : executePrompt(todoId, todo.title, willHaveWorktree))
   }
 
   private finalizeExecutor(ctx: CateAgentContext): void {
@@ -533,11 +567,9 @@ class CateAgentController implements CateAgentBridgeHost {
       this.finalizeExecutor(ctx)
       return
     }
-    // Reuse the existing worktree (or create one if a prior session never got
-    // far enough) so the continuation lands in the same isolated tree.
-    await ensureTodoWorktree(ctx.workspaceId, ctx.rootPath, todo.id)
-    // The run may have been stopped/restarted while we awaited the worktree.
-    if (r.runs.get(ctx.todoId)?.epoch !== ctx.epoch) return
+    // No eager worktree here: a continuation reuses the one the job already made
+    // (create_terminal makes it lazily on first use), so a job that only opened
+    // terminals has its tree, and one that never did still hasn't minted a stray.
     const ok = await createCateAgentSession({ panelId: ctx.panelId, rootPath: ctx.rootPath, workspaceId: ctx.workspaceId, role: 'executor' })
     if (!ok) {
       useTodosStore.getState().patchTodo(ctx.rootPath, todo.id, { status: 'failed', note: 'Could not start a follow-up executor session.' })

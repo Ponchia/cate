@@ -1085,12 +1085,20 @@ export interface Todo {
   terminalNodeIds?: string[]
   /** Free-form note — observer rationale for a suggestion, or a failure reason. */
   note?: string
+  /** User-facing text result the executor produced via the `answer` tool — e.g.
+   *  the answer to a question or a summary of findings. Rendered on the job card
+   *  and kept (the job settles to `done`) until the user dismisses it. */
+  output?: string
   /** Short 2–5 word title the executor derives for this job (UI card title). Falls
    *  back to `title` (the original prompt) when absent. */
   topic?: string
   /** When true the executor runs in the project root with NO isolated worktree
    *  (user chose "No worktree"). Otherwise a worktree is reused/minted. */
   noWorktree?: boolean
+  /** Set when a run was cut short by an app restart (reconcileOrphans) rather than
+   *  finishing. The job card offers Continue (resume the executor where it left
+   *  off) instead of presenting the work as finished. Cleared when it resumes. */
+  interrupted?: boolean
 }
 
 export interface ProjectTodosFile {

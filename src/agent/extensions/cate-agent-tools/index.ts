@@ -60,7 +60,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Read a terminal's CURRENT SCREEN (what the user sees, not a raw scroll log) plus its state. Returns JSON {output, isRunning, lastExitCode, agentState}. agentState is the coding-agent's turn-state when one is running: 'running' (mid-turn), 'waitingForInput' (turn done, awaiting you), 'finished'/'notRunning' (CLI exited), or null for a plain shell.",
     parameters: Type.Object({
-      terminalId: Type.String({ description: "The terminal id returned by create_terminal / list_terminals." }),
+      terminalId: Type.String({ description: "A terminal id from create_terminal or list_terminals." }),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return call(ctx, "read_terminal", { terminalId: params.terminalId })
@@ -97,6 +97,52 @@ export default function (pi: ExtensionAPI) {
   }
 
   if (role === "executor") {
+    // --- Canvas / terminal management (the agent does these DIRECTLY, no CLI) ---
+
+    pi.registerTool({
+      name: "list_terminals",
+      label: "List terminals",
+      description:
+        "List EVERY terminal currently open on the canvas — including ones the user opened, not just yours. Returns JSON {terminals: [{terminalId, title, busy}]}. Use this to discover terminals before reading, driving, or closing them (e.g. to honour a 'close my terminals' request).",
+      parameters: Type.Object({}),
+      async execute(_id, _params, _signal, _onUpdate, ctx) {
+        return call(ctx, "list_terminals", {})
+      },
+    })
+
+    pi.registerTool({
+      name: "list_panels",
+      label: "List panels",
+      description:
+        "List EVERY panel currently open on the canvas (terminals, editors, browsers, documents, nested canvases). Returns JSON {panels: [{panelId, type, title}]}. Use this to manage the canvas — e.g. to find panels to close or focus.",
+      parameters: Type.Object({}),
+      async execute(_id, _params, _signal, _onUpdate, ctx) {
+        return call(ctx, "list_panels", {})
+      },
+    })
+
+    pi.registerTool({
+      name: "close_panel",
+      label: "Close panel",
+      description:
+        "Close ANY panel on the canvas by id (a terminal, editor, browser, document, or nested canvas) — not limited to panels you opened. Use list_panels / list_terminals to find the id first.",
+      parameters: Type.Object({ panelId: Type.String({ description: "A panel id from list_panels / list_terminals." }) }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "close_panel", { panelId: params.panelId })
+      },
+    })
+
+    pi.registerTool({
+      name: "focus_panel",
+      label: "Focus panel",
+      description:
+        "Bring a panel to the front and focus it on the canvas (raises its node, makes it the active panel). Use list_panels / list_terminals to find the id first.",
+      parameters: Type.Object({ panelId: Type.String({ description: "A panel id from list_panels / list_terminals." }) }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "focus_panel", { panelId: params.panelId })
+      },
+    })
+
     pi.registerTool({
       name: "create_terminal",
       label: "Create terminal",
@@ -135,6 +181,20 @@ export default function (pi: ExtensionAPI) {
       parameters: Type.Object({ terminalId: Type.String() }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         return call(ctx, "close_terminal", { terminalId: params.terminalId })
+      },
+    })
+
+    pi.registerTool({
+      name: "answer",
+      label: "Answer",
+      description:
+        "Deliver a TEXT result to the user — the answer to a question, or a summary of what you found. The text is shown on the job card and kept until the user dismisses it. Calling this COMPLETES the job (no review/merge needed), so use it for questions and read-only/management tasks instead of update_todo. For a code change that needs landing, use update_todo status 'review' instead.",
+      parameters: Type.Object({
+        todoId: Type.String(),
+        text: Type.String({ description: "The user-facing answer or result. Markdown is fine; keep it focused." }),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "answer", { todoId: params.todoId, text: params.text })
       },
     })
 
