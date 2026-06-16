@@ -17,6 +17,20 @@ import { finalizeReconnect } from './terminalLifecycle'
  *  rest of the session. */
 const webglDisabledPanels = new Set<string>()
 
+/** Hard cap on simultaneous WebGL-rendered terminals. Chromium allows ~16 live
+ *  WebGL contexts process-wide; past that it silently drops/never-paints contexts
+ *  (blank white terminals). Many terminals (an agent driving several, all visible
+ *  on a zoomed-out canvas) blow past it, so we only GPU-render up to this many and
+ *  fall the rest back to xterm's DOM renderer (slower glyphs, but always paints). */
+const MAX_WEBGL_TERMINALS = 6
+
+/** Count terminals currently holding a live WebGL addon/context. */
+function liveWebglCount(): number {
+  let n = 0
+  for (const e of registry.values()) if (e.webglAddon) n++
+  return n
+}
+
 /** Forget a panel's WebGL-disabled flag when its terminal is disposed. */
 export function clearWebglDisabled(panelId: string): void {
   webglDisabledPanels.delete(panelId)
@@ -220,9 +234,10 @@ export function attach(panelId: string, container: HTMLDivElement): void {
     try { entry.webglAddon.dispose() } catch { /* ignore */ }
     entry.webglAddon = null
   }
-  // Skip WebGL for terminals that already lost a context — they stay on the DOM
-  // renderer so they don't churn (re-acquire → re-lose) and never go blank.
-  if (!webglDisabledPanels.has(panelId)) {
+  // Skip WebGL when this terminal already lost a context, or when we're already
+  // at the live-context cap — those terminals use the DOM renderer (which always
+  // paints) instead of creating a context the GPU would drop and leave blank.
+  if (!webglDisabledPanels.has(panelId) && liveWebglCount() < MAX_WEBGL_TERMINALS) {
     try {
       const newWebgl = new WebglAddon()
       newWebgl.onContextLoss(() => {
