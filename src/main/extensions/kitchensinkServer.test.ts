@@ -17,21 +17,39 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import http from 'http'
 import net from 'net'
 import crypto from 'crypto'
 import path from 'path'
 
 const EXT_DIR = path.resolve(__dirname, '../../../cate-extensions/extensions/cate.kitchensink')
-// Cate spawns the COMPILED server; `dist/` is build output (gitignored), so
-// build it on demand if a fresh checkout hasn't run cate-extensions/build.sh.
-const SERVER_JS = path.join(EXT_DIR, 'dist', 'server.js')
+const MANIFEST = path.join(EXT_DIR, 'manifest.json')
+// cate-extensions is its own repo, present here only as a local checkout (it's
+// gitignored, never committed). Gate on the manifest so this file imports even
+// when the checkout is absent.
+const HAS_EXT = existsSync(MANIFEST)
 const TOKEN = 'kitchensink-test-token'
 const WORKSPACE_ROOT = '/tmp/kitchensink-ws'
 
+// The server entry the manifest launches, e.g. "node dist/server.js" ->
+// "dist/server.js". Derived (not hardcoded) so this works against a JS catalog
+// (server.js) or a compiled-TS one (dist/server.js).
+function serverEntry(): string {
+  if (!HAS_EXT) return 'server.js'
+  const m = JSON.parse(readFileSync(MANIFEST, 'utf8')) as { server?: { command?: string } }
+  const cmd = m.server?.command ?? ''
+  return cmd.split(/\s+/).find((t) => t.endsWith('.js')) ?? 'server.js'
+}
+const SERVER_JS = HAS_EXT ? path.join(EXT_DIR, serverEntry()) : ''
+
+// dist/ is build output (gitignored); compile it on demand for a TS extension
+// if a fresh checkout hasn't run cate-extensions/build.sh yet.
 function ensureBuilt(): void {
-  if (existsSync(SERVER_JS)) return
+  if (!HAS_EXT || existsSync(SERVER_JS)) return
+  if (!existsSync(path.join(EXT_DIR, 'package.json'))) {
+    throw new Error(`missing server entry ${SERVER_JS} (run cate-extensions/build.sh)`)
+  }
   const repoBin = path.resolve(__dirname, '../../../node_modules/.bin')
   const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   const res = spawnSync(npmCmd, ['run', 'build'], {
@@ -117,7 +135,7 @@ function wsEcho(port: number, message: string): Promise<string> {
     })
     let handshakeDone = false
     const buf: Buffer[] = []
-    socket.on('data', (chunk) => {
+    socket.on('data', (chunk: Buffer) => {
       if (!handshakeDone) {
         const text = chunk.toString('utf8')
         if (!text.includes('101')) { reject(new Error('no 101 upgrade: ' + text.split('\r\n')[0])); socket.destroy(); return }
@@ -151,10 +169,6 @@ function wsEcho(port: number, message: string): Promise<string> {
     setTimeout(() => { clearInterval(timer); reject(new Error('ws echo timed out')) }, 2000)
   })
 }
-
-// cate-extensions is its own repo, present here only as a local checkout (it's
-// gitignored, never committed). Skip when that checkout is absent.
-const HAS_EXT = existsSync(EXT_DIR)
 
 describe.skipIf(!HAS_EXT)('Kitchen Sink extension server (spawned)', () => {
   let child: ChildProcess
