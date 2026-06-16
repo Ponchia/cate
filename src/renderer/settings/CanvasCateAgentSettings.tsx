@@ -54,7 +54,7 @@ function CateAgentEnablement() {
       )}
       <SettingRow
         label="Enable Cate Agent"
-        description="Summon the companion that watches the workspace and runs approved tasks."
+        description="Summon the Cate Agent to watch the workspace and run approved tasks."
       >
         <GatedToggle
           checked={cateAgent.enabled}
