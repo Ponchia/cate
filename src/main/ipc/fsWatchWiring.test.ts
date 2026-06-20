@@ -1,3 +1,4 @@
+import path from 'path'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 // The shared watch pool (runtime/capabilities/fileWatcher.ts) owns the OS
@@ -57,7 +58,9 @@ registerHandlers()
 const watchStart = mockState.handlers.get(FS_WATCH_START)!
 const watchStop = mockState.handlers.get(FS_WATCH_STOP)!
 const fakeEvent = { sender: {} } as unknown
-const root = '/repo'
+// Resolve so the path matches what validatePathStrict produces on every OS
+// (a bare '/repo' becomes a drive-prefixed 'D:\repo' on Windows).
+const root = path.resolve('/repo')
 
 describe('filesystem watch wiring', () => {
   beforeEach(async () => {
@@ -91,8 +94,9 @@ describe('filesystem watch wiring', () => {
     expect(mockState.captured).toHaveLength(1)
     expect(mockState.captured[0].prefix).toBe(root)
 
-    mockState.captured[0].onChange('/repo/a.ts', 'create')
-    expect(listener).toHaveBeenCalledWith('/repo/a.ts', 'create')
+    const file = path.join(root, 'a.ts')
+    mockState.captured[0].onChange(file, 'create')
+    expect(listener).toHaveBeenCalledWith(file, 'create')
 
     unsub()
     expect(mockState.captured[0].unsub).toHaveBeenCalledTimes(1)
