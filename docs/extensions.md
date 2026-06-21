@@ -38,7 +38,7 @@ Cate only standardizes how it serves/launches an extension and a small reverse A
 
 Applies only to **server-backed** extensions. Frontend-only panels are plain webviews with no process, so none of the spawn/grace/crash/reaping rules apply.
 
-- **Launch** — lazy spawn on the **first** panel open for an extension in a workspace; every later panel of that extension reuses the running server. Cate injects env: `PORT` (free port), `CATE_API`, `CATE_TOKEN`, `WORKSPACE_ROOT`. Cate probes `readyPath` before loading the first webview; on timeout/exit it shows an error state with captured stderr and a Restart action.
+- **Launch** — lazy spawn on the **first** panel open for an extension in a workspace; every later panel of that extension reuses the running server. Cate injects env: `PORT` (free port), `HOST=127.0.0.1` (the server **must** bind this — see Security Hygiene), `CATE_API`, `CATE_TOKEN`, `WORKSPACE_ROOT`. Cate probes `readyPath` before loading the first webview; on timeout/exit it shows an error state with captured stderr and a Restart action.
 - **Multiplexing** — every panel webview connects to the one server identified by its `cate.panel.id`. The server must handle concurrent panels: keep panel sessions isolated, route per-panel state/events by id, and treat panel open/close as routine join/leave events (no server restart). Panel-scoped resources are cleaned up on leave.
 - **Remount survival** — panels remount when moved between dock zones or windows, and these unmounts must not drop server state. A server registry keyed by `(extensionId, workspace)` keeps the server alive as long as **any** panel is open; on remount the panel rejoins by id. When the **last** panel closes, start a ~30s grace timer; reopening within it rejoins the live server, expiry terminates it (SIGTERM, then SIGKILL). Webview lifecycle is decoupled from server lifecycle.
 - **Crash handling** — auto-restart with backoff up to 2 attempts per 60s, then stop and surface a manual Restart.
@@ -46,7 +46,7 @@ Applies only to **server-backed** extensions. Frontend-only panels are plain web
 
 ## Security Hygiene
 
-- Servers bind `127.0.0.1` only.
+- Servers bind `127.0.0.1` only. Cate injects `HOST=127.0.0.1` into the server's environment and the server is expected to bind that host; a server that ignores `HOST` and binds `0.0.0.0` would expose itself on the network, defeating the token gate. Honoring `HOST` (alongside `PORT`) is part of the server contract.
 - Per-server random port + shared token (`CATE_TOKEN`); the server requires the token on every panel connection so other local processes/tabs can't drive it. Panels authenticate with the token and identify themselves by `cate.panel.id`.
 - Tight CSP on the webview.
 
@@ -73,9 +73,21 @@ cate.canvas.listPanels() / onPanelsChange
 cate.canvas.movePanel(id, position)
 cate.canvas.drawRegion(rect, { label }) / connect(panelA, panelB)
 cate.canvas.viewport.get() / panTo(rect)
+cate.agent.run({ prompt }) => { text }         // run ONE background turn through the bundled pi agent
+cate.agent.cancel()                            // abort this extension's in-flight run
 ```
 
 `cateApi` scopes in the manifest declare which namespaces an extension uses.
+
+### Agent (`agent` scope)
+
+`cate.agent.run` lets an extension run a single agent turn through Cate's bundled pi agent, using the user's configured default model and credentials, and resolves with the final assistant text. The run is a real, visible Agent-panel-style session bound to the active window — the user can watch and interrupt it. Guardrails are deliberately minimal in v1:
+
+- A dedicated **`agent` scope** (default-deny, shown at install) — never folded into another namespace.
+- **First-use consent**: the first `cate.agent.run` per extension prompts the user; the grant lasts the app session.
+- **One run at a time per extension**: a concurrent `run` returns `{ error: 'agent-busy' }`. This is the whole anti-runaway-loop guard for v1; token/cost budgets and rate limits are intentionally deferred.
+
+`cate.agent.run` is long-lived (a turn takes minutes); it resolves on the agent's terminal `agent_end`, so callers must not impose a short timeout.
 
 ## Persistence
 

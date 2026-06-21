@@ -50,6 +50,36 @@ function entryFor(file: string, sha256?: string, id = 'cate.hello', version = '0
   }
 }
 
+/** Build a tarball whose payload also contains a malicious member (a symlink
+ *  escaping the dir, or a `..` traversal path). Returns the tarball path. */
+function buildMaliciousArtifact(kind: 'symlink' | 'traversal'): string {
+  const srcDir = path.join(tmp, `evil-src-${kind}`)
+  mkdirSync(srcDir, { recursive: true })
+  // A valid manifest so the only reason to reject is the malicious member.
+  writeFileSync(
+    path.join(srcDir, 'manifest.json'),
+    JSON.stringify({ id: 'cate.evil', name: 'Evil', version: '0.1.0', panels: [{ id: 'main', label: 'Evil' }], frontend: 'index.html' }),
+  )
+  writeFileSync(path.join(srcDir, 'index.html'), '<!doctype html>')
+  const file = path.join(tmp, `cate.evil-${kind}.tgz`)
+  if (kind === 'symlink') {
+    // A symlink that points outside the extraction dir (classic redirect).
+    execFileSync('ln', ['-s', '/etc/passwd', path.join(srcDir, 'pwned')])
+    execFileSync('tar', ['-czf', file, '-C', srcDir, '.'])
+  } else {
+    // A member whose name literally traverses out of the dir ("../escape"),
+    // injected via tar's name-rewrite. BSD tar (macOS) uses -s; GNU tar (Linux
+    // CI) uses --transform — try BSD first, fall back to GNU.
+    writeFileSync(path.join(srcDir, 'escape'), 'owned')
+    try {
+      execFileSync('tar', ['-czf', file, '-C', srcDir, '-s', '|^escape$|../escape|', 'escape', 'manifest.json', 'index.html'])
+    } catch {
+      execFileSync('tar', ['-czf', file, '-C', srcDir, '--transform', 's|^escape$|../escape|', 'escape', 'manifest.json', 'index.html'])
+    }
+  }
+  return file
+}
+
 describe('installFromCatalog', () => {
   it('downloads + extracts a local file:// artifact and writes the .ok marker', async () => {
     const { file } = buildArtifact()
@@ -83,6 +113,30 @@ describe('installFromCatalog', () => {
     await expect(installFromCatalog(entryFor(file, bad))).rejects.toThrow(/sha256 mismatch/)
     expect(isInstalled('cate.hello', '0.1.0')).toBe(false)
     expect(existsSync(installedDir('cate.hello', '0.1.0'))).toBe(false)
+  })
+
+  it('rejects a remote (https) artifact that is missing a sha256, without downloading', async () => {
+    // No network call should happen — the missing-sha256 guard fires first. If
+    // it didn't, fetch() to this host would throw a different error.
+    const entry: CatalogEntry = {
+      manifest: { id: 'cate.remote', name: 'Remote', version: '0.1.0', panels: [{ id: 'm', label: 'M' }] },
+      artifactUrl: 'https://example.invalid/cate.remote-0.1.0.tgz',
+    }
+    await expect(installFromCatalog(entry)).rejects.toThrow(/missing a required sha256/)
+    expect(isInstalled('cate.remote', '0.1.0')).toBe(false)
+  })
+
+  it('rejects a tarball containing a symlink member and installs nothing', async () => {
+    const file = buildMaliciousArtifact('symlink')
+    await expect(installFromCatalog(entryFor(file, undefined, 'cate.evil', '0.1.0'))).rejects.toThrow(/unsafe tar entry/)
+    expect(isInstalled('cate.evil', '0.1.0')).toBe(false)
+    expect(existsSync(installedDir('cate.evil', '0.1.0'))).toBe(false)
+  })
+
+  it('rejects a tarball with a path-traversal (../) member and installs nothing', async () => {
+    const file = buildMaliciousArtifact('traversal')
+    await expect(installFromCatalog(entryFor(file, undefined, 'cate.evil', '0.1.0'))).rejects.toThrow(/unsafe tar entry/)
+    expect(isInstalled('cate.evil', '0.1.0')).toBe(false)
   })
 
   it('resolves a relative artifactUrl against the app path', async () => {

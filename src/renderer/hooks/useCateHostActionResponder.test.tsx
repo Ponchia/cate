@@ -146,9 +146,21 @@ describe('useCateHostActionResponder', () => {
     expect(h.openFileAsPanel).toHaveBeenCalledWith(WS, `${ROOT}/package.json`, undefined, undefined)
   })
 
-  it('passes an already-absolute openFile path through unchanged', async () => {
+  it('rejects an absolute openFile path that escapes the workspace root', async () => {
     await fire('cate.editor.openFile', { path: '/etc/hosts' })
-    expect(h.openFileAsPanel).toHaveBeenCalledWith(WS, '/etc/hosts', undefined, ACTIVE_PLACEMENT)
+    expect(h.openFileAsPanel).not.toHaveBeenCalled()
+    expect(replies).toContainEqual({ requestId: 'req-cate.editor.openFile', ok: false, error: 'path outside workspace' })
+  })
+
+  it('rejects a relative openFile path that traverses out of the workspace root', async () => {
+    await fire('cate.editor.openFile', { path: '../../etc/passwd' })
+    expect(h.openFileAsPanel).not.toHaveBeenCalled()
+    expect(replies).toContainEqual({ requestId: 'req-cate.editor.openFile', ok: false, error: 'path outside workspace' })
+  })
+
+  it('allows an absolute openFile path that is inside the workspace root', async () => {
+    await fire('cate.editor.openFile', { path: `${ROOT}/src/app.ts` })
+    expect(h.openFileAsPanel).toHaveBeenCalledWith(WS, `${ROOT}/src/app.ts`, undefined, ACTIVE_PLACEMENT)
   })
 
   it('rejects openFile with no path', async () => {

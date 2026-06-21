@@ -6,5 +6,5 @@
     { "id": "main", "label": "Hello", "defaultSize": { "width": 480, "height": 360 } }
   ],
   "frontend": "index.html",
-  "cateApi": ["workspace.read", "editor.write", "storage", "ui"]
+  "cateApi": ["workspace.read", "editor.write", "storage", "ui", "theme"]
 }

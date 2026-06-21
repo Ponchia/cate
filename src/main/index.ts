@@ -19,10 +19,8 @@ import { registerAgentHandlers } from '../agent/main/ipcAgent'
 import { registerSkillHandlers } from '../skills/main/ipcSkills'
 import { registerAuthHandlers } from '../agent/main/ipcAuth'
 import { authManager } from '../agent/main/authManager'
-import { AgentManager } from '../agent/main/agentManager'
-
-// Shared singletons for pi agent + auth.
-const agentManager = new AgentManager(authManager)
+// Shared singletons for pi agent + auth (constructed at module load).
+import { agentManager } from '../agent/main/agentManager'
 import { registerWorkspaceHandlers } from './workspaceManager'
 import { addAllowedRoot } from './ipc/pathValidation'
 import { buildApplicationMenu, setNewMainWindowFn } from './menu'

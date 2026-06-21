@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
   Notification: Object.assign(vi.fn(), { isSupported: () => false }),
 }))
 vi.mock('./ExtensionManager', () => ({
-  extensionManager: { isKnown: () => true, isEnabled: () => true, getManifest: () => ({ id: 'cate.kitchensink', name: 'Kitchen Sink', panels: [] }) },
+  extensionManager: { isKnown: () => true, isEnabled: () => true, getManifest: () => ({ id: 'cate.kitchensink', name: 'Kitchen Sink', panels: [], cateApi: ['storage'] }) },
 }))
 vi.mock('./proxyServer', () => ({ getProxyUrlFor: vi.fn() }))
 vi.mock('./ExtensionServerManager', () => ({ extensionServerManager: {} }))

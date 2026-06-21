@@ -587,7 +587,11 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
     worktreeDim,
   })
 
-  if (!node) return null
+  // A node must carry geometry to render. Malformed nodes can survive session
+  // restore (e.g. a project opened from a worktree whose extension panel type no
+  // longer resolves), and reading `node.size`/`node.origin` below would throw and
+  // tear down the whole renderer. Skip them instead of crashing.
+  if (!node || !node.size || !node.origin) return null
 
   return (
     <>

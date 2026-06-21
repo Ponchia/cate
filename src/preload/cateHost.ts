@@ -64,6 +64,11 @@ const api: CateHost = {
       invoke('cate.ui.notify', { message, level }),
   },
 
+  agent: {
+    run: (prompt: string) => invoke('cate.agent.run', { prompt }) as Promise<{ text: string } | { error: string }>,
+    cancel: () => invoke('cate.agent.cancel'),
+  },
+
   storage: {
     get: (key: string) => invoke('cate.storage.get', { key }),
     set: (key: string, value: unknown) => invoke('cate.storage.set', { key, value }).then(() => undefined),

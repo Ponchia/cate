@@ -12,6 +12,7 @@ import Canvas from '../canvas/Canvas'
 import CanvasNode from '../canvas/CanvasNode'
 import CanvasToolbar from '../canvas/CanvasToolbar'
 import WelcomePage from '../ui/WelcomePage'
+import { NodeErrorBoundary } from '../ui/NodeErrorBoundary'
 import { EmptyCanvasOverlay } from './EmptyCanvasOverlay'
 import type { PanelType, Point, DockLayoutNode, PanelLocation, WindowDockState } from '../../shared/types'
 import { useAppStore, useSelectedWorkspace, registerCanvasOps, unregisterCanvasOps, type PanelPlacement } from '../stores/appStore'
@@ -191,13 +192,15 @@ const CanvasNodeWrapper = React.memo(({ nodeId, canvasPanelId, renderPanelConten
   const firstPanel = currentWorkspace?.panels[node.panelId]
 
   return (
-    <CanvasNode
-      nodeId={node.id}
-      isFocused={isFocused}
-      dockStoreApi={dockStoreApi}
-      renderPanel={renderPanel}
-      title={firstPanel?.title}
-    />
+    <NodeErrorBoundary nodeId={node.id}>
+      <CanvasNode
+        nodeId={node.id}
+        isFocused={isFocused}
+        dockStoreApi={dockStoreApi}
+        renderPanel={renderPanel}
+        title={firstPanel?.title}
+      />
+    </NodeErrorBoundary>
   )
 })
 

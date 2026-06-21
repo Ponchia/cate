@@ -10,9 +10,11 @@
 //   POST /api/echo           — HTTP round-trip
 //   GET  /ws                 — WebSocket upgrade + echo (raw RFC6455 frames)
 //   POST /api/cate-roundtrip — the server calls BACK into Cate over CATE_API
+//   POST /api/agent-run      — the server delegates a turn to cate.agent.run
 //
-// A tiny stand-in CATE_API server implements storage.set/get so the reverse
-// round-trip is asserted for real, including that the server forwards CATE_TOKEN.
+// A tiny stand-in CATE_API server implements storage.set/get/keys/delete,
+// ui.notify, version and agent.run so the reverse round-trip is asserted for
+// real, including that the server forwards CATE_TOKEN on every reverse call.
 // =============================================================================
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -176,11 +178,13 @@ describe.skipIf(!HAS_EXT)('Kitchen Sink extension server (spawned)', () => {
   let cateApi: http.Server
   let cateApiUrl: string
   const cateApiAuths: string[] = []
+  const cateApiMethods: string[] = []
   const cateApiStore = new Map<string, unknown>()
 
   beforeAll(async () => {
     ensureBuilt()
-    // Stand up a stand-in CATE_API endpoint backing storage.set/get.
+    // Stand up a stand-in CATE_API endpoint backing the full main-handled
+    // surface the server drives: storage.set/get/keys/delete, ui.notify, version.
     cateApi = http.createServer((req, res) => {
       const chunks: Buffer[] = []
       req.on('data', (c) => chunks.push(c))
@@ -189,11 +193,19 @@ describe.skipIf(!HAS_EXT)('Kitchen Sink extension server (spawned)', () => {
         if (req.headers['authorization'] !== `Bearer ${TOKEN}`) {
           res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'unauthorized' })); return
         }
-        let body: { method?: string; args?: { key?: string; value?: unknown } } = {}
+        let body: { method?: string; args?: { key?: string; value?: unknown; prompt?: string } } = {}
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* keep {} */ }
+        if (body.method) cateApiMethods.push(body.method)
         let result: unknown = { error: 'unsupported' }
         if (body.method === 'cate.storage.set') { cateApiStore.set(String(body.args?.key), body.args?.value); result = { ok: true } }
-        else if (body.method === 'cate.storage.get') { result = cateApiStore.get(String(body.args?.key)) }
+        else if (body.method === 'cate.storage.get') { result = cateApiStore.get(String(body.args?.key)) ?? null }
+        else if (body.method === 'cate.storage.keys') { result = [...cateApiStore.keys()] }
+        else if (body.method === 'cate.storage.delete') { cateApiStore.delete(String(body.args?.key)); result = { ok: true } }
+        else if (body.method === 'cate.ui.notify') { result = { ok: true } }
+        else if (body.method === 'cate.version') { result = 1 }
+        // Stand in for Cate's bundled agent: echo the prompt back as the run's
+        // final text, so the test can assert the server forwarded it verbatim.
+        else if (body.method === 'cate.agent.run') { result = { text: `agent ran: ${String(body.args?.prompt)}` } }
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ result }))
       })
     })
@@ -244,17 +256,64 @@ describe.skipIf(!HAS_EXT)('Kitchen Sink extension server (spawned)', () => {
     expect(echo).toBe('echo: ping-123')
   })
 
-  it('round-trips through CATE_API, forwarding CATE_TOKEN on the reverse call', async () => {
+  it('drives the full reverse surface through CATE_API, forwarding CATE_TOKEN', async () => {
+    cateApiMethods.length = 0
     const r = await httpRequest(port, { method: 'POST', path: '/api/cate-roundtrip', body: '' })
     expect(r.status).toBe(200)
-    const body = r.json as { ok: boolean; wrote: string; read: unknown }
+    const body = r.json as {
+      ok: boolean; wrote: string; read: unknown
+      keysIncluded: boolean; deleted: boolean; notified: boolean; version: unknown
+    }
+    // set -> get round-trip matched, keys saw the key, delete cleared it,
+    // notify acked, version reported.
     expect(body.ok).toBe(true)
     expect(body.read).toBe(body.wrote)
-    // The server set then got the same key through our stand-in CATE_API...
-    expect(cateApiStore.get('kitchensink:roundtrip')).toBe(body.wrote)
-    // ...authenticating every reverse call with the injected bearer token.
-    expect(cateApiAuths.length).toBeGreaterThanOrEqual(2)
+    expect(body.keysIncluded).toBe(true)
+    expect(body.deleted).toBe(true)
+    expect(body.notified).toBe(true)
+    expect(body.version).toBe(1)
+    // The server exercised the whole main-handled surface over the reverse call.
+    expect(cateApiMethods).toEqual(
+      expect.arrayContaining([
+        'cate.storage.set', 'cate.storage.get', 'cate.storage.keys',
+        'cate.storage.delete', 'cate.ui.notify', 'cate.version',
+      ]),
+    )
+    // The delete actually cleared the key from our stand-in store.
+    expect(cateApiStore.has('kitchensink:roundtrip')).toBe(false)
+    // Every reverse call authenticated with the injected bearer token.
+    expect(cateApiAuths.length).toBeGreaterThanOrEqual(6)
     expect(cateApiAuths.every((a) => a === `Bearer ${TOKEN}`)).toBe(true)
+  })
+
+  it('delegates a turn to the bundled agent via cate.agent.run, forwarding CATE_TOKEN', async () => {
+    cateApiMethods.length = 0
+    const r = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/agent-run',
+      body: JSON.stringify({ prompt: 'build the thing' }),
+    })
+    expect(r.status).toBe(200)
+    const body = r.json as { ok: boolean; text?: string; error?: string }
+    expect(body.ok).toBe(true)
+    // The server forwarded our prompt verbatim and surfaced the agent's text.
+    expect(body.text).toBe('agent ran: build the thing')
+    expect(cateApiMethods).toContain('cate.agent.run')
+    // The reverse call carried the injected bearer like every other.
+    expect(cateApiAuths.every((a) => a === `Bearer ${TOKEN}`)).toBe(true)
+  })
+
+  it('rejects an empty agent prompt before calling Cate', async () => {
+    cateApiMethods.length = 0
+    const r = await httpRequest(port, {
+      method: 'POST',
+      path: '/api/agent-run',
+      body: JSON.stringify({ prompt: '   ' }),
+    })
+    expect(r.status).toBe(400)
+    expect((r.json as { ok: boolean }).ok).toBe(false)
+    // No reverse call was made for an empty prompt.
+    expect(cateApiMethods).not.toContain('cate.agent.run')
   })
 
   it('404s an unknown authenticated route', async () => {

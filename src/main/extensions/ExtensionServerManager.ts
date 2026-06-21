@@ -186,7 +186,8 @@ export class ExtensionServerManager {
   /** Drop every panel whose owner WebContents has gone away (window closed). */
   disposeForWebContents(wcId: number): void {
     for (const session of this.sessions.values()) {
-      for (const [panelId, sender] of session.owners) {
+      // Snapshot owners before iterating — leavePanel() deletes from the same map.
+      for (const [panelId, sender] of [...session.owners]) {
         if (sender.id === wcId) {
           this.leavePanel(session.extensionId, session.workspaceId, panelId)
         }
@@ -346,6 +347,11 @@ export class ExtensionServerManager {
       env: {
         CATE_TOKEN: session.token,
         WORKSPACE_ROOT: session.cwd,
+        // Force the server to bind loopback only (security hygiene: extension
+        // servers must never be reachable from the network — the proxy reaches
+        // them over a tunnel, not a public socket). HOST is the conventional bind
+        // var; servers honoring it stay on 127.0.0.1. See docs/extensions.md.
+        HOST: '127.0.0.1',
         // Phase 3C: the loopback URL (on the daemon host) the server uses to call
         // back into Cate's reverse API; the listener tunnels it back to main.
         CATE_API: `http://127.0.0.1:${cateApiPort}`,

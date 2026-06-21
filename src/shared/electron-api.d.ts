@@ -1016,6 +1016,15 @@ export interface ElectronAPI {
   /** Download + extract a catalog extension by id (without enabling it). */
   extensionInstall(id: string): Promise<{ ok: boolean; error?: string }>
 
+  /** Disable + remove an installed catalog extension's assets from disk. */
+  extensionUninstall(id: string): Promise<{ ok: boolean; error?: string }>
+
+  /** Re-download the installed version over itself (repair a broken install). */
+  extensionReinstall(id: string): Promise<{ ok: boolean; error?: string }>
+
+  /** Install the catalog's newer version and drop the older installed one. */
+  extensionUpdate(id: string): Promise<{ ok: boolean; error?: string }>
+
   /** Add a catalog source URL (http(s) or local path/file://), then refresh. */
   extensionAddCatalogSource(url: string): Promise<{ ok: boolean; error?: string }>
 

@@ -39,7 +39,8 @@ import { installPlanModeExtension } from './installPlanMode'
 import { installAskUserExtension } from './installAskUser'
 import { hostAgentDir, prepareAgentDir, watchWorkspaceAuth, pushSharedToWorkspace } from './agentDir'
 import { mirrorModelsToWorkspace } from './customModels'
-import type { AuthManager } from './authManager'
+import { authManager, type AuthManager } from './authManager'
+import { getSetting } from '../../main/settingsFile'
 
 interface AgentSession {
   panelId: string
@@ -64,11 +65,13 @@ function toImageContent(images?: AgentImageAttachment[]): PiImageContent[] | und
 export class AgentManager {
   private sessions = new Map<string, AgentSession>()
   private locks = new Map<string, Promise<unknown>>()
-  // `authManager` isn't read here anymore — pi reads credentials directly from
-  // ~/.pi/agent/auth.json. We keep the reference around for symmetry with the
-  // construction site and in case future hooks need it.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // Used to resolve the default model for extension-initiated background runs
+  // (see runForExtension) and for the auth-change mirror hook below.
   private authManager: AuthManager
+  // Extensions with an in-flight background run — one run per extension at a
+  // time, the simple cap against runaway loops (see runForExtension).
+  private readonly extRuns = new Set<string>()
+  private extRunSeq = 0
 
   constructor(authManager: AuthManager) {
     this.authManager = authManager
@@ -268,6 +271,94 @@ export class AgentManager {
     return this.withLock(panelId, () => this.disposeInternal(panelId))
   }
 
+  // ---------------------------------------------------------------------------
+  // Extension-initiated background runs (cate.agent.run)
+  //
+  // An enabled extension can run ONE agent turn at a time. The run is a real
+  // session owned by the active window's WebContents — so its events flow to
+  // the renderer and its lifetime is tied to that window like any panel session
+  // — but it is driven from main: send the prompt, wait for pi's terminal
+  // `agent_end`, return the last assistant text, then dispose. One run per
+  // extension at a time is the whole anti-runaway-loop guard for v1.
+  // ---------------------------------------------------------------------------
+
+  async runForExtension(
+    text: string,
+    opts: { workspaceId: string; locator: string; extensionId: string; sender: WebContents },
+  ): Promise<{ text: string }> {
+    if (this.extRuns.has(opts.extensionId)) throw new Error('agent-busy')
+    this.extRuns.add(opts.extensionId)
+    const panelId = `ext-${opts.extensionId}-${++this.extRunSeq}`
+    try {
+      const model = await this.resolveDefaultModel()
+      await this.create(
+        { panelId, workspaceId: opts.workspaceId, cwd: opts.locator, model: model ?? undefined },
+        opts.sender,
+      )
+      const session = this.sessions.get(panelId)
+      if (!session) throw new Error('agent-failed')
+      const result = await this.awaitRun(session, text)
+      return { text: result ?? '' }
+    } finally {
+      this.extRuns.delete(opts.extensionId)
+      await this.dispose(panelId)
+    }
+  }
+
+  /** Abort any in-flight extension run for this extension (best effort). */
+  async cancelForExtension(extensionId: string): Promise<void> {
+    const prefix = `ext-${extensionId}-`
+    for (const panelId of this.sessions.keys()) {
+      if (panelId.startsWith(prefix)) await this.interrupt(panelId)
+    }
+  }
+
+  /** Send the prompt and resolve with the final assistant text once pi emits
+   *  its terminal `agent_end` (the last event of a run). Rejects on an agent
+   *  error event or an unexpected pi exit. */
+  private awaitRun(session: AgentSession, text: string): Promise<string | null> {
+    return new Promise<string | null>((resolve, reject) => {
+      let settled = false
+      let offEvent = () => {}
+      let offExit = () => {}
+      const settle = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        try { offEvent() } catch { /* noop */ }
+        try { offExit() } catch { /* noop */ }
+        fn()
+      }
+      offEvent = session.client.onEvent((ev) => {
+        const type = (ev as { type?: string } | null)?.type
+        if (type === 'agent_end') {
+          session.client.getLastAssistantText().then(
+            (txt) => settle(() => resolve(txt)),
+            () => settle(() => resolve(null)),
+          )
+        } else if (type === 'error') {
+          const message = (ev as { message?: string }).message || 'agent error'
+          settle(() => reject(new Error(message)))
+        }
+      })
+      offExit = session.client.onExit((code) => settle(() => reject(new Error(`agent exited (code ${code})`))))
+      session.client.prompt(text).catch((err) =>
+        settle(() => reject(err instanceof Error ? err : new Error(String(err)))),
+      )
+    })
+  }
+
+  /** The user's configured default agent model, or the first available one;
+   *  null when no provider is connected (pi then falls back to its own default). */
+  private async resolveDefaultModel(): Promise<AgentModelRef | null> {
+    const pref = getSetting('agentDefaultModel')
+    if (pref && pref.provider && pref.model) return pref
+    try {
+      const models = await this.authManager.listAvailableModels()
+      if (models.length > 0) return { provider: models[0].provider, model: models[0].id }
+    } catch { /* fall through to null */ }
+    return null
+  }
+
   private async disposeInternal(panelId: string): Promise<void> {
     const session = this.sessions.get(panelId)
     if (!session) return
@@ -440,3 +531,6 @@ export class AgentManager {
     } catch { /* noop */ }
   }
 }
+
+// Single shared instance — one pi agent manager per app (main process).
+export const agentManager = new AgentManager(authManager)

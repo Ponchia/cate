@@ -16,7 +16,7 @@
 // Every invoke validates the extension is enabled before serving.
 // =============================================================================
 
-import { ipcMain, app, type WebContents } from 'electron'
+import { ipcMain, app, dialog, type WebContents } from 'electron'
 import { randomUUID } from 'crypto'
 import log from '../logger'
 import {
@@ -27,6 +27,9 @@ import {
   EXTENSION_REMOVE_SIDELOAD,
   EXTENSION_CATALOG_REFRESH,
   EXTENSION_INSTALL,
+  EXTENSION_UNINSTALL,
+  EXTENSION_REINSTALL,
+  EXTENSION_UPDATE,
   EXTENSION_ADD_CATALOG_SOURCE,
   EXTENSION_REMOVE_CATALOG_SOURCE,
   EXTENSION_CATALOG_SOURCES,
@@ -41,8 +44,9 @@ import {
   CATE_HOST_FORWARD_REPLY,
 } from '../../shared/ipc-channels'
 import { extensionManager } from './ExtensionManager'
-import { getProxyUrlFor } from './proxyServer'
+import { getProxyUrlFor, identityForGuestUrl } from './proxyServer'
 import { extensionServerManager } from './ExtensionServerManager'
+import { agentManager } from '../../agent/main/agentManager'
 import { getExtensionStorage } from './storage'
 import { getWorkspaceInfo } from '../workspaceManager'
 import { getActiveMainWindow } from '../windowRegistry'
@@ -154,6 +158,78 @@ function unsupported(method: string): InvokeResult {
   return { error: 'unsupported', method }
 }
 
+// ---------------------------------------------------------------------------
+// Manifest scope enforcement — every cate.* method (except always-allowed
+// feature-detection / panel-identity ones) requires a declared `cateApi` scope.
+// Scopes are namespaced (e.g. `editor.write`); declaring the bare namespace
+// (`editor`) satisfies any method under it. See docs/extensions.md.
+// ---------------------------------------------------------------------------
+
+/** Maps a cate.* method to the scope it requires, or null when always allowed
+ *  (version / panel identity). Returns undefined for unknown methods. */
+function requiredScopeFor(method: string): string | null | undefined {
+  switch (method) {
+    case 'cate.version':
+      return null
+    case 'cate.workspace.get':
+      return 'workspace.read'
+    case 'cate.theme.get':
+      return 'theme'
+    case 'cate.ui.notify':
+      return 'ui'
+    case 'cate.editor.openFile':
+      return 'editor.write'
+    default:
+      // A panel controlling its own identity (id / title / badge) needs no scope.
+      if (method.startsWith('cate.panel.')) return null
+      if (method.startsWith('cate.storage.')) return 'storage'
+      if (method.startsWith('cate.canvas.')) return 'canvas'
+      if (method.startsWith('cate.agent.')) return 'agent'
+      if (method.startsWith('cate.editor.')) return 'editor.read'
+      return undefined
+  }
+}
+
+/** True when the manifest's declared scopes grant `required`. A declared scope
+ *  matches the required one exactly OR is its bare namespace prefix (e.g. the
+ *  scope `editor` grants `editor.write`). */
+function scopeGranted(declared: string[] | undefined, required: string): boolean {
+  if (!declared || declared.length === 0) return false
+  const namespace = required.includes('.') ? required.slice(0, required.indexOf('.')) : required
+  return declared.some((s) => s === required || s === namespace)
+}
+
+// Extensions granted agent access this app session. In-memory + host-owned so
+// an extension can't grant itself; re-asked on next launch (a deliberate
+// re-confirm of a powerful capability rather than a persisted grant).
+const agentConsent = new Set<string>()
+
+/** Ask the user (once per app session) whether `extensionId` may run the agent.
+ *  Returns true if already granted or the user allows. */
+async function ensureAgentConsent(extensionId: string): Promise<boolean> {
+  if (agentConsent.has(extensionId)) return true
+  const name = extensionManager.getManifest(extensionId)?.name ?? extensionId
+  const win = getActiveMainWindow()
+  const opts = {
+    type: 'question' as const,
+    buttons: ['Allow', 'Deny'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Run agent?',
+    message: `Allow “${name}” to run the agent?`,
+    detail:
+      'This extension wants to run agent tasks on your behalf using your configured model and credentials. ' +
+      'The agent can read and modify files in this workspace. You can watch and stop a run in the Agent panel.',
+  }
+  const { response } =
+    win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+  if (response === 0) {
+    agentConsent.add(extensionId)
+    return true
+  }
+  return false
+}
+
 /**
  * Scope-based cate.* dispatch core, shared by the IPC handler (guest webview)
  * and the CATE_API reverse endpoint (extension server). The scope carries the
@@ -170,6 +246,15 @@ export async function dispatchCateInvoke(
   // Security: only enabled, known extensions may call the host.
   if (!extensionManager.isKnown(extensionId) || !extensionManager.isEnabled(extensionId)) {
     return { error: 'not-enabled', method }
+  }
+
+  // Security: enforce the manifest's declared `cateApi` scopes. version + the
+  // panel.* self-control methods are always allowed; an unknown method is
+  // rejected as unsupported before any scope check so callers get the clearer error.
+  const required = requiredScopeFor(method)
+  if (required === undefined) return unsupported(method)
+  if (required !== null && !scopeGranted(extensionManager.getManifest(extensionId)?.cateApi, required)) {
+    return { error: 'scope-denied', method }
   }
 
   switch (method) {
@@ -212,6 +297,36 @@ export async function dispatchCateInvoke(
     case 'cate.storage.panel.get':
     case 'cate.storage.panel.set':
       return dispatchStorage(method, panelId ?? '', args, extensionId, workspaceId)
+
+    // --- Agent: run one background turn through the bundled pi ---------------
+    case 'cate.agent.run': {
+      const a = (args ?? {}) as { prompt?: string }
+      const promptText = typeof a.prompt === 'string' ? a.prompt.trim() : ''
+      if (!promptText) return { error: 'bad-args', method }
+      const win = getActiveMainWindow()
+      if (!win || win.isDestroyed()) return { error: 'no-host-window', method }
+      const info = getWorkspaceInfo(workspaceId)
+      if (!info) return { error: 'no-workspace', method }
+      if (!(await ensureAgentConsent(extensionId))) return { error: 'consent-denied', method }
+      try {
+        // Resolves with the final assistant text when pi emits `agent_end` — a
+        // long-lived call (a turn takes minutes); no short timeout applies here.
+        return await agentManager.runForExtension(promptText, {
+          workspaceId,
+          locator: info.rootPath,
+          extensionId,
+          sender: win.webContents,
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return { error: message === 'agent-busy' ? 'agent-busy' : 'agent-failed', method }
+      }
+    }
+
+    case 'cate.agent.cancel': {
+      await agentManager.cancelForExtension(extensionId)
+      return { ok: true }
+    }
 
     default:
       // Forward state-mutating methods (strip the leading `cate.`) to the owner.
@@ -328,6 +443,27 @@ export function registerExtensionHandlers(): void {
     }
   })
 
+  // Disable + remove an installed catalog extension from disk.
+  ipcMain.handle(EXTENSION_UNINSTALL, async (_e, id: string) => {
+    try {
+      await extensionManager.uninstall(id)
+      return { ok: true }
+    } catch (err) {
+      log.warn('[extensions] uninstall %s failed: %O', id, err)
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Re-download the installed version (repair a corrupt install).
+  ipcMain.handle(EXTENSION_REINSTALL, async (_e, id: string) => {
+    return extensionManager.reinstall(id)
+  })
+
+  // Install the catalog's newer version and drop the old one.
+  ipcMain.handle(EXTENSION_UPDATE, async (_e, id: string) => {
+    return extensionManager.update(id)
+  })
+
   ipcMain.handle(EXTENSION_ADD_CATALOG_SOURCE, async (_e, url: string) => {
     return extensionManager.addCatalogSource(url)
   })
@@ -387,10 +523,20 @@ export function registerExtensionHandlers(): void {
   )
 
   // --- cateHost reverse API (guest -> main) --------------------------------
-  ipcMain.handle(CATE_HOST_INVOKE, async (_event, payload: InvokePayload) => {
+  ipcMain.handle(CATE_HOST_INVOKE, async (event, payload: InvokePayload) => {
     if (!payload || typeof payload !== 'object') return { error: 'bad-payload' }
+    // Security: derive the AUTHORITATIVE (extensionId, workspaceId) from the
+    // calling guest's URL (the opaque proxy routeToken), NOT the self-asserted
+    // payload — a malicious guest can spoof another extension's id in the query
+    // string the preload reads. Reject if the guest isn't a known proxy route or
+    // the payload disagrees with its true identity.
+    const identity = identityForGuestUrl(event.sender.getURL())
+    if (!identity) return { error: 'unknown-guest', method: payload.method }
+    if (payload.extensionId !== identity.extensionId || payload.workspaceId !== identity.workspaceId) {
+      return { error: 'identity-mismatch', method: payload.method }
+    }
     try {
-      return await dispatchInvoke(payload)
+      return await dispatchInvoke({ ...payload, ...identity })
     } catch (err) {
       log.warn('[extensions] invoke %s failed: %O', payload.method, err)
       return { error: 'internal', method: payload.method }
@@ -400,8 +546,19 @@ export function registerExtensionHandlers(): void {
   ipcMain.handle(
     CATE_HOST_SUBSCRIBE,
     async (event, payload: { extensionId: string; workspaceId: string; panelId: string; topic: string }) => {
-      const { extensionId, workspaceId, panelId, topic } = payload ?? ({} as typeof payload)
-      if (!extensionManager.isEnabled(extensionId)) return { error: 'not-enabled' }
+      const { panelId, topic } = payload ?? ({} as typeof payload)
+      // Security: like CATE_HOST_INVOKE, take the authoritative identity from the
+      // guest's URL (not the self-asserted payload) so a guest can't subscribe to
+      // another extension's change stream.
+      const identity = identityForGuestUrl(event.sender.getURL())
+      if (!identity) return { error: 'unknown-guest' }
+      if (payload?.extensionId !== identity.extensionId || payload?.workspaceId !== identity.workspaceId) {
+        return { error: 'identity-mismatch' }
+      }
+      const { extensionId, workspaceId } = identity
+      if (!extensionManager.isKnown(extensionId) || !extensionManager.isEnabled(extensionId)) {
+        return { error: 'not-enabled' }
+      }
       // Phase 1 supports the storage.change topic, fed by the storage watcher.
       if (topic !== 'storage.change') return { error: 'unsupported', topic }
       const storage = getExtensionStorage(extensionId, workspaceId)

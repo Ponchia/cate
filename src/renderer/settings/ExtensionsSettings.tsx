@@ -3,9 +3,9 @@
 // sideloaded folders.
 //
 // Three subsections:
-//   1. Catalog — browse catalog entries; install (download), enable, or (once
-//      enabled) open per-panel. Shares the enabled-extension row rendering with
-//      the sideload subsection so installed catalog extensions look identical.
+//   1. Catalog — browse catalog entries; install (download), enable/disable, and
+//      manage installed ones (update / reinstall / remove). Opening an
+//      extension's panels happens from the canvas toolbar, not here.
 //   2. Sideloaded — local dev folders added via "Add local folder…", removable.
 //   3. Catalog sources — view/add/remove catalog source URLs and refresh.
 //
@@ -14,28 +14,14 @@
 // Styling mirrors SkillsSettings.
 // =============================================================================
 
-import { useCallback, useEffect, useState } from 'react'
-import { Plus, Trash, PuzzlePiece, CircleNotch, ArrowsClockwise } from '@phosphor-icons/react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Plus, Trash, PuzzlePiece, CircleNotch, ArrowsClockwise, ArrowCircleUp } from '@phosphor-icons/react'
 import { SettingRow, SearchableBlock, SecondaryButton, Toggle, TextInput } from './SettingsComponents'
 import { Tooltip } from '../ui/Tooltip'
 import { errorMessage } from '../lib/errorMessage'
-import { useAppStore } from '../stores/appStore'
-import { resolveExtensionPanelMeta, type ExtensionManifest, type ExtensionPanelDef } from '../../shared/extensions'
 import type { ExtensionListEntry } from '../../shared/extensions'
 
 const api = () => window.electronAPI
-
-/** Display metadata for one extension panel — label/icon resolved from the
- *  manifest, with a sensible fallback to the raw panel id. Colocated so callers
- *  that need a panel title (e.g. the open button / reverse-API titling) share
- *  one resolver. */
-export function extensionPanelDisplay(
-  manifest: ExtensionManifest | undefined,
-  extensionPanelId: string,
-): { label: string; icon?: string } {
-  const meta: ExtensionPanelDef | null = resolveExtensionPanelMeta(manifest, extensionPanelId)
-  return { label: meta?.label ?? extensionPanelId, icon: meta?.icon }
-}
 
 export function ExtensionsSettings() {
   const [entries, setEntries] = useState<ExtensionListEntry[]>([])
@@ -127,29 +113,34 @@ export function ExtensionsSettings() {
     }
   }
 
-  const enable = async (entry: ExtensionListEntry) => {
-    const id = entry.manifest.id
+  // Run a manage action (uninstall / reinstall / update) that returns an
+  // {ok,error} result, surfacing failures inline on the row.
+  const runManage = async (
+    id: string,
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    fallbackMsg: string,
+  ) => {
+    setRowErr((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
     setPendingFor(id, true)
     try {
-      await api().extensionEnable(id)
+      const res = await fn()
+      if (!res.ok) setRowErr((prev) => ({ ...prev, [id]: errorMessage(res.error, fallbackMsg) }))
       await refresh()
     } finally {
       setPendingFor(id, false)
     }
   }
 
-  const openPanel = (entry: ExtensionListEntry, panel: ExtensionPanelDef) => {
-    const wsId = useAppStore.getState().selectedWorkspaceId
-    if (!wsId) return
-    useAppStore.getState().createExtensionPanel(
-      wsId,
-      entry.manifest.id,
-      panel.id,
-      undefined,
-      undefined,
-      panel.label,
-    )
-  }
+  const uninstall = (id: string) =>
+    runManage(id, () => api().extensionUninstall(id), 'Could not remove this extension.')
+  const reinstall = (id: string) =>
+    runManage(id, () => api().extensionReinstall(id), 'Could not reinstall this extension.')
+  const update = (id: string) =>
+    runManage(id, () => api().extensionUpdate(id), 'Could not update this extension.')
 
   const refreshCatalog = async () => {
     setSourceErr(null)
@@ -195,25 +186,33 @@ export function ExtensionsSettings() {
   // Shared rows
   // ---------------------------------------------------------------------------
 
-  /** The per-panel "open" buttons shown for an enabled extension. Shared so a
-   *  catalog and a sideloaded enabled extension render identically. */
-  const renderOpenButtons = (entry: ExtensionListEntry) => {
-    const m = entry.manifest
-    if (!entry.enabled || m.panels.length === 0) return null
-    return (
-      <div className="flex flex-wrap gap-1.5 pl-6">
-        {m.panels.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => openPanel(entry, p)}
-            className="px-2 py-1 text-[11px] rounded border border-subtle text-secondary hover:bg-surface-3 hover:text-primary transition-colors"
-          >
-            {extensionPanelDisplay(m, p.id).label}
-          </button>
-        ))}
-      </div>
-    )
-  }
+  /** A small hover-revealed icon button (matches the sideload Remove affordance). */
+  const IconAction = ({
+    label,
+    onClick,
+    disabled,
+    danger,
+    children,
+  }: {
+    label: string
+    onClick: () => void
+    disabled?: boolean
+    danger?: boolean
+    children: ReactNode
+  }) => (
+    <Tooltip label={label}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        className={`shrink-0 p-0.5 rounded text-muted opacity-0 group-hover:opacity-100 disabled:opacity-30 transition-opacity ${
+          danger ? 'hover:text-red-400' : 'hover:text-primary'
+        }`}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  )
 
   /** A sideloaded extension row — always installed, removable, enable/disable. */
   const renderSideloadRow = (entry: ExtensionListEntry) => {
@@ -234,23 +233,17 @@ export function ExtensionsSettings() {
             <div className="text-[11px] text-muted font-mono truncate">{m.id}</div>
           </div>
           <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
-          <Tooltip label="Remove">
-            <button
-              onClick={() => void removeSideload(entry.rootDir)}
-              className="shrink-0 p-0.5 rounded text-muted opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity"
-              aria-label="Remove"
-            >
-              <Trash size={12} />
-            </button>
-          </Tooltip>
+          <IconAction label="Remove" danger onClick={() => void removeSideload(entry.rootDir)}>
+            <Trash size={12} />
+          </IconAction>
         </div>
-        {renderOpenButtons(entry)}
       </div>
     )
   }
 
-  /** A catalog extension row — Install (if not installed), Enable (installed but
-   *  off), or the enable/disable toggle + open buttons (enabled). */
+  /** A catalog extension row — Install (if not installed), or the enable/disable
+   *  toggle plus manage actions (update / reinstall / remove) when installed.
+   *  Panels are opened from the canvas toolbar, not here. */
   const renderCatalogRow = (entry: ExtensionListEntry) => {
     const m = entry.manifest
     const id = m.id
@@ -268,33 +261,42 @@ export function ExtensionsSettings() {
             <div className="flex items-center gap-2">
               <span className="text-[12px] text-primary truncate">{m.name}</span>
               {version && <span className="text-[10px] text-muted font-mono">v{version}</span>}
+              {entry.updateAvailable && (
+                <span className="text-[10px] text-blue-400 px-1.5 py-0.5 rounded bg-blue-500/[0.12]">
+                  update available
+                </span>
+              )}
             </div>
             <div className="text-[11px] text-muted font-mono truncate">{id}</div>
             {description && <div className="text-[11px] text-muted truncate">{description}</div>}
           </div>
 
-          {!entry.installed && (
+          {!entry.installed ? (
             <SecondaryButton onClick={() => void install(entry)} disabled={inFlight}>
               {inFlight ? <CircleNotch size={11} className="animate-spin" /> : <Plus size={11} />}
               {inFlight ? 'Installing…' : 'Install'}
             </SecondaryButton>
-          )}
-
-          {entry.installed && !entry.enabled && (
-            <SecondaryButton onClick={() => void enable(entry)} disabled={inFlight}>
-              {inFlight ? <CircleNotch size={11} className="animate-spin" /> : null}
-              Enable
-            </SecondaryButton>
-          )}
-
-          {entry.installed && entry.enabled && (
-            <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
+          ) : (
+            <>
+              {inFlight && <CircleNotch size={12} className="animate-spin text-muted shrink-0" />}
+              {entry.updateAvailable && (
+                <SecondaryButton onClick={() => void update(id)} disabled={inFlight}>
+                  <ArrowCircleUp size={11} />
+                  Update
+                </SecondaryButton>
+              )}
+              <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
+              <IconAction label="Reinstall" disabled={inFlight} onClick={() => void reinstall(id)}>
+                <ArrowsClockwise size={12} />
+              </IconAction>
+              <IconAction label="Remove" danger disabled={inFlight} onClick={() => void uninstall(id)}>
+                <Trash size={12} />
+              </IconAction>
+            </>
           )}
         </div>
 
         {rowErr[id] && <div className="text-[11px] text-red-400 pl-6">{rowErr[id]}</div>}
-
-        {renderOpenButtons(entry)}
       </div>
     )
   }

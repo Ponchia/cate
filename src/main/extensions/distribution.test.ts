@@ -62,7 +62,7 @@ describe.skipIf(!HAS_CATALOG)('cate-extensions catalog distribution (kitchensink
     expect(ks!.manifest.version).toBe('1.0.0')
     expect(ks!.manifest.server?.readyPath).toBe('/health')
     expect(serverEntry(ks!.manifest.server?.command ?? '')).toMatch(/server\.js$/)
-    expect(ks!.manifest.cateApi).toEqual(['storage', 'editor', 'canvas', 'theme'])
+    expect(ks!.manifest.cateApi).toEqual(['storage', 'editor', 'canvas', 'theme', 'ui', 'workspace.read', 'agent'])
     expect(ks!.artifactUrl).toContain('cate.kitchensink-1.0.0.tgz')
     expect(ks!.description).toMatch(/Kitchen Sink/i)
   })
@@ -77,5 +77,34 @@ describe.skipIf(!HAS_CATALOG)('cate-extensions catalog distribution (kitchensink
     expect(existsSync(path.join(root, 'manifest.json'))).toBe(true)
     expect(existsSync(path.join(root, serverEntry(ks.manifest.server!.command)))).toBe(true)
     expect(isInstalled('cate.kitchensink', '1.0.0')).toBe(true)
+  })
+
+  it('fetchCatalog parses the frontend-only (asset) entry from the built index', async () => {
+    const entries = await fetchCatalog([CATALOG_INDEX])
+    const fk = entries.find((e) => e.manifest.id === 'cate.frontendkit')
+    expect(fk).toBeDefined()
+    expect(fk!.manifest.name).toBe('Frontend Kit (Frontend-only API Demo)')
+    // Frontend-only: no server spec, a frontend entry, and multiple panels with
+    // manifest-variety fields (icon + defaultSize).
+    expect(fk!.manifest.server).toBeUndefined()
+    expect(fk!.manifest.frontend).toBe('index.html')
+    expect(fk!.manifest.panels.map((p) => p.id)).toEqual(['main', 'about'])
+    expect(fk!.manifest.panels[0].icon).toMatch(/^<svg/)
+    expect(fk!.manifest.panels[0].defaultSize).toEqual({ width: 480, height: 680 })
+    expect(fk!.manifest.cateApi).toEqual(['storage', 'editor', 'canvas', 'theme', 'ui', 'workspace.read'])
+  })
+
+  it('installFromCatalog extracts the frontend-only extension assets at the root', async () => {
+    const entries = await fetchCatalog([CATALOG_INDEX])
+    const fk = entries.find((e) => e.manifest.id === 'cate.frontendkit')!
+    const root = await installFromCatalog(fk)
+
+    // Asset-only artifact: manifest + the static files ship at the tar root
+    // (no dist/, no server entry).
+    expect(existsSync(path.join(root, 'manifest.json'))).toBe(true)
+    expect(existsSync(path.join(root, 'index.html'))).toBe(true)
+    expect(existsSync(path.join(root, 'app.js'))).toBe(true)
+    expect(existsSync(path.join(root, 'style.css'))).toBe(true)
+    expect(isInstalled('cate.frontendkit', '1.0.0')).toBe(true)
   })
 })

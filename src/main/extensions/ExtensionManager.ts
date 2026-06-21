@@ -29,7 +29,13 @@ import {
   writeCatalogCache,
   type CatalogEntry,
 } from './catalog'
-import { installFromCatalog, installedDir, isInstalled } from './download'
+import {
+  installFromCatalog,
+  installedDir,
+  installedVersions,
+  removeInstalled,
+  removeInstalledVersionsExcept,
+} from './download'
 import type { ExtensionListEntry, ExtensionManifest } from '../../shared/extensions'
 
 interface KnownExtension {
@@ -38,6 +44,8 @@ interface KnownExtension {
   /** Served folder. '' for a catalog entry that isn't installed yet. */
   rootDir: string
   installed: boolean
+  /** The version extracted on disk (catalog only); undefined when not installed. */
+  installedVersion?: string
   description?: string
   /** The catalog entry (for installs). Only set on catalog sources. */
   catalogEntry?: CatalogEntry
@@ -61,13 +69,19 @@ class ExtensionManager {
     const cached = await getCachedCatalog()
     for (const entry of cached) {
       const id = entry.manifest.id
-      const version = entry.manifest.version ?? '0.0.0'
-      const installed = isInstalled(id, version)
+      const latest = entry.manifest.version ?? '0.0.0'
+      // Any extracted version counts as installed (a catalog refresh may have
+      // bumped `latest` past what's on disk — that surfaces as updateAvailable).
+      // Prefer serving `latest` when it's present, else whatever is on disk.
+      const versions = await installedVersions(id)
+      const installed = versions.length > 0
+      const served = versions.includes(latest) ? latest : versions[versions.length - 1]
       next.set(id, {
         manifest: entry.manifest,
         source: 'catalog',
-        rootDir: installed ? installedDir(id, version) : '',
+        rootDir: installed ? installedDir(id, served) : '',
         installed,
+        installedVersion: installed ? served : undefined,
         description: entry.description,
         catalogEntry: entry,
       })
@@ -91,15 +105,27 @@ class ExtensionManager {
   /** All known extensions plus their enabled/installed flags. */
   list(): ExtensionListEntry[] {
     const enabled = new Set(getSetting('enabledExtensions'))
-    return Array.from(this.known.values()).map((k) => ({
-      manifest: k.manifest,
-      enabled: enabled.has(k.manifest.id),
-      source: k.source,
-      rootDir: k.rootDir,
-      installed: k.installed,
-      version: k.manifest.version,
-      description: k.description,
-    }))
+    return Array.from(this.known.values()).map((k) => {
+      const latest = k.manifest.version
+      return {
+        manifest: k.manifest,
+        enabled: enabled.has(k.manifest.id),
+        source: k.source,
+        rootDir: k.rootDir,
+        installed: k.installed,
+        version: latest,
+        installedVersion: k.installedVersion,
+        // Only catalog extensions carry a separate installed-vs-advertised
+        // version; sideload always serves its live folder.
+        updateAvailable:
+          k.source === 'catalog' &&
+          k.installed &&
+          !!k.installedVersion &&
+          !!latest &&
+          k.installedVersion !== latest,
+        description: k.description,
+      }
+    })
   }
 
   getManifest(extensionId: string): ExtensionManifest | undefined {
@@ -121,19 +147,67 @@ class ExtensionManager {
   }
 
   /** Download + extract a catalog extension without enabling it. Marks it
-   *  installed and updates rootDir in the in-memory registry. No-op (with a
+   *  installed and updates rootDir in the in-memory registry. With `force`,
+   *  re-downloads over an already-installed version (reinstall). No-op (with a
    *  thrown error) for unknown or non-catalog ids. */
-  async installCatalogExtension(extensionId: string): Promise<void> {
+  async installCatalogExtension(extensionId: string, force = false): Promise<void> {
     const known = this.known.get(extensionId)
     if (!known) throw new Error(`Unknown extension: ${extensionId}`)
     if (known.source !== 'catalog' || !known.catalogEntry) {
       // Sideload is already installed; nothing to download.
-      if (known.installed) return
+      if (known.installed && !force) return
       throw new Error(`Extension ${extensionId} is not a catalog extension`)
     }
-    const rootDir = await installFromCatalog(known.catalogEntry)
+    const rootDir = await installFromCatalog(known.catalogEntry, force)
     known.rootDir = rootDir
     known.installed = true
+    known.installedVersion = known.manifest.version ?? '0.0.0'
+  }
+
+  /** Re-download a catalog extension's current version over the installed copy
+   *  (repairs a corrupt/partial install). Leaves enable state untouched. */
+  async reinstall(extensionId: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await this.installCatalogExtension(extensionId, true)
+      await this.refresh(true)
+      this.broadcast()
+      return { ok: true }
+    } catch (err) {
+      log.warn('[extensions] reinstall %s failed: %O', extensionId, err)
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** Install the catalog's latest version and drop the older installed one(s).
+   *  Leaves enable state untouched, so an enabled extension stays enabled and
+   *  begins serving the new version. */
+  async update(extensionId: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await this.installCatalogExtension(extensionId)
+      const latest = this.known.get(extensionId)?.manifest.version ?? '0.0.0'
+      await removeInstalledVersionsExcept(extensionId, latest)
+      await this.refresh(true)
+      this.broadcast()
+      return { ok: true }
+    } catch (err) {
+      log.warn('[extensions] update %s failed: %O', extensionId, err)
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** Disable and fully remove an installed catalog extension from disk. (Use
+   *  removeSideload for sideload folders.) */
+  async uninstall(extensionId: string): Promise<void> {
+    const known = this.known.get(extensionId)
+    const enabled = getSetting('enabledExtensions')
+    if (enabled.includes(extensionId)) {
+      setSetting('enabledExtensions', enabled.filter((id) => id !== extensionId))
+    }
+    if (!known || known.source === 'catalog') {
+      await removeInstalled(extensionId)
+    }
+    await this.refresh(true)
+    this.broadcast()
   }
 
   async enable(extensionId: string): Promise<void> {

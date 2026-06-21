@@ -36,6 +36,29 @@ export function isInstalled(id: string, version: string): boolean {
   return existsSync(path.join(installedDir(id, version), '.ok'))
 }
 
+/** Every fully-extracted version of an extension currently on disk. */
+export async function installedVersions(id: string): Promise<string[]> {
+  const dir = path.join(extensionsDir(), id)
+  if (!existsSync(dir)) return []
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+  return entries
+    .filter((e) => e.isDirectory() && existsSync(path.join(dir, e.name, '.ok')))
+    .map((e) => e.name)
+}
+
+/** Remove every installed version of an extension (its whole id folder). */
+export async function removeInstalled(id: string): Promise<void> {
+  await rm(path.join(extensionsDir(), id), { recursive: true, force: true })
+}
+
+/** Remove every installed version of an extension except `keep`. */
+export async function removeInstalledVersionsExcept(id: string, keep: string): Promise<void> {
+  for (const version of await installedVersions(id)) {
+    if (version === keep) continue
+    await rm(installedDir(id, version), { recursive: true, force: true }).catch(() => {})
+  }
+}
+
 /** Fall back to '0.0.0' so an unversioned manifest still installs somewhere. */
 function entryVersion(entry: CatalogEntry): string {
   return entry.manifest.version && entry.manifest.version.length > 0
@@ -74,17 +97,58 @@ function sha256(buf: Buffer): string {
 }
 
 /**
- * Ensure a catalog entry is installed, returning its extracted root dir.
- * Idempotent: if the dir + .ok marker exist, returns immediately. Otherwise
- * downloads, verifies sha256 (if present), extracts the .tgz, validates the
- * extracted manifest.json, and writes .ok. Cleans up a partial dir on failure.
+ * Inspect a .tgz's member list BEFORE extracting and reject anything dangerous:
+ * a path that escapes the extraction dir (absolute or `..` traversal — "zip
+ * slip"), or a symlink / hardlink / device / other non-regular entry (a symlink
+ * could redirect a later member's write outside the dir). Only plain files and
+ * directories are allowed. `tar -tzvf` prints one line per member, leading with
+ * the type char of the mode string (`-` file, `d` dir, `l` symlink, `h`
+ * hardlink, etc.); the member name is the last whitespace-separated field (links
+ * render as "name -> target", so we cut at " -> "). Throws on the first offender.
  */
-export async function installFromCatalog(entry: CatalogEntry): Promise<string> {
+async function assertSafeTarball(tgz: string): Promise<void> {
+  const { stdout } = await execFileAsync('tar', ['-tzvf', tgz])
+  for (const rawLine of stdout.split('\n')) {
+    const line = rawLine.trimEnd()
+    if (!line) continue
+    const typeChar = line[0]
+    // Only regular files (-) and directories (d) are permitted.
+    if (typeChar !== '-' && typeChar !== 'd') {
+      throw new Error(`unsafe tar entry (type '${typeChar}'): ${line}`)
+    }
+    // The member name is everything after the timestamp columns; cut any link
+    // target, then take the trailing path token. The mode/owner/size/date
+    // columns never contain a slash, so the first slash-bearing token onward is
+    // the name — but to stay robust we just take the last field.
+    const namePart = line.split(' -> ')[0]
+    const fields = namePart.split(/\s+/)
+    const name = fields[fields.length - 1]
+    if (!name) continue
+    if (path.isAbsolute(name) || name.startsWith('/')) {
+      throw new Error(`unsafe tar entry (absolute path): ${name}`)
+    }
+    // Normalize and ensure it doesn't climb out with `..`.
+    const normalized = path.normalize(name)
+    if (normalized === '..' || normalized.startsWith('..' + path.sep) || normalized.includes(path.sep + '..' + path.sep)) {
+      throw new Error(`unsafe tar entry (path traversal): ${name}`)
+    }
+  }
+}
+
+/**
+ * Ensure a catalog entry is installed, returning its extracted root dir.
+ * Idempotent: if the dir + .ok marker exist, returns immediately (unless `force`
+ * is set, which re-downloads over the existing version — used by reinstall).
+ * Otherwise downloads, verifies sha256 (if present), extracts the .tgz,
+ * validates the extracted manifest.json, and writes .ok. Cleans up a partial
+ * dir on failure.
+ */
+export async function installFromCatalog(entry: CatalogEntry, force = false): Promise<string> {
   const id = entry.manifest.id
   const version = entryVersion(entry)
   const dest = installedDir(id, version)
 
-  if (isInstalled(id, version)) return dest
+  if (!force && isInstalled(id, version)) return dest
 
   await mkdir(path.dirname(dest), { recursive: true })
 
@@ -94,6 +158,13 @@ export async function installFromCatalog(entry: CatalogEntry): Promise<string> {
   const tmpDir = `${dest}.${process.pid}.tmp`
 
   try {
+    // A REMOTE artifact MUST carry a sha256 — we can't trust bytes off the
+    // network without pinning them. Local (file://, absolute, relative) dev
+    // artifacts are exempt (the catalog distinguishes them the same way, via
+    // isLocal). Checked before the download so we never fetch unpinned bytes.
+    if (!isLocal(entry.artifactUrl) && !entry.sha256) {
+      throw new Error(`remote artifact for ${id}@${version} is missing a required sha256`)
+    }
     const buf = await readArtifact(entry.artifactUrl)
     if (entry.sha256 && sha256(buf) !== entry.sha256.toLowerCase()) {
       throw new Error(`sha256 mismatch for ${id}@${version}`)
@@ -101,6 +172,10 @@ export async function installFromCatalog(entry: CatalogEntry): Promise<string> {
     const tgzTmp = `${tgz}.part`
     await writeFile(tgzTmp, buf)
     await rename(tgzTmp, tgz)
+
+    // Reject zip-slip / symlink / other non-regular members BEFORE extracting,
+    // so a malicious tarball can never write outside the temp dir.
+    await assertSafeTarball(tgz)
 
     await rm(tmpDir, { recursive: true, force: true })
     await mkdir(tmpDir, { recursive: true })

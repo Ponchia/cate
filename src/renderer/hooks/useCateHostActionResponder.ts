@@ -19,7 +19,7 @@ import { openFileAsPanel } from '../lib/fs/fileRouting'
 import { revealPanel } from '../lib/workspace/panelReveal'
 import { placementForActivePanel } from '../lib/workspace/canvasAccess'
 import { setPendingReveal } from '../lib/editor/editorReveal'
-import { toAbsolutePath } from '../../shared/pathUtils'
+import { toAbsolutePath, pathKey } from '../../shared/pathUtils'
 import type { PanelType, Point } from '../../shared/types'
 import type { PanelPlacement } from '../stores/appStore'
 
@@ -56,9 +56,42 @@ function asRecord(value: unknown): Record<string, unknown> {
 // renders blank. Resolve against the workspace root (no-op for an already
 // absolute path) so the reverse API reuses the exact open behavior the file
 // explorer gets.
-function resolveWorkspacePath(workspaceId: string, filePath: string): string {
+//
+// SECURITY: confine the resolved path to the workspace root. An extension must
+// not be able to open arbitrary files on disk (e.g. /etc/hosts, ../../secrets)
+// via the reverse API — neither by passing an absolute path that escapes the
+// root nor by a relative path that traverses out of it. Returns null when the
+// resolved path falls outside the verified root (caller rejects the request).
+function resolveWorkspacePath(workspaceId: string, filePath: string): string | null {
   const rootPath = useAppStore.getState().workspaces.find((w) => w.id === workspaceId)?.rootPath
-  return rootPath ? toAbsolutePath(filePath, rootPath) : filePath
+  if (!rootPath) return null
+  // Collapse `.`/`..` segments before checking containment so a traversal like
+  // `../../etc/passwd` can't slip past a naive prefix match.
+  const normalized = normalizeSegments(toAbsolutePath(filePath, rootPath))
+  const rootKey = pathKey(rootPath)
+  const key = pathKey(normalized)
+  if (key !== rootKey && !key.startsWith(rootKey + '/')) return null
+  return normalized
+}
+
+/** Resolve `.` / `..` segments in an absolute path WITHOUT touching the fs (this
+ *  runs in the renderer, where there's no Node `path`). Mirrors the slash
+ *  normalization in shared/pathUtils so the result is comparable via pathKey. */
+function normalizeSegments(absPath: string): string {
+  const isWindows = /^[A-Za-z]:/.test(absPath) || absPath.includes('\\')
+  const norm = absPath.replace(/\\/g, '/')
+  const driveMatch = /^([A-Za-z]:)(.*)$/.exec(norm)
+  const prefix = driveMatch ? driveMatch[1] : ''
+  const body = driveMatch ? driveMatch[2] : norm
+  const leadingSlash = body.startsWith('/')
+  const out: string[] = []
+  for (const seg of body.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') { out.pop(); continue }
+    out.push(seg)
+  }
+  const joined = prefix + (leadingSlash ? '/' : '') + out.join('/')
+  return isWindows ? joined.replace(/\//g, '\\') : joined
 }
 
 export function useCateHostActionResponder(): void {
@@ -81,10 +114,14 @@ export function useCateHostActionResponder(): void {
                   ? args.filePath
                   : undefined
             if (!filePath) return reply(false, { error: 'path required' })
+            // Confine the target to the workspace root — reject any path that
+            // escapes it (absolute or traversal).
+            const resolved = resolveWorkspacePath(workspaceId, filePath)
+            if (!resolved) return reply(false, { error: 'path outside workspace' })
             // Reuse the keybind placement (active dock stack / active canvas /
             // default) so an extension-opened file lands exactly where a
             // Cmd+N-opened one would, not always pinned to the center dock.
-            const newPanelId = openFileAsPanel(workspaceId, resolveWorkspacePath(workspaceId, filePath), undefined, placementForActivePanel())
+            const newPanelId = openFileAsPanel(workspaceId, resolved, undefined, placementForActivePanel())
             if (!newPanelId) return reply(false, { error: 'open failed' })
             // Honor an optional { line } (and column) by stashing a one-shot
             // editor reveal — the SAME path search results and terminal file
@@ -110,8 +147,12 @@ export function useCateHostActionResponder(): void {
               if (!extPanelId) return reply(false, { error: 'extensionPanelId required' })
               newPanelId = useAppStore.getState().createExtensionPanel(workspaceId, extId, extPanelId, undefined, placement)
             } else {
-              const filePath =
-                typeof args.filePath === 'string' ? resolveWorkspacePath(workspaceId, args.filePath) : undefined
+              let filePath: string | undefined
+              if (typeof args.filePath === 'string') {
+                const resolved = resolveWorkspacePath(workspaceId, args.filePath)
+                if (!resolved) return reply(false, { error: 'path outside workspace' })
+                filePath = resolved
+              }
               newPanelId = PANEL_REGISTRY[type].create({
                 workspaceId,
                 placement,

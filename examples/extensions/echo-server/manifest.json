@@ -10,5 +10,5 @@
     "readyPath": "/health",
     "portEnv": "PORT"
   },
-  "cateApi": ["workspace.read"]
+  "cateApi": ["storage"]
 }

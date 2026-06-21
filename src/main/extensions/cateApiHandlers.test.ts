@@ -16,10 +16,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // --- electron: only app is touched at module load (will-quit handler) --------
+const { showMessageBox } = vi.hoisted(() => ({ showMessageBox: vi.fn(async () => ({ response: 0 })) }))
 vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn(), on: vi.fn() },
   app: { on: vi.fn() },
+  dialog: { showMessageBox },
 }))
+
+// Agent runtime is a heavy singleton; stub it so importing cateApiHandlers
+// stays light and cate.agent.run dispatch is observable.
+const { runForExtension, cancelForExtension } = vi.hoisted(() => ({
+  runForExtension: vi.fn(async () => ({ text: 'done' })),
+  cancelForExtension: vi.fn(async () => {}),
+}))
+vi.mock('../../agent/main/agentManager', () => ({ agentManager: { runForExtension, cancelForExtension } }))
 
 // cate.ui.notify reuses the shared OS-notification path; spy on it + the setting.
 const { showOsNotification, settings } = vi.hoisted(() => ({
@@ -29,12 +39,15 @@ const { showOsNotification, settings } = vi.hoisted(() => ({
 vi.mock('../ipc/notifications', () => ({ showOsNotification }))
 
 // --- extension registry: enabled/known toggled per test via `state.enabled` ---
-const state = vi.hoisted(() => ({ enabled: true }))
+const state = vi.hoisted(() => ({
+  enabled: true,
+  scopes: ['storage', 'editor', 'canvas', 'theme', 'ui', 'workspace.read'] as string[] | undefined,
+}))
 vi.mock('./ExtensionManager', () => ({
   extensionManager: {
     isKnown: () => true,
     isEnabled: () => state.enabled,
-    getManifest: () => ({ id: 'cate.kitchensink', name: 'Kitchen Sink', panels: [{ id: 'main', label: 'Kitchen Sink' }] }),
+    getManifest: () => ({ id: 'cate.kitchensink', name: 'Kitchen Sink', panels: [{ id: 'main', label: 'Kitchen Sink' }], cateApi: state.scopes }),
   },
 }))
 
@@ -42,7 +55,8 @@ vi.mock('./ExtensionManager', () => ({
 // importing cateApiHandlers doesn't drag in the proxy/server/IPC machinery.
 vi.mock('./proxyServer', () => ({ getProxyUrlFor: vi.fn() }))
 vi.mock('./ExtensionServerManager', () => ({ extensionServerManager: {} }))
-vi.mock('../windowRegistry', () => ({ getActiveMainWindow: vi.fn(() => undefined) }))
+const { activeWindow } = vi.hoisted(() => ({ activeWindow: { value: undefined as unknown } }))
+vi.mock('../windowRegistry', () => ({ getActiveMainWindow: () => activeWindow.value }))
 vi.mock('../runtime/locator', () => ({ parseLocator: (raw: string) => ({ runtimeId: 'local', path: raw }) }))
 vi.mock('../workspaceManager', () => ({ getWorkspaceInfo: vi.fn(() => ({ rootPath: '/ws/root' })) }))
 vi.mock('../settingsFile', () => ({
@@ -86,10 +100,17 @@ function scope(forward: InvokeScope['forward'] = vi.fn()): InvokeScope {
 
 beforeEach(() => {
   state.enabled = true
+  state.scopes = ['storage', 'editor', 'canvas', 'theme', 'ui', 'workspace.read']
   settings.notificationsEnabled = true
+  activeWindow.value = undefined
   kv.clear()
   panelKv.clear()
   showOsNotification.mockClear()
+  showMessageBox.mockClear()
+  showMessageBox.mockResolvedValue({ response: 0 })
+  runForExtension.mockClear()
+  runForExtension.mockResolvedValue({ text: 'done' })
+  cancelForExtension.mockClear()
 })
 
 describe('dispatchCateInvoke — Kitchen Sink reverse API', () => {
@@ -155,6 +176,24 @@ describe('dispatchCateInvoke — Kitchen Sink reverse API', () => {
     expect(await dispatchCateInvoke(scope(), 'cate.bogus.method', undefined)).toEqual({ error: 'unsupported', method: 'cate.bogus.method' })
   })
 
+  it('denies methods whose scope the manifest does not declare', async () => {
+    // No declared scopes → every scoped method is rejected, but version /
+    // panel.* stay allowed (feature detection + panel self-control).
+    state.scopes = undefined
+    const forward = vi.fn()
+    expect(await dispatchCateInvoke(scope(forward), 'cate.version', undefined)).toBe(1)
+    expect(await dispatchCateInvoke(scope(forward), 'cate.storage.get', { key: 'k' })).toEqual({ error: 'scope-denied', method: 'cate.storage.get' })
+    expect(await dispatchCateInvoke(scope(forward), 'cate.editor.openFile', { path: 'x' })).toEqual({ error: 'scope-denied', method: 'cate.editor.openFile' })
+    expect(await dispatchCateInvoke(scope(forward), 'cate.theme.get', undefined)).toEqual({ error: 'scope-denied', method: 'cate.theme.get' })
+    expect(forward).not.toHaveBeenCalled()
+  })
+
+  it('accepts a bare namespace scope for a more specific method (editor grants editor.write)', async () => {
+    state.scopes = ['editor']
+    const forward = vi.fn(async () => ({ panelId: 'new' }))
+    expect(await dispatchCateInvoke(scope(forward), 'cate.editor.openFile', { path: 'x' })).toEqual({ panelId: 'new' })
+  })
+
   it('gates every method behind the enabled check', async () => {
     state.enabled = false
     const forward = vi.fn()
@@ -163,5 +202,72 @@ describe('dispatchCateInvoke — Kitchen Sink reverse API', () => {
     expect(await dispatchCateInvoke(scope(forward), 'cate.editor.openFile', { path: 'x' })).toEqual({ error: 'not-enabled', method: 'cate.editor.openFile' })
     // The security gate fires before any forward to a renderer.
     expect(forward).not.toHaveBeenCalled()
+  })
+})
+
+describe('dispatchCateInvoke — cate.agent.run', () => {
+  const fakeWin = { isDestroyed: () => false, webContents: {} }
+  // Consent is granted once per extension for the app session, so each test
+  // uses a fresh extension id to stay isolated.
+  let seq = 0
+  const agentScope = (): InvokeScope => ({
+    extensionId: `cate.agent-test-${++seq}`,
+    workspaceId: WS,
+    panelId: PANEL,
+    forward: vi.fn(),
+  })
+
+  it('denies cate.agent.run when the manifest lacks the agent scope', async () => {
+    // default scopes (no `agent`)
+    expect(await dispatchCateInvoke(agentScope(), 'cate.agent.run', { prompt: 'hi' }))
+      .toEqual({ error: 'scope-denied', method: 'cate.agent.run' })
+    expect(runForExtension).not.toHaveBeenCalled()
+  })
+
+  it('runs one turn through pi after consent and returns the final text', async () => {
+    state.scopes = ['agent']
+    activeWindow.value = fakeWin
+    const s = agentScope()
+    const res = await dispatchCateInvoke(s, 'cate.agent.run', { prompt: '  build it  ' })
+    expect(res).toEqual({ text: 'done' })
+    expect(showMessageBox).toHaveBeenCalledTimes(1) // first-use consent
+    expect(runForExtension).toHaveBeenCalledWith('build it', {
+      workspaceId: WS,
+      locator: '/ws/root',
+      extensionId: s.extensionId,
+      sender: fakeWin.webContents,
+    })
+  })
+
+  it('rejects an empty prompt before touching the agent', async () => {
+    state.scopes = ['agent']
+    activeWindow.value = fakeWin
+    expect(await dispatchCateInvoke(agentScope(), 'cate.agent.run', { prompt: '   ' }))
+      .toEqual({ error: 'bad-args', method: 'cate.agent.run' })
+    expect(runForExtension).not.toHaveBeenCalled()
+  })
+
+  it('does not run when the user denies consent', async () => {
+    state.scopes = ['agent']
+    activeWindow.value = fakeWin
+    showMessageBox.mockResolvedValue({ response: 1 }) // Deny
+    expect(await dispatchCateInvoke(agentScope(), 'cate.agent.run', { prompt: 'hi' }))
+      .toEqual({ error: 'consent-denied', method: 'cate.agent.run' })
+    expect(runForExtension).not.toHaveBeenCalled()
+  })
+
+  it('surfaces the one-run-at-a-time guard as agent-busy', async () => {
+    state.scopes = ['agent']
+    activeWindow.value = fakeWin
+    runForExtension.mockRejectedValueOnce(new Error('agent-busy'))
+    expect(await dispatchCateInvoke(agentScope(), 'cate.agent.run', { prompt: 'hi' }))
+      .toEqual({ error: 'agent-busy', method: 'cate.agent.run' })
+  })
+
+  it('cancels this extension\'s in-flight run', async () => {
+    state.scopes = ['agent']
+    const s = agentScope()
+    expect(await dispatchCateInvoke(s, 'cate.agent.cancel', undefined)).toEqual({ ok: true })
+    expect(cancelForExtension).toHaveBeenCalledWith(s.extensionId)
   })
 })

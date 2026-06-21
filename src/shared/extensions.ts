@@ -63,6 +63,12 @@ export interface ExtensionListEntry {
   installed: boolean
   /** Catalog-advertised version (may differ from an installed manifest). */
   version?: string
+  /** The version actually extracted on disk (catalog entries only); undefined
+   *  when not installed. May lag `version` after a catalog refresh. */
+  installedVersion?: string
+  /** Installed, but the catalog now advertises a newer version than the one on
+   *  disk — the UI can offer an Update action. */
+  updateAvailable?: boolean
   /** Catalog-advertised short description. */
   description?: string
 }

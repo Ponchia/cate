@@ -81,6 +81,30 @@ function registerRoute(extensionId: string, workspaceId: string): string {
   return token
 }
 
+/**
+ * Resolve the AUTHORITATIVE (extensionId, workspaceId) for a guest webview from
+ * its current URL. The proxy assigns the opaque routeToken in the path
+ * (`/ext/<routeToken>/`) per (extensionId, workspaceId), so a guest can't forge
+ * another extension's identity without knowing its random token — this is the
+ * trusted source of identity, NOT the client-supplied query string the preload
+ * forwards. The panelId in the query stays client-supplied (validated elsewhere).
+ * Returns null when the URL isn't a known extension-proxy route.
+ */
+export function identityForGuestUrl(
+  rawUrl: string,
+): { extensionId: string; workspaceId: string } | null {
+  let pathname: string
+  try {
+    pathname = new URL(rawUrl).pathname
+  } catch {
+    return null
+  }
+  const parsed = parseExtPath(pathname)
+  if (!parsed) return null
+  const route = routesByToken.get(parsed.token)
+  return route ? { extensionId: route.extensionId, workspaceId: route.workspaceId } : null
+}
+
 /** The frontend entry (relative) for an extension, defaulting to index.html. */
 function frontendEntry(manifest: ExtensionManifest): string {
   return manifest.frontend && manifest.frontend.length > 0 ? manifest.frontend : 'index.html'

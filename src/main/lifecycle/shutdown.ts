@@ -44,6 +44,10 @@ const FLUSH_TIMEOUT_MS = 1500
 // stall quit. Kept short relative to FLUSH_TIMEOUT_MS — it runs BEFORE the main
 // renderer's session flush, so dock sync + session save share the quit budget.
 const DOCK_FLUSH_TIMEOUT_MS = 600
+// Bound the await of extension-server / runtime teardown on will-quit before the
+// hard reallyExit(). Long enough for a clean local SIGTERM, short enough that an
+// unresponsive remote socket can't stall quit (the daemon reaps orphans anyway).
+const EXIT_DISPOSE_TIMEOUT_MS = 800
 
 /** A confirmation dialog to show before quitting, or null to quit immediately.
  *  Two independent reasons gate quit: terminals still running a foreground
@@ -233,29 +237,41 @@ export function registerLifecycleHandlers(): void {
     // during Environment::CleanupHandles, node-pty's ThreadSafeFunction exit
     // callback throws into a torn-down context and SIGABRTs the process.
     killAllTerminals()
-    // Stop any server-backed extension servers BEFORE tearing down runtimes
-    // (the daemon also kills its children on transport close, but stop them
-    // cleanly here too). Fire-and-forget — quit must not block.
-    void extensionServerManager.disposeAll()
-    // Tear down any remote/WSL runtime connections (kills their daemons /
-    // closes SSH). Fire-and-forget — quit must not block on a remote socket.
-    void runtimes.disposeAll()
     // An update has been downloaded and is queued to install on quit. DO NOT
     // reallyExit — electron-updater's install-on-quit hook runs on the 'quit'
     // event (which fires AFTER will-quit), so reallyExit (libc exit()) would kill
     // the process first and the update would never apply. Let the natural quit
-    // path run; the installer takes over the process shortly.
+    // path run; the installer takes over the process shortly. (Stop the extension
+    // servers + runtimes first, fire-and-forget — the daemon kills its children
+    // on transport close anyway, and we must not block the install handoff.)
     if (isUpdatePendingInstall()) {
+      void extensionServerManager.disposeAll()
+      void runtimes.disposeAll()
       log.info('will-quit: update staged, yielding to electron-updater install-on-quit')
       return
     }
-    // Force immediate exit to bypass node::FreeEnvironment → CleanupHandles →
-    // uv_run, which drains pending ThreadSafeFunction callbacks and can SIGABRT
-    // after node-pty teardown. process.reallyExit is Node's binding to libc
-    // exit() — it skips the 'exit' event and the cleanup path app.exit/process.exit
-    // would run. All important cleanup (session save, logger flush, watcher
-    // disposal, process group kills) is already done above.
-    ;(process as unknown as { reallyExit(code: number): never }).reallyExit(0)
+    // Stop any server-backed extension servers BEFORE the hard exit. This is
+    // AWAITED (bounded) — `void`-ing it before reallyExit() let the libc exit()
+    // win the race, so the SIGTERM/SIGKILL to the server children never actually
+    // went out and they leaked. The daemon also reaps on transport close + on
+    // its next startup (reapOrphanServers), so this is the clean primary path,
+    // not the only safety net. Bound it so an unresponsive runtime can't hang
+    // quit, then force the hard exit either way.
+    void (async () => {
+      try {
+        await Promise.race([
+          Promise.allSettled([extensionServerManager.disposeAll(), runtimes.disposeAll()]),
+          new Promise((resolve) => setTimeout(resolve, EXIT_DISPOSE_TIMEOUT_MS)),
+        ])
+      } catch { /* best-effort — exit regardless */ }
+      // Force immediate exit to bypass node::FreeEnvironment → CleanupHandles →
+      // uv_run, which drains pending ThreadSafeFunction callbacks and can SIGABRT
+      // after node-pty teardown. process.reallyExit is Node's binding to libc
+      // exit() — it skips the 'exit' event and the cleanup path
+      // app.exit/process.exit would run. All important cleanup (session save,
+      // logger flush, watcher disposal, process group kills) is already done above.
+      ;(process as unknown as { reallyExit(code: number): never }).reallyExit(0)
+    })()
   })
 
   // Field-diagnostic trace for the install handoff. When an update is staged we
