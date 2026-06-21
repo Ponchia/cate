@@ -41,6 +41,7 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   editorFontSize: 'number',
   editorFontFamily: 'string',
   uiScale: 'number',
+  disableGpuRasterization: 'boolean',
   showMinimap: 'boolean',
   defaultPanelWidth: 'number',
   defaultPanelHeight: 'number',
