@@ -54,30 +54,25 @@ Applies only to **server-backed** extensions. Frontend-only panels are plain web
 
 A `cateHost` bridge injected into the webview (postMessage), plus a token-gated local HTTP/WS endpoint (`CATE_API`) for server-side context and event streams. Because one server backs many panels, panel-scoped reverse-API calls and event subscriptions carry the originating `cate.panel.id`; workspace/theme-scoped calls are shared across panels.
 
+This is the **complete** surface today. It is intentionally small; new methods and namespaces are added only as they're implemented (and demonstrated in an example), so everything listed here works.
+
 ```
-cate.version                                  // API version, for feature detection
-cate.workspace.get() / onChange               // { rootPath, branch, worktree }
-cate.theme.get() / onChange                   // theme tokens
-cate.panel.id                                  // this instance's id
-cate.panel.onResize / onVisibilityChange / onBeforeUnload
-cate.panel.setTitle(s) / setBadge(status)
-cate.editor.openFile(path, { line? })
-cate.editor.getActiveFile() / getSelection() / revealInTree(path)
-cate.commands.register(id, handler) / invoke(id)   // palette integration
-cate.ui.notify(message, level)
+cate.version()                                 // API version (int), for feature detection
+cate.panel.id                                  // this panel instance's id
+cate.panel.setTitle(title)
+cate.workspace.get()                           // { rootPath, branch, worktree }  (branch/worktree null for now)
+cate.theme.get()                               // { id, type, app, terminal } theme tokens
+cate.editor.openFile(path, { line?, column? }) // path is confined to the workspace root
+cate.canvas.createPanel(type, { position?, size?, props? })
+cate.ui.notify(message, level?)
 cate.storage.get(key) / set(key, value) / delete(key) / keys()   // JSON KV, extension-scoped, persisted to <project>/.cate
 cate.storage.panel.get(key) / set(key, value)  // panel-scoped slice, keyed by cate.panel.id
-cate.storage.onChange(key)                      // fires on external edits and writes from other panels
-cate.canvas.createPanel(type, { position, size, props })
-cate.canvas.listPanels() / onPanelsChange
-cate.canvas.movePanel(id, position)
-cate.canvas.drawRegion(rect, { label }) / connect(panelA, panelB)
-cate.canvas.viewport.get() / panTo(rect)
-cate.agent.run({ prompt }) => { text }         // run ONE background turn through the bundled pi agent
-cate.agent.cancel()                            // abort this extension's in-flight run
+cate.storage.onChange(cb)                       // fires on external edits and writes from other panels
+cate.agent.run({ prompt }) => { text }          // run ONE background turn through the bundled pi agent
+cate.agent.cancel()                             // abort this extension's in-flight run
 ```
 
-`cateApi` scopes in the manifest declare which namespaces an extension uses.
+`cateApi` scopes in the manifest declare which namespaces an extension uses; the host enforces them (default-deny) and Cate surfaces them as the extension's permissions in Settings → Extensions.
 
 ### Agent (`agent` scope)
 

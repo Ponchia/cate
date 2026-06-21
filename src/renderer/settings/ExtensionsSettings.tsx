@@ -23,6 +23,44 @@ import type { ExtensionListEntry } from '../../shared/extensions'
 
 const api = () => window.electronAPI
 
+// Human-readable labels for the manifest `cateApi` scopes — what the extension
+// is allowed to do. A bare namespace (e.g. `editor`) covers its sub-scopes;
+// unknown scopes fall back to the raw string so nothing is hidden.
+const PERMISSION_LABELS: Record<string, string> = {
+  'workspace.read': 'Read workspace info',
+  theme: 'Read the theme',
+  ui: 'Show notifications',
+  editor: 'Open & edit files',
+  'editor.read': 'Read the active editor',
+  'editor.write': 'Open files in the editor',
+  storage: 'Store extension data',
+  canvas: 'Create canvas panels',
+  agent: 'Run the agent on your behalf',
+}
+
+/** The extension's declared `cateApi` scopes shown as readable permission chips.
+ *  Renders nothing when none are declared. The `agent` scope is highlighted as
+ *  the most sensitive (it can run the agent using your model + credentials). */
+const Permissions = ({ scopes }: { scopes?: string[] }) => {
+  if (!scopes || scopes.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1 pl-6">
+      <span className="text-[10px] text-muted">Permissions:</span>
+      {scopes.map((s) => (
+        <span
+          key={s}
+          title={s}
+          className={`text-[10px] px-1.5 py-0.5 rounded ${
+            s === 'agent' ? 'bg-amber-500/[0.14] text-amber-300' : 'bg-surface-3 text-muted'
+          }`}
+        >
+          {PERMISSION_LABELS[s] ?? s}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export function ExtensionsSettings() {
   const [entries, setEntries] = useState<ExtensionListEntry[]>([])
   const [sources, setSources] = useState<string[]>([])
@@ -237,6 +275,7 @@ export function ExtensionsSettings() {
             <Trash size={12} />
           </IconAction>
         </div>
+        <Permissions scopes={m.cateApi} />
       </div>
     )
   }
@@ -295,6 +334,8 @@ export function ExtensionsSettings() {
             </>
           )}
         </div>
+
+        <Permissions scopes={m.cateApi} />
 
         {rowErr[id] && <div className="text-[11px] text-red-400 pl-6">{rowErr[id]}</div>}
       </div>
