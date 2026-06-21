@@ -15,6 +15,8 @@ import type { CanvasNodeId, CanvasNodeState } from '../../shared/types'
 import { ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT } from '../../shared/types'
 import { perfCount } from '../lib/perf/perfClient'
 import { primitiveArrayEqual } from './selectorUtils'
+import log from '../lib/logger'
+import { sanitizeLoadedCanvasNodes, isValidPoint } from './canvas/sanitizeNodes'
 
 import type { CanvasStore } from './canvas/storeTypes'
 import { createCanvasStoreCtx } from './canvas/storeCtx'
@@ -74,21 +76,39 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
 
       // --- Lifecycle / bulk reset (counterpart to the initial state above) ---
       loadWorkspaceCanvas(nodes, viewportOffset, zoomLevel) {
+        // Persisted geometry from `.cate` is untrusted: repair/drop invalid nodes
+        // so one corrupt entry (e.g. a node missing `size`) can't crash the whole
+        // canvas render. See sanitizeLoadedCanvasNodes.
+        const { nodes: cleanNodes, repaired, dropped } = sanitizeLoadedCanvasNodes(
+          nodes as Record<string, unknown>,
+        )
+        if (repaired.length || dropped.length) {
+          log.warn(
+            '[canvas] restored with invalid node geometry from .cate — repaired %d, dropped %d (repaired: %o, dropped: %o)',
+            repaired.length,
+            dropped.length,
+            repaired,
+            dropped,
+          )
+        }
+
         // Compute next counters from loaded data
-        const nodeList = Object.values(nodes)
+        const nodeList = Object.values(cleanNodes)
         const maxZOrder = nodeList.reduce((max, n) => Math.max(max, n.zOrder), -1)
         const maxCreationIndex = nodeList.reduce((max, n) => Math.max(max, n.creationIndex), -1)
 
         // Ensure all loaded nodes have animationState: 'idle' so they don't animate on restore
         const idleNodes: Record<string, CanvasNodeState> = {}
-        for (const [id, node] of Object.entries(nodes)) {
+        for (const [id, node] of Object.entries(cleanNodes)) {
           idleNodes[id] = { ...node, animationState: 'idle' }
         }
 
         set({
           nodes: idleNodes,
-          viewportOffset,
-          zoomLevel: Math.min(Math.max(zoomLevel, ZOOM_MIN), ZOOM_MAX),
+          viewportOffset: isValidPoint(viewportOffset) ? viewportOffset : { x: 0, y: 0 },
+          zoomLevel: Number.isFinite(zoomLevel)
+            ? Math.min(Math.max(zoomLevel, ZOOM_MIN), ZOOM_MAX)
+            : ZOOM_DEFAULT,
           focusedNodeId: null,
           nextZOrder: maxZOrder + 1,
           nextCreationIndex: maxCreationIndex + 1,
