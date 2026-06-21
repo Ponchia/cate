@@ -10,6 +10,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useAppStore } from '../stores/appStore'
 import { useBrowserStore } from '../stores/browserStore'
 import { useCanvasStoreContext } from '../stores/CanvasStoreContext'
+import { focusedNodeId } from '../stores/canvas/selectionModel'
 import { SEARCH_ENGINE_URLS, BROWSER_NEW_TAB_URL, isStartPageUrl } from '../../shared/types'
 import { UrlSuggestions } from './UrlSuggestions'
 import { StartPage } from './StartPage'
@@ -113,7 +114,7 @@ export default function BrowserPanel({
   const toggleBookmark = useBrowserStore((s) => s.toggleBookmark)
   const querySuggestions = useBrowserStore((s) => s.querySuggestions)
 
-  const isFocused = useCanvasStoreContext((s) => s.focusedNodeId === nodeId)
+  const isFocused = useCanvasStoreContext((s) => focusedNodeId(s) === nodeId)
 
   // A new browser panel with no saved URL lands on the start page (unless the
   // user configured a homepage). The sentinel is never normalized or navigated.
