@@ -1190,6 +1190,14 @@ export interface AppSettings {
    *  affect web pages shown in browser panels (those keep their own zoom).
    *  Range 0.5–2.0. */
   uiScale: number
+  /** Disable Chromium's GPU rasterization (text glyphs included) while leaving
+   *  WebGL and GPU compositing on. A workaround for intermittent glyph dropout —
+   *  text repainting with random missing characters — caused by GPU glyph-atlas
+   *  corruption under this app's GPU load (many xterm WebGL contexts + the
+   *  worktree-territory renderer + canvas compositing churn). Off by default
+   *  (full GPU). Applied as a command-line switch at launch, so a change only
+   *  takes effect after restarting the app. */
+  disableGpuRasterization: boolean
 
   // Canvas
   showMinimap: boolean
@@ -1343,6 +1351,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   editorFontSize: 12,
   editorFontFamily: '',
   uiScale: 1.0,
+  disableGpuRasterization: false,
 
   // Canvas
   showMinimap: true,
