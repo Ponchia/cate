@@ -62,15 +62,64 @@ function toImageContent(images?: AgentImageAttachment[]): PiImageContent[] | und
   return images.map((img) => ({ type: 'image', data: img.data, mimeType: img.mimeType }))
 }
 
+/** Concatenate the text blocks of a single pi message (assistant turn). */
+function messageText(message: unknown): string {
+  const content = (message as { content?: unknown } | null)?.content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((c): c is { type: 'text'; text: string } =>
+      !!c && (c as { type?: string }).type === 'text' && typeof (c as { text?: unknown }).text === 'string',
+    )
+    .map((c) => c.text)
+    .join('')
+    .trim()
+}
+
+/** The assistant message that holds a turn's answer, from a pi `messages` array:
+ *  the most recent assistant turn that actually has text, else the last assistant
+ *  message at all (e.g. a tool-only turn), else null. Scans from the end so the
+ *  text and the returned message agree. Mirrors pi's own `getLastAssistantText`. */
+function answerMessage(messages: unknown): Record<string, unknown> | null {
+  if (!Array.isArray(messages)) return null
+  let lastAssistant: Record<string, unknown> | null = null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string } | null
+    if (m?.role !== 'assistant') continue
+    if (!lastAssistant) lastAssistant = m as Record<string, unknown>
+    if (messageText(m)) return m as Record<string, unknown>
+  }
+  return lastAssistant
+}
+
+/** Result of one extension agent turn: the flattened `text` for convenience plus
+ *  the raw assistant `message` (content blocks and all). */
+export interface AgentTurnResult {
+  text: string
+  message: Record<string, unknown> | null
+}
+
+interface ExtSession {
+  /** The handle returned to the extension — pi's own session file path, so the
+   *  conversation can be resumed later with no Cate-side persistence. */
+  handle: string
+  /** The live pi session's panelId in `sessions`. */
+  panelId: string
+  extensionId: string
+  /** A turn is in flight — one at a time per session. */
+  busy: boolean
+}
+
 export class AgentManager {
   private sessions = new Map<string, AgentSession>()
   private locks = new Map<string, Promise<unknown>>()
   // Used to resolve the default model for extension-initiated background runs
   // (see runForExtension) and for the auth-change mirror hook below.
   private authManager: AuthManager
-  // Extensions with an in-flight background run — one run per extension at a
-  // time, the simple cap against runaway loops (see runForExtension).
-  private readonly extRuns = new Set<string>()
+  // Live extension agent sessions, keyed by handle (pi's session file). pi owns
+  // all conversation state on disk; Cate keeps only this in-memory handle->client
+  // routing, exactly like a panel. One live session per extension is the cap
+  // against runaway loops (see openForExtension).
+  private readonly extSessions = new Map<string, ExtSession>()
   private extRunSeq = 0
 
   constructor(authManager: AuthManager) {
@@ -272,52 +321,122 @@ export class AgentManager {
   }
 
   // ---------------------------------------------------------------------------
-  // Extension-initiated background runs (cate.agent.run)
+  // Extension agent sessions (cate.agent.open / send / dispose, and run sugar)
   //
-  // An enabled extension can run ONE agent turn at a time. The run is a real
-  // session owned by the active window's WebContents — so its events flow to
-  // the renderer and its lifetime is tied to that window like any panel session
-  // — but it is driven from main: send the prompt, wait for pi's terminal
-  // `agent_end`, return the last assistant text, then dispose. One run per
-  // extension at a time is the whole anti-runaway-loop guard for v1.
+  // An enabled extension drives a real pi session the same way a panel does:
+  // Cate holds the live client in `sessions` and forwards its events to the
+  // active window; pi owns ALL conversation state on its session jsonl. The
+  // handle returned to the extension IS that jsonl path, so a conversation can
+  // be resumed later with nothing persisted on Cate's side. Turn-based: each
+  // `send` runs one turn and returns the final assistant message. One live
+  // session per extension, one in-flight turn per session — the anti-runaway cap.
   // ---------------------------------------------------------------------------
 
+  /** Open (or resume) a persistent agent session for an extension. Returns the
+   *  handle (pi's session file) to pass to `sendForExtension`. */
+  async openForExtension(opts: {
+    workspaceId: string
+    locator: string
+    extensionId: string
+    sender: WebContents
+    resume?: string
+  }): Promise<{ sessionId: string }> {
+    for (const s of this.extSessions.values()) {
+      if (s.extensionId === opts.extensionId) throw new Error('agent-busy')
+    }
+    const panelId = `ext-${opts.extensionId}-${++this.extRunSeq}`
+    const model = await this.resolveDefaultModel()
+    await this.create(
+      {
+        panelId,
+        workspaceId: opts.workspaceId,
+        cwd: opts.locator,
+        model: model ?? undefined,
+        sessionFile: opts.resume,
+      },
+      opts.sender,
+    )
+    const session = this.sessions.get(panelId)
+    if (!session) throw new Error('agent-failed')
+    // The handle is pi's session file: known up-front on resume, else read back
+    // from pi (it assigns one for a fresh session). Fall back to the panelId so
+    // the session is still routable this run even if the path can't be read.
+    let handle = opts.resume ?? ''
+    if (!handle) {
+      try {
+        const state = (await session.client.getState()) as { sessionFile?: string } | null
+        handle = state?.sessionFile ?? ''
+      } catch { /* fall through */ }
+    }
+    if (!handle) handle = panelId
+    this.extSessions.set(handle, { handle, panelId, extensionId: opts.extensionId, busy: false })
+    log.info('[agentManager] ext session open ext=%s handle=%s', opts.extensionId, handle)
+    return { sessionId: handle }
+  }
+
+  /** Run one turn on an open extension session and return the final assistant
+   *  message. The session must belong to `extensionId`. */
+  async sendForExtension(opts: {
+    extensionId: string
+    sessionId: string
+    text: string
+  }): Promise<AgentTurnResult> {
+    const ext = this.extSessions.get(opts.sessionId)
+    if (!ext || ext.extensionId !== opts.extensionId) throw new Error('no-session')
+    if (ext.busy) throw new Error('agent-busy')
+    const session = this.sessions.get(ext.panelId)
+    if (!session) { this.extSessions.delete(opts.sessionId); throw new Error('no-session') }
+    ext.busy = true
+    try {
+      const result = await this.runTurn(session, opts.text)
+      log.info('[agentManager] ext session turn ext=%s chars=%d', opts.extensionId, result.text.length)
+      return result
+    } finally {
+      ext.busy = false
+    }
+  }
+
+  /** Tear down an open extension session's live client. pi's jsonl stays on disk,
+   *  so the same handle can be re-opened later via `resume`. */
+  async disposeForExtension(opts: { extensionId: string; sessionId: string }): Promise<void> {
+    const ext = this.extSessions.get(opts.sessionId)
+    if (!ext || ext.extensionId !== opts.extensionId) return
+    this.extSessions.delete(opts.sessionId)
+    await this.dispose(ext.panelId)
+  }
+
+  /** One-shot sugar over open -> send -> dispose (cate.agent.run). */
   async runForExtension(
     text: string,
     opts: { workspaceId: string; locator: string; extensionId: string; sender: WebContents },
-  ): Promise<{ text: string }> {
-    if (this.extRuns.has(opts.extensionId)) throw new Error('agent-busy')
-    this.extRuns.add(opts.extensionId)
-    const panelId = `ext-${opts.extensionId}-${++this.extRunSeq}`
+  ): Promise<AgentTurnResult> {
+    const { sessionId } = await this.openForExtension(opts)
     try {
-      const model = await this.resolveDefaultModel()
-      await this.create(
-        { panelId, workspaceId: opts.workspaceId, cwd: opts.locator, model: model ?? undefined },
-        opts.sender,
-      )
-      const session = this.sessions.get(panelId)
-      if (!session) throw new Error('agent-failed')
-      const result = await this.awaitRun(session, text)
-      return { text: result ?? '' }
+      return await this.sendForExtension({ extensionId: opts.extensionId, sessionId, text })
     } finally {
-      this.extRuns.delete(opts.extensionId)
-      await this.dispose(panelId)
+      await this.disposeForExtension({ extensionId: opts.extensionId, sessionId })
     }
   }
 
-  /** Abort any in-flight extension run for this extension (best effort). */
+  /** Abort the in-flight turn of this extension's session (best effort). */
   async cancelForExtension(extensionId: string): Promise<void> {
-    const prefix = `ext-${extensionId}-`
-    for (const panelId of this.sessions.keys()) {
-      if (panelId.startsWith(prefix)) await this.interrupt(panelId)
+    for (const ext of this.extSessions.values()) {
+      if (ext.extensionId === extensionId) await this.interrupt(ext.panelId)
     }
   }
 
-  /** Send the prompt and resolve with the final assistant text once pi emits
-   *  its terminal `agent_end` (the last event of a run). Rejects on an agent
-   *  error event or an unexpected pi exit. */
-  private awaitRun(session: AgentSession, text: string): Promise<string | null> {
-    return new Promise<string | null>((resolve, reject) => {
+  /** The NON-streaming turn runner used by extension sessions: send the prompt
+   *  and resolve with the final assistant message once pi emits its terminal
+   *  `agent_end`. That event carries the full `messages` list, so the answer is
+   *  read straight off it — the panel's streaming path (events forwarded to the
+   *  renderer and accumulated there) is entirely separate and untouched.
+   *
+   *  pi also emits an `agent_end` flagged `willRetry: true` for a turn it is
+   *  about to auto-retry — its last assistant message is the empty error, so we
+   *  skip it and wait for the terminal one. Rejects on an agent error event or
+   *  an unexpected pi exit. */
+  private runTurn(session: AgentSession, text: string): Promise<AgentTurnResult> {
+    return new Promise<AgentTurnResult>((resolve, reject) => {
       let settled = false
       let offEvent = () => {}
       let offExit = () => {}
@@ -329,15 +448,22 @@ export class AgentManager {
         fn()
       }
       offEvent = session.client.onEvent((ev) => {
-        const type = (ev as { type?: string } | null)?.type
-        if (type === 'agent_end') {
-          session.client.getLastAssistantText().then(
-            (txt) => settle(() => resolve(txt)),
-            () => settle(() => resolve(null)),
-          )
-        } else if (type === 'error') {
-          const message = (ev as { message?: string }).message || 'agent error'
-          settle(() => reject(new Error(message)))
+        const e = ev as { type?: string; willRetry?: boolean; messages?: unknown; message?: string } | null
+        if (e?.type === 'agent_end') {
+          // A retry turn follows — not the terminal end of the run.
+          if (e.willRetry === true) return
+          const message = answerMessage(e.messages)
+          // A turn can end on a non-retryable error (unsupported model, auth, bad
+          // request): pi sets stopReason 'error' + an errorMessage on an empty
+          // assistant message. Surface it, don't hand back silent empty text.
+          if (message && message.stopReason === 'error') {
+            const reason = typeof message.errorMessage === 'string' ? message.errorMessage : 'agent error'
+            settle(() => reject(new Error(reason)))
+            return
+          }
+          settle(() => resolve({ text: message ? messageText(message) : '', message }))
+        } else if (e?.type === 'error') {
+          settle(() => reject(new Error(e.message || 'agent error')))
         }
       })
       offExit = session.client.onExit((code) => settle(() => reject(new Error(`agent exited (code ${code})`))))
@@ -369,6 +495,11 @@ export class AgentManager {
     try { session.client.rejectAllPending('Pi session disposed') } catch { /* noop */ }
     try { await session.client.stop() } catch { /* noop */ }
     this.sessions.delete(panelId)
+    // Drop any extension handle that routed to this session (e.g. the owning
+    // window went away) so a stale handle can't outlive its client.
+    for (const [handle, ext] of this.extSessions) {
+      if (ext.panelId === panelId) this.extSessions.delete(handle)
+    }
     log.info('[agentManager] disposed session panel=%s', panelId)
   }
 

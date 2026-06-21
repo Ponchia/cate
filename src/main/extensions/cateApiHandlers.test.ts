@@ -25,11 +25,17 @@ vi.mock('electron', () => ({
 
 // Agent runtime is a heavy singleton; stub it so importing cateApiHandlers
 // stays light and cate.agent.run dispatch is observable.
-const { runForExtension, cancelForExtension } = vi.hoisted(() => ({
-  runForExtension: vi.fn(async () => ({ text: 'done' })),
-  cancelForExtension: vi.fn(async () => {}),
+const { runForExtension, openForExtension, sendForExtension, disposeForExtension, cancelForExtension } =
+  vi.hoisted(() => ({
+    runForExtension: vi.fn(async () => ({ text: 'done', message: null })),
+    openForExtension: vi.fn(async () => ({ sessionId: 'sess-1' })),
+    sendForExtension: vi.fn(async () => ({ text: 'reply', message: { role: 'assistant' } })),
+    disposeForExtension: vi.fn(async () => {}),
+    cancelForExtension: vi.fn(async () => {}),
+  }))
+vi.mock('../../agent/main/agentManager', () => ({
+  agentManager: { runForExtension, openForExtension, sendForExtension, disposeForExtension, cancelForExtension },
 }))
-vi.mock('../../agent/main/agentManager', () => ({ agentManager: { runForExtension, cancelForExtension } }))
 
 // cate.ui.notify reuses the shared OS-notification path; spy on it + the setting.
 const { showOsNotification, settings } = vi.hoisted(() => ({
@@ -109,7 +115,12 @@ beforeEach(() => {
   showMessageBox.mockClear()
   showMessageBox.mockResolvedValue({ response: 0 })
   runForExtension.mockClear()
-  runForExtension.mockResolvedValue({ text: 'done' })
+  runForExtension.mockResolvedValue({ text: 'done', message: null })
+  openForExtension.mockClear()
+  openForExtension.mockResolvedValue({ sessionId: 'sess-1' })
+  sendForExtension.mockClear()
+  sendForExtension.mockResolvedValue({ text: 'reply', message: { role: 'assistant' } })
+  disposeForExtension.mockClear()
   cancelForExtension.mockClear()
 })
 
@@ -229,7 +240,7 @@ describe('dispatchCateInvoke — cate.agent.run', () => {
     activeWindow.value = fakeWin
     const s = agentScope()
     const res = await dispatchCateInvoke(s, 'cate.agent.run', { prompt: '  build it  ' })
-    expect(res).toEqual({ text: 'done' })
+    expect(res).toEqual({ text: 'done', message: null })
     expect(showMessageBox).toHaveBeenCalledTimes(1) // first-use consent
     expect(runForExtension).toHaveBeenCalledWith('build it', {
       workspaceId: WS,
@@ -269,5 +280,51 @@ describe('dispatchCateInvoke — cate.agent.run', () => {
     const s = agentScope()
     expect(await dispatchCateInvoke(s, 'cate.agent.cancel', undefined)).toEqual({ ok: true })
     expect(cancelForExtension).toHaveBeenCalledWith(s.extensionId)
+  })
+
+  it('opens a session after consent and returns its handle', async () => {
+    state.scopes = ['agent']
+    activeWindow.value = fakeWin
+    const s = agentScope()
+    const res = await dispatchCateInvoke(s, 'cate.agent.open', { resume: '/p/sess.jsonl' })
+    expect(res).toEqual({ sessionId: 'sess-1' })
+    expect(showMessageBox).toHaveBeenCalledTimes(1) // first-use consent
+    expect(openForExtension).toHaveBeenCalledWith({
+      workspaceId: WS,
+      locator: '/ws/root',
+      extensionId: s.extensionId,
+      sender: fakeWin.webContents,
+      resume: '/p/sess.jsonl',
+    })
+  })
+
+  it('sends a turn to an open session without re-prompting consent', async () => {
+    state.scopes = ['agent']
+    const s = agentScope()
+    const res = await dispatchCateInvoke(s, 'cate.agent.send', { sessionId: 'sess-1', prompt: '  hi  ' })
+    expect(res).toEqual({ text: 'reply', message: { role: 'assistant' } })
+    expect(sendForExtension).toHaveBeenCalledWith({ extensionId: s.extensionId, sessionId: 'sess-1', text: 'hi' })
+    expect(showMessageBox).not.toHaveBeenCalled() // no consent gate on send
+  })
+
+  it('rejects a send with no sessionId or prompt', async () => {
+    state.scopes = ['agent']
+    expect(await dispatchCateInvoke(agentScope(), 'cate.agent.send', { prompt: 'hi' }))
+      .toEqual({ error: 'bad-args', method: 'cate.agent.send' })
+    expect(sendForExtension).not.toHaveBeenCalled()
+  })
+
+  it('maps an unknown/foreign session to no-session', async () => {
+    state.scopes = ['agent']
+    sendForExtension.mockRejectedValueOnce(new Error('no-session'))
+    expect(await dispatchCateInvoke(agentScope(), 'cate.agent.send', { sessionId: 'x', prompt: 'hi' }))
+      .toEqual({ error: 'no-session', method: 'cate.agent.send' })
+  })
+
+  it('disposes an open session', async () => {
+    state.scopes = ['agent']
+    const s = agentScope()
+    expect(await dispatchCateInvoke(s, 'cate.agent.dispose', { sessionId: 'sess-1' })).toEqual({ ok: true })
+    expect(disposeForExtension).toHaveBeenCalledWith({ extensionId: s.extensionId, sessionId: 'sess-1' })
   })
 })

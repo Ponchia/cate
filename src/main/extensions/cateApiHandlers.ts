@@ -204,6 +204,23 @@ function scopeGranted(declared: string[] | undefined, required: string): boolean
 // re-confirm of a powerful capability rather than a persisted grant).
 const agentConsent = new Set<string>()
 
+/** The active main window the agent run is attached to, or undefined if none. */
+function requireHostWindow(): ReturnType<typeof getActiveMainWindow> {
+  const win = getActiveMainWindow()
+  return win && !win.isDestroyed() ? win : undefined
+}
+
+/** Map an agentManager rejection to an InvokeResult error. Known lifecycle codes
+ *  pass through as-is; anything else is the agent's own failure reason (e.g. an
+ *  unsupported-model or auth message from pi), surfaced so the extension can show
+ *  it instead of a useless generic code. */
+function agentError(err: unknown, method: string): InvokeResult {
+  const message = err instanceof Error ? err.message : String(err)
+  if (message === 'agent-busy') return { error: 'agent-busy', method }
+  if (message === 'no-session') return { error: 'no-session', method }
+  return { error: message || 'agent-failed', method }
+}
+
 /** Ask the user (once per app session) whether `extensionId` may run the agent.
  *  Returns true if already granted or the user allows. */
 async function ensureAgentConsent(extensionId: string): Promise<boolean> {
@@ -298,29 +315,64 @@ export async function dispatchCateInvoke(
     case 'cate.storage.panel.set':
       return dispatchStorage(method, panelId ?? '', args, extensionId, workspaceId)
 
-    // --- Agent: run one background turn through the bundled pi ---------------
+    // --- Agent: drive a pi session through the bundled pi --------------------
+    // pi owns all conversation state on its session jsonl; Cate only holds the
+    // live client. `open` returns a handle (the jsonl path) the extension reuses
+    // for `send` and can persist to `resume` later. `run` is one-shot sugar.
     case 'cate.agent.run': {
       const a = (args ?? {}) as { prompt?: string }
       const promptText = typeof a.prompt === 'string' ? a.prompt.trim() : ''
       if (!promptText) return { error: 'bad-args', method }
-      const win = getActiveMainWindow()
-      if (!win || win.isDestroyed()) return { error: 'no-host-window', method }
       const info = getWorkspaceInfo(workspaceId)
       if (!info) return { error: 'no-workspace', method }
+      const win = requireHostWindow()
+      if (!win) return { error: 'no-host-window', method }
       if (!(await ensureAgentConsent(extensionId))) return { error: 'consent-denied', method }
       try {
-        // Resolves with the final assistant text when pi emits `agent_end` — a
-        // long-lived call (a turn takes minutes); no short timeout applies here.
+        // A turn can take minutes; no short timeout applies here.
         return await agentManager.runForExtension(promptText, {
-          workspaceId,
-          locator: info.rootPath,
-          extensionId,
-          sender: win.webContents,
+          workspaceId, locator: info.rootPath, extensionId, sender: win.webContents,
         })
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        return { error: message === 'agent-busy' ? 'agent-busy' : 'agent-failed', method }
+        return agentError(err, method)
       }
+    }
+
+    case 'cate.agent.open': {
+      const a = (args ?? {}) as { resume?: unknown }
+      const resume = typeof a.resume === 'string' && a.resume ? a.resume : undefined
+      const info = getWorkspaceInfo(workspaceId)
+      if (!info) return { error: 'no-workspace', method }
+      const win = requireHostWindow()
+      if (!win) return { error: 'no-host-window', method }
+      if (!(await ensureAgentConsent(extensionId))) return { error: 'consent-denied', method }
+      try {
+        return await agentManager.openForExtension({
+          workspaceId, locator: info.rootPath, extensionId, sender: win.webContents, resume,
+        })
+      } catch (err) {
+        return agentError(err, method)
+      }
+    }
+
+    case 'cate.agent.send': {
+      const a = (args ?? {}) as { sessionId?: unknown; prompt?: unknown }
+      const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+      const promptText = typeof a.prompt === 'string' ? a.prompt.trim() : ''
+      if (!sessionId || !promptText) return { error: 'bad-args', method }
+      try {
+        return await agentManager.sendForExtension({ extensionId, sessionId, text: promptText })
+      } catch (err) {
+        return agentError(err, method)
+      }
+    }
+
+    case 'cate.agent.dispose': {
+      const a = (args ?? {}) as { sessionId?: unknown }
+      const sessionId = typeof a.sessionId === 'string' ? a.sessionId : ''
+      if (!sessionId) return { error: 'bad-args', method }
+      await agentManager.disposeForExtension({ extensionId, sessionId })
+      return { ok: true }
     }
 
     case 'cate.agent.cancel': {

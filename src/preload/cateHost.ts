@@ -12,7 +12,7 @@
 // =============================================================================
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { CateHost, CateHostTheme, CateHostWorkspace } from '../shared/cate-host-api'
+import type { AgentTurnResult, CateHost, CateHostTheme, CateHostWorkspace } from '../shared/cate-host-api'
 
 // Channel names are inlined (NOT imported from ../shared/ipc-channels) on
 // purpose: this is a SECOND preload entry, and sharing a runtime module with
@@ -65,7 +65,12 @@ const api: CateHost = {
   },
 
   agent: {
-    run: (prompt: string) => invoke('cate.agent.run', { prompt }) as Promise<{ text: string } | { error: string }>,
+    open: (opts?: { resume?: string }) =>
+      invoke('cate.agent.open', { resume: opts?.resume }) as Promise<{ sessionId: string } | { error: string }>,
+    send: (sessionId: string, prompt: string) =>
+      invoke('cate.agent.send', { sessionId, prompt }) as Promise<AgentTurnResult | { error: string }>,
+    dispose: (sessionId: string) => invoke('cate.agent.dispose', { sessionId }),
+    run: (prompt: string) => invoke('cate.agent.run', { prompt }) as Promise<AgentTurnResult | { error: string }>,
     cancel: () => invoke('cate.agent.cancel'),
   },
 
