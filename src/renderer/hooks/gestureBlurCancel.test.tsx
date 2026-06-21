@@ -245,6 +245,37 @@ describe('group drag — blur cancellation', () => {
     expect(store.getState().nodes['A'].origin).toEqual(before)
   })
 
+  it('moves the whole selection and marks wasDragged so the follow-up click cannot collapse it', () => {
+    const store = freshStore()
+    addNode(store, 'A', { x: 0, y: 0 }, { width: 100, height: 100 })
+    addNode(store, 'B', { x: 200, y: 0 }, { width: 100, height: 100 })
+    addNode(store, 'C', { x: 400, y: 0 }, { width: 100, height: 100 })
+    act(() => store.getState().selectNodes(['A', 'B', 'C'], false))
+
+    const wasDragged = { current: false }
+    act(() => root.render(<GroupDragProbe nodeId="B" store={store} wasDragged={wasDragged} />))
+    const handle = container.querySelector<HTMLElement>('[data-testid="group-handle"]')!
+
+    // Grab B (a non-lead member) and drag past the dead zone.
+    act(() => {
+      handle.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 50, clientY: 50, bubbles: true }))
+    })
+    act(() => window.dispatchEvent(new MouseEvent('mousemove', { clientX: 90, clientY: 70, bubbles: true })))
+
+    // Every selected node translated by the same delta — not just the grabbed one.
+    expect(store.getState().nodes['A'].origin).toEqual({ x: 40, y: 20 })
+    expect(store.getState().nodes['B'].origin).toEqual({ x: 240, y: 20 })
+    expect(store.getState().nodes['C'].origin).toEqual({ x: 440, y: 20 })
+
+    // The drag latches wasDragged — this is what makes the node's onClick bail
+    // instead of running selectNodes([id])+focus and collapsing the group.
+    expect(wasDragged.current).toBe(true)
+    // Selection is untouched by the move itself.
+    expect(store.getState().selection).toEqual(['A', 'B', 'C'])
+
+    act(() => window.dispatchEvent(new MouseEvent('mouseup', { clientX: 90, clientY: 70, bubbles: true })))
+  })
+
   it('swallows wheel events while the group drag is live', () => {
     const store = freshStore()
     addNode(store, 'A', { x: 0, y: 0 }, { width: 100, height: 100 })

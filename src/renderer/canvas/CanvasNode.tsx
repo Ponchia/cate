@@ -662,6 +662,11 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
             if (isFocused || e.button !== 0) return
             if (handToolPanShouldWin(e)) return
             e.stopPropagation()
+            // In a multi-selection no node is active, so the press lands on this
+            // dim overlay rather than the title bar. Try the group drag first
+            // (like the grab strip / tab bar) so grabbing any selected panel
+            // moves the whole group instead of collapsing to just this one.
+            if (startGroupDrag(e)) return
             handleDragStart(e)
           }}
           onClick={(e) => {
