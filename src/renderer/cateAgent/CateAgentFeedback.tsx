@@ -372,7 +372,7 @@ const IterationRow: React.FC<{ it: Iteration; index: number; framed: boolean; wi
         </div>
       )}
       {it.verify && (
-        <div className={`text-[11px] leading-snug break-words line-clamp-3 ${it.verify.met ? 'text-green-400/90' : 'text-red-400/80'}`}>
+        <div className={`text-[11px] leading-snug break-words line-clamp-3 ${it.verify.met ? 'text-secondary' : 'text-red-400/80'}`}>
           {it.verify.reason}
         </div>
       )}
@@ -397,40 +397,62 @@ const IterationRow: React.FC<{ it: Iteration; index: number; framed: boolean; wi
   )
 }
 
-// One labeled, independently-collapsible detail row on a job card. The label is the
-// toggle: collapsed, the value folds to a single dimmed preview line (clicking it, or
-// the label, reopens); open, the full value shows. Labels share a fixed-width column
-// so every value lines up at the same left edge — replacing the lone goal icon and its
-// hanging indent with one consistent structure.
-const JobField: React.FC<{ label: string; defaultOpen?: boolean; preview?: string; children: React.ReactNode }> = ({
+// The shared label column for every detail row: a fixed-width, uppercase tag so all
+// values line up at the same left edge — replacing the old lone goal icon + hanging
+// indent with one consistent structure.
+const FIELD_LABEL = 'flex-shrink-0 w-[4.25rem] text-left text-[11px] font-semibold uppercase tracking-wide text-muted'
+
+// A static labeled row (no collapse) — for values that are a single line or otherwise
+// not foldable: the agent chips, the markdown answer, the boxed parallel attempts.
+const FieldRow: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div className="flex items-start gap-1.5">
+    <span className={`${FIELD_LABEL} mt-[2px]`}>{label}</span>
+    <div className="flex-1 min-w-0">{children}</div>
+  </div>
+)
+
+// A labeled TEXT row that collapses ONLY when its value wraps past one line — a
+// one-liner has nothing to fold to, so it stays static (no toggle, no dimming). When
+// it does overflow, the label toggles between the clamped first line and the full text.
+const JobField: React.FC<{ label: string; text: string; tone?: string; defaultOpen?: boolean }> = ({
   label,
-  defaultOpen = true,
-  preview,
-  children,
+  text,
+  tone = 'text-secondary',
+  defaultOpen = false,
 }) => {
   const [open, setOpen] = React.useState(defaultOpen)
+  const [multiline, setMultiline] = React.useState(false)
+  const ref = React.useRef<HTMLDivElement>(null)
+  // Measured unclamped on first layout (and whenever the text changes): if the natural
+  // height is more than ~one line, the row is collapsible.
+  React.useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const lh = parseFloat(getComputedStyle(el).lineHeight) || 16
+    setMultiline(el.scrollHeight > lh * 1.6)
+  }, [text])
+  const clamp = multiline && !open
   return (
     <div className="flex items-start gap-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        title={open ? 'Collapse' : 'Expand'}
-        className="flex-shrink-0 mt-[1px] w-[4.25rem] text-left text-[11px] font-semibold uppercase tracking-wide text-muted hover:text-secondary transition-colors truncate"
-      >
-        {label}
-      </button>
-      {open ? (
-        <div className="flex-1 min-w-0">{children}</div>
+      {multiline ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          title={open ? 'Collapse' : 'Expand'}
+          className={`${FIELD_LABEL} mt-[1px] hover:text-secondary transition-colors truncate`}
+        >
+          {label}
+        </button>
       ) : (
-        preview && (
-          <div
-            onClick={() => setOpen(true)}
-            className="flex-1 min-w-0 truncate text-xs leading-snug text-muted/70 cursor-pointer"
-          >
-            {preview}
-          </div>
-        )
+        <span className={`${FIELD_LABEL} mt-[1px] truncate`}>{label}</span>
       )}
+      <div
+        ref={ref}
+        onClick={clamp ? () => setOpen(true) : undefined}
+        className={`flex-1 min-w-0 text-xs leading-snug break-words ${tone} ${clamp ? 'line-clamp-1 cursor-pointer' : ''}`}
+      >
+        {text}
+      </div>
     </div>
   )
 }
@@ -464,10 +486,14 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
   const iters = (job.iterations ?? []).filter((i) => i.status !== 'cancelled')
   const framed = iters.length > 1
   const lastVerify = iters.length ? iters[iters.length - 1].verify : undefined
-  // The live agent chips, flattened across iterations (or the raw terminal ids for a
-  // non-loop job) — shown under the Agents field.
-  const iterAgentIds = iters.flatMap((i) => i.agents.map((a) => a.terminalId))
-  const flatChipIds = iterAgentIds.length ? iterAgentIds : terminals
+  // The live agent chips: the union of every iteration's agents AND the todo's own
+  // terminal ids, deduped. Which side holds the ids shifts across a job's life (agents
+  // live on iterations while looping, on the todo for non-loop jobs), so take both —
+  // keying off only one left the Agents row empty in exactly the states that moved them.
+  const chipIds = new Set<string>()
+  for (const it of iters) for (const a of it.agents ?? []) chipIds.add(a.terminalId)
+  for (const tid of terminals) chipIds.add(tid)
+  const flatChipIds = [...chipIds]
 
   const runReview = async (fn: (w: string, r: string, t: Todo) => Promise<unknown>) => {
     setBusy(true)
@@ -516,50 +542,43 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
           its own value, so the verbose bits (the ask, the rationale) sit collapsed to a
           one-line preview by default while the outcome stays open. */}
       <div className="flex flex-col gap-1">
-        {job.goal && (
-          <JobField label="Task" defaultOpen={false} preview={job.goal}>
-            <div className="text-xs leading-snug text-secondary break-words">{job.goal}</div>
-          </JobField>
-        )}
+        {job.goal && <JobField label="Task" text={job.goal} />}
 
         {job.note && (
-          <JobField label="Note" defaultOpen={false} preview={job.note}>
-            <div className={`text-xs leading-snug break-words ${job.status === 'review' ? 'text-secondary' : 'text-muted'}`}>
-              {job.note}
-            </div>
-          </JobField>
+          <JobField label="Note" text={job.note} tone={job.status === 'review' ? 'text-secondary' : 'text-muted'} />
         )}
 
         {job.output && (
-          <JobField label="Answer" defaultOpen>
+          <FieldRow label="Answer">
             <div className="rounded-lg bg-surface-0 border border-subtle px-2.5 py-2 text-xs leading-relaxed text-primary max-h-60 overflow-y-auto">
               <Markdown text={job.output} />
             </div>
-          </JobField>
+          </FieldRow>
         )}
 
         {framed ? (
           // A parallel race: each attempt keeps its own boxed verdict + agents.
-          <JobField label="Attempts" defaultOpen>
+          <FieldRow label="Attempts">
             <IterationSection job={job} wsId={wsId} />
-          </JobField>
+          </FieldRow>
         ) : (
           <>
             {lastVerify && (
-              <JobField label="Result" defaultOpen preview={lastVerify.reason}>
-                <div className={`text-[11px] leading-snug break-words ${lastVerify.met ? 'text-green-400/90' : 'text-red-400/80'}`}>
-                  {lastVerify.reason}
-                </div>
-              </JobField>
+              <JobField
+                label="Result"
+                defaultOpen
+                text={lastVerify.reason}
+                tone={lastVerify.met ? 'text-secondary' : 'text-red-400/80'}
+              />
             )}
             {flatChipIds.length > 0 && (
-              <JobField label="Agents" defaultOpen>
+              <FieldRow label="Agents">
                 <div className="flex flex-wrap items-center gap-1.5">
                   {flatChipIds.map((tid) => (
                     <TerminalChip key={tid} wsId={wsId} panelId={tid} />
                   ))}
                 </div>
-              </JobField>
+              </FieldRow>
             )}
           </>
         )}
