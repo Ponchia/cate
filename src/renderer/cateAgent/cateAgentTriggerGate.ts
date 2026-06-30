@@ -16,8 +16,8 @@ export interface TriggerGateInput {
   dirty: boolean
   /** An observer turn is already in flight. */
   observerBusy: boolean
-  /** The executor is running a todo (don't distract with proposals mid-run). */
-  executorBusy: boolean
+  /** The orchestrator is running a todo (don't distract with proposals mid-run). */
+  orchestratorBusy: boolean
   /** Count of suggestions awaiting the user (suggested status). */
   openSuggestions: number
   /** ms timestamp of the last observe turn (0 if never). */
@@ -35,7 +35,7 @@ export function shouldObserve(input: TriggerGateInput): boolean {
   if (!input.enabled) return false
   if (!input.autoObserve) return false
   if (!input.dirty) return false
-  if (input.observerBusy || input.executorBusy) return false
+  if (input.observerBusy || input.orchestratorBusy) return false
   if (input.openSuggestions >= MAX_OPEN_SUGGESTIONS) return false
   if (input.now - input.lastObserveAt < OBSERVE_COOLDOWN_MS) return false
   return true

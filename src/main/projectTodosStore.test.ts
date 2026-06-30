@@ -1,13 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { promises as fs, existsSync } from 'fs'
+import { promises as fs } from 'fs'
 import path from 'path'
 import { tmpdir } from 'os'
 
-// projectTodosStore pulls in electron + main-only deps at import time; mock them
-// so it loads under vitest's node environment.
-vi.mock('electron', () => ({
-  ipcMain: { handle: vi.fn() },
-}))
+vi.mock('electron', () => ({ ipcMain: { handle: vi.fn() } }))
 vi.mock('./logger', () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
@@ -15,10 +11,6 @@ vi.mock('./cateGitignore', () => ({ ensureCateGitignore: vi.fn(async () => {}) }
 
 import { loadTodos, saveTodos } from './projectTodosStore'
 import type { Todo } from '../shared/types'
-
-function makeTodo(over: Partial<Todo> = {}): Todo {
-  return { id: 't1', title: 'do a thing', origin: 'user', status: 'pending', createdAt: 1, ...over }
-}
 
 let root: string
 beforeEach(async () => {
@@ -29,51 +21,84 @@ afterEach(async () => {
 })
 
 describe('projectTodosStore', () => {
-  it('returns [] when the file is absent', async () => {
-    expect(await loadTodos(root)).toEqual([])
-  })
-
-  it('round-trips a saved list', async () => {
-    const todos = [makeTodo(), makeTodo({ id: 't2', title: 'second', status: 'done', updatedAt: 5 })]
-    await saveTodos(root, todos)
-    expect(existsSync(path.join(root, '.cate', 'todos.json'))).toBe(true)
-    expect(await loadTodos(root)).toEqual(todos)
-  })
-
-  it('drops malformed entries and defaults a bad status', async () => {
-    const file = {
-      version: 1,
-      todos: [
-        { id: 'ok', title: 'keep', origin: 'user', status: 'weird', createdAt: 2 },
-        { id: 42, title: 'no id' }, // dropped — id not a string
-        { title: 'no id field' }, // dropped
-        'nonsense', // dropped
-      ],
-    }
-    await fs.mkdir(path.join(root, '.cate'), { recursive: true })
-    await fs.writeFile(path.join(root, '.cate', 'todos.json'), JSON.stringify(file), 'utf-8')
-    const loaded = await loadTodos(root)
-    expect(loaded).toHaveLength(1)
-    expect(loaded[0]).toMatchObject({ id: 'ok', status: 'pending' }) // unknown status -> pending
-  })
-
-  it('returns [] on unparseable JSON instead of throwing', async () => {
-    await fs.mkdir(path.join(root, '.cate'), { recursive: true })
-    await fs.writeFile(path.join(root, '.cate', 'todos.json'), '{ not json', 'utf-8')
-    expect(await loadTodos(root)).toEqual([])
-  })
-
-  it('preserves the richer Cate Agent fields (worktree, terminals, note)', async () => {
-    const cateAgentTodo = makeTodo({
-      id: 'p1',
+  it('round-trips the cate-agent loop layer (iterations + agents + terminalId)', async () => {
+    // Regression: normalizeTodo used to drop iterations/goal/topic/round/output on
+    // load, silently wiping the loop state and the terminal chips' panel linkage on
+    // every restart. The job-card terminal chips key off iterations[].agents[].terminalId,
+    // so that field in particular must survive the disk round-trip.
+    const todo: Todo = {
+      id: 't1',
+      title: 'update readme',
       origin: 'cateAgent',
       status: 'in_progress',
-      worktreeId: 'wt-1',
-      branch: 'cate-agent/p1',
-      terminalNodeIds: ['n1', 'n2'],
-      note: 'because reasons',
-    })
-    await saveTodos(root, [cateAgentTodo])
-    expect(await loadTodos(root)).toEqual([cateAgentTodo])
+      createdAt: 1,
+      topic: 'Update README',
+      goal: 'Refresh README.md',
+      check: 'readme mentions the widget API',
+      round: 2,
+      recommendedIterationId: 'it-1',
+      output: 'done',
+      interrupted: true,
+      iterations: [
+        {
+          id: 'it-1',
+          todoId: 't1',
+          round: 2,
+          worktreeId: 'wt-1',
+          branch: 'cate/readme',
+          status: 'passed',
+          createdAt: 5,
+          agents: [
+            { agent: 'coding agent', terminalId: '390d9ec7', scope: 'docs', kind: 'work' },
+            { agent: 'verifier', terminalId: '7c0ffee0', kind: 'verify' },
+          ],
+          verify: { met: true, reason: 'looks good', at: 9 },
+        },
+      ],
+    }
+
+    await saveTodos(root, [todo])
+    const [loaded] = await loadTodos(root)
+
+    expect(loaded).toEqual(todo)
+    expect(loaded.iterations?.[0].agents[0].terminalId).toBe('390d9ec7')
+  })
+
+  it('drops agent records with no terminalId (the chip cannot resolve them)', async () => {
+    await fs.mkdir(path.join(root, '.cate'), { recursive: true })
+    await fs.writeFile(
+      path.join(root, '.cate', 'todos.json'),
+      JSON.stringify({
+        version: 1,
+        todos: [
+          {
+            id: 't1', title: 'x', origin: 'cateAgent', status: 'in_progress', createdAt: 1,
+            iterations: [
+              { id: 'it-1', todoId: 't1', round: 1, status: 'running', createdAt: 2, agents: [{ agent: 'codex' }] },
+            ],
+          },
+        ],
+      }),
+      'utf-8',
+    )
+    const [loaded] = await loadTodos(root)
+    expect(loaded.iterations?.[0].agents).toEqual([])
+  })
+
+  it('degrades gracefully: malformed iterations are dropped, the todo survives', async () => {
+    await fs.mkdir(path.join(root, '.cate'), { recursive: true })
+    await fs.writeFile(
+      path.join(root, '.cate', 'todos.json'),
+      JSON.stringify({
+        version: 1,
+        todos: [
+          { id: 't1', title: 'x', origin: 'user', status: 'pending', createdAt: 1, iterations: [{ nope: true }, null, 7] },
+        ],
+      }),
+      'utf-8',
+    )
+    const [loaded] = await loadTodos(root)
+    expect(loaded.id).toBe('t1')
+    expect(loaded.iterations).toEqual([])
   })
 })

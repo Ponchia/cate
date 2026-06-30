@@ -15,8 +15,8 @@ import { ModelPrefRow, type PickModels } from '../../agent/renderer/ProvidersVie
 import {
   loadCateAgentModel,
   saveCateAgentModel,
-  loadCateAgentExecutorAgentId,
-  saveCateAgentExecutorAgentId,
+  loadCateAgentOrchestratorAgentId,
+  saveCateAgentOrchestratorAgentId,
 } from '../../agent/renderer/agentModelPrefs'
 import { AGENTS } from '../../shared/agents'
 import type { AgentModelRef } from '../../shared/types'
@@ -104,7 +104,7 @@ function CateAgentModels() {
   // source the global Default-model picker uses).
   const [models, setModels] = useState<PickModels>([])
   const [model, setModel] = useState<AgentModelRef | null>(() => loadCateAgentModel())
-  const [agentId, setAgentId] = useState<string>(() => loadCateAgentExecutorAgentId())
+  const [agentId, setAgentId] = useState<string>(() => loadCateAgentOrchestratorAgentId())
   const [open, setOpen] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -147,10 +147,10 @@ function CateAgentModels() {
         />
         <div className="space-y-1.5">
           <div className="text-[10.5px] uppercase tracking-wider text-muted/70 font-semibold">Coding agent</div>
-          <div className="text-[11px] text-muted -mt-1">The CLI the Cate Agent launches in a terminal to write the code.</div>
+          <div className="text-[11px] text-muted -mt-1">Default CLI each iteration runs to write the code. The Cate Agent can override it per attempt.</div>
           <select
             value={agentId}
-            onChange={(e) => { setAgentId(e.target.value); saveCateAgentExecutorAgentId(e.target.value) }}
+            onChange={(e) => { setAgentId(e.target.value); saveCateAgentOrchestratorAgentId(e.target.value) }}
             className="w-full bg-hover border border-strong rounded-md px-2 py-1.5 text-[12.5px] text-primary outline-none focus:border-agent-light/50"
           >
             <option value="">Let the Cate Agent choose</option>

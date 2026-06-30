@@ -77,7 +77,7 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   // renderer consumers, which already tolerate partial/legacy shapes.
   agentDefaultModel: 'object',
   cateAgentModel: 'object',
-  cateAgentExecutorAgentId: 'string',
+  cateAgentOrchestratorAgentId: 'string',
   sidebarLayout: 'object',
   customShortcuts: 'object',
 }

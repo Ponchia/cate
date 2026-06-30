@@ -1017,7 +1017,7 @@ function ensureSubscribed(): void {
   try {
     window.electronAPI.onAgentEvent((envelope) => {
       if (!envelope?.panelId || !envelope.event) return
-      // Cate Agent sessions (cate-agent-observer:/cate-agent-exec:) have no
+      // Cate Agent sessions (cate-agent-observer:/cate-agent-orchestrator:) have no
       // AgentPanel — route their events to the Cate Agent bridge instead of the
       // normal panel handling, which would otherwise spawn a phantom empty panel
       // for them. The bridge is lazy-loaded so agentStore stays free of the Cate

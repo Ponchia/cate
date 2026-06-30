@@ -15,6 +15,7 @@
 import type { CateAgentBridgeHost } from './cateAgentTypes'
 import { runCateAgentTool } from './cateAgentTools'
 import { initCateAgentTerminalExits } from './cateAgentTerminalExits'
+import { signalRunEnd } from './cateAgentRunWaiters'
 import log from '../lib/logger'
 
 const CATE_AGENT_MARKER = 'cate-agent-tools:'
@@ -91,6 +92,9 @@ export function handleCateAgentEvent(panelId: string, event: { type: string; [ke
 
     case 'agent_end': {
       console.info('[cateAgent] run end', panelId)
+      // Wake anything awaiting this run's completion (e.g. the launcher waiting on
+      // a driver) BEFORE the host reconciles and possibly disposes the session.
+      signalRunEnd(panelId)
       if (ctx) host.onRunEnd(ctx)
       return
     }
@@ -101,6 +105,7 @@ export function handleCateAgentEvent(panelId: string, event: { type: string; [ke
     case 'error': {
       const message = typeof event.message === 'string' ? event.message : 'agent error'
       console.warn('[cateAgent] error', panelId, message)
+      signalRunEnd(panelId)
       if (ctx) host.onError(ctx, message)
       return
     }

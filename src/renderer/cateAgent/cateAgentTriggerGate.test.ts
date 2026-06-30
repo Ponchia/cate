@@ -7,7 +7,7 @@ function base(over: Partial<TriggerGateInput> = {}): TriggerGateInput {
     autoObserve: true,
     dirty: true,
     observerBusy: false,
-    executorBusy: false,
+    orchestratorBusy: false,
     openSuggestions: 0,
     lastObserveAt: 0,
     now: OBSERVE_COOLDOWN_MS + 1,
@@ -32,9 +32,9 @@ describe('shouldObserve', () => {
     expect(shouldObserve(base({ autoObserve: false }))).toBe(false)
   })
 
-  it('holds while observer or executor is busy', () => {
+  it('holds while observer or orchestrator is busy', () => {
     expect(shouldObserve(base({ observerBusy: true }))).toBe(false)
-    expect(shouldObserve(base({ executorBusy: true }))).toBe(false)
+    expect(shouldObserve(base({ orchestratorBusy: true }))).toBe(false)
   })
 
   it('holds at/above the open-suggestion cap', () => {

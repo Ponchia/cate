@@ -1,11 +1,18 @@
 // =============================================================================
 // cate-agent-tools — the Cate Agent's tool surface.
 //
-// Two headless Cate Agent brains call these tools:
-//   - observer (Haiku): watches the user, proposes todos, never acts.
-//   - executor (strong model): orchestrates VISIBLE terminals (in an isolated
-//     worktree, prepared up-front by the controller for git repos) to carry out
-//     one approved todo, then hands it to the review gate.
+// Three headless Cate Agent brains call these tools (all on one user-picked model):
+//   - observer: watches the user, proposes todos, never acts.
+//   - orchestrator: the ORCHESTRATOR. READ-ONLY (no write/edit tools). Sets a goal +
+//     how to check it, then spawns parallel ITERATIONS, handing each an OVERVIEW, and
+//     loops by round until the goal is met. Never chooses coding agents and never edits
+//     files itself. Answers read-only tasks. Each iteration is checked automatically by
+//     an independent verifier driver (see runIterationCheck) — the orchestrator just
+//     reads the {met, reason} verdicts it's woken with.
+//   - driver: ONE per iteration. Seeded with the iteration's overview + worktree cwd,
+//     it decides the 1-or-N agent decomposition, opens terminals, launches the CLIs,
+//     and submits the task — then is re-prompted as each terminal finishes.
+//     create_terminal + read_terminal + send_keys only.
 //
 // Every tool is a thin RPC: it packs {tool, params} into a `cate-agent-tools:`
 // envelope and does ONE ctx.ui.input round-trip. Cate's renderer-side Cate Agent
@@ -13,10 +20,10 @@
 // APIs (terminals become canvas nodes, worktrees get territory zones, todos
 // persist), and returns a JSON string the tool surfaces verbatim as its result.
 //
-// Why ctx.ui.input (not a custom RPC): pi only exposes select/input/confirm as
-// interactive primitives under Cate. input() blocks until the host replies, which
-// is exactly the request/response shape every tool needs — identical to how
-// cate-ask-user works.
+// Two things are role-scoped from `before_agent_start`: the role SYSTEM PROMPT
+// (appended to pi's default) and TOOL GATING via setActiveTools — observer/
+// orchestrator lose the file-mutation built-ins (write, edit) so they are
+// read-only; the driver is narrowed to create_terminal + read_terminal + send_keys.
 //
 // The tool SET is gated by CATE_AGENT_ROLE: with no role (a normal user agent
 // session) NOTHING is registered, so this extension is inert for everyone but
@@ -35,9 +42,43 @@ function envelope(tool: string, params: Json): string {
   return CATE_AGENT_MARKER + JSON.stringify({ tool, params })
 }
 
+// --- role system prompts (pi never receives AgentCreateOptions.systemPrompt; the
+//     role's framing is injected here, appended to pi's default prompt). ---------
+
+const OBSERVER_PROMPT = [
+  "Observer for a coding workspace. You never act.",
+  "Each turn: remark with a short update; propose_todo only for clearly worthwhile, non-duplicate work.",
+].join(" ")
+
+const ORCHESTRATOR_PROMPT = [
+  "You orchestrate a coding task, read-only — no edit tools; all changes happen inside iterations.",
+  "Questions and read-only tasks: investigate and answer.",
+  "Otherwise: set_goal (goal + how to check it), then iterate one or more times to race attempts — each spawns a fresh worktree from an overview whose driver picks the agents. End your turn; each attempt is verified automatically and you're woken with its {met, reason}.",
+  "Loop until the goal is fully met: select_winner among passers, iterate again folding in the failures, or update_todo 'failed'.",
+].join(" ")
+
+const DRIVER_PROMPT = [
+  "You drive ONE iteration: get coding-agent CLIs to do the work in a worktree — you never do the task yourself.",
+  "Break the work up and run multiple coding agents in parallel (separate terminals, disjoint files) whenever it partitions cleanly; use one only when it doesn't.",
+  "Per agent: create_terminal, send_keys the CLI launch command, read_terminal and answer any startup/trust/permission prompt to proceed, then send_keys the task with background:true and end your turn.",
+  "background:true wakes you when that terminal finishes — nudge it again if it stalled. A turn ending with no outstanding background send_keys completes the iteration.",
+].join(" ")
+
+const ROLE_PROMPTS: Record<string, string> = {
+  observer: OBSERVER_PROMPT,
+  orchestrator: ORCHESTRATOR_PROMPT,
+  driver: DRIVER_PROMPT,
+}
+
+/** Built-in file-mutation tools removed from every non-driver role (read-only). */
+const MUTATING_TOOLS = new Set(["write", "edit"])
+/** The only tools the per-iteration driver keeps — it opens terminals and types
+ *  into them. */
+const DRIVER_TOOLS = new Set(["create_terminal", "read_terminal", "send_keys"])
+
 export default function (pi: ExtensionAPI) {
   const role = process.env.CATE_AGENT_ROLE
-  if (role !== "observer" && role !== "executor") return // inert for normal sessions
+  if (role !== "observer" && role !== "orchestrator" && role !== "driver") return // inert for normal sessions
 
   // One round-trip helper shared by every tool. Returns the bridge's reply text
   // (already a model-readable string: JSON for structured tools, prose for
@@ -52,15 +93,25 @@ export default function (pi: ExtensionAPI) {
     return { content: [{ type: "text" as const, text }], details: { tool, raw: raw ?? null } }
   }
 
-  // --- Shared (both roles) ----------------------------------------------------
+  // Role framing + read-only gating, re-applied before every run (idempotent, and
+  // robust if pi resets the active tool set per run — these sessions are long-lived
+  // across wakes). Built-ins are all registered by the time this fires.
+  pi.on("before_agent_start", async (event) => {
+    const all = pi.getAllTools().map((t) => t.name)
+    const active = role === "driver" ? all.filter((n) => DRIVER_TOOLS.has(n)) : all.filter((n) => !MUTATING_TOOLS.has(n))
+    pi.setActiveTools(active)
+    return { systemPrompt: `${event.systemPrompt}\n\n${ROLE_PROMPTS[role]}` }
+  })
+
+  // --- Shared (all roles) -----------------------------------------------------
 
   pi.registerTool({
     name: "read_terminal",
     label: "Read terminal",
     description:
-      "Read a terminal's CURRENT SCREEN (what the user sees, not a raw scroll log) plus its state. Returns JSON {output, isRunning, lastExitCode, agentState}. agentState is the coding-agent's turn-state when one is running: 'running' (mid-turn), 'waitingForInput' (turn done, awaiting you), 'finished'/'notRunning' (CLI exited), or null for a plain shell.",
+      "Read a terminal's screen + state: {output, isRunning, lastExitCode, agentState}. agentState: 'running' | 'waitingForInput' | 'finished' | 'notRunning', or null for a plain shell.",
     parameters: Type.Object({
-      terminalId: Type.String({ description: "A terminal id from create_terminal or list_terminals." }),
+      terminalId: Type.String(),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return call(ctx, "read_terminal", { terminalId: params.terminalId })
@@ -72,10 +123,10 @@ export default function (pi: ExtensionAPI) {
       name: "propose_todo",
       label: "Propose todo",
       description:
-        "Propose a NEW task for the user to approve. Propose sparingly and only with a clear, specific rationale grounded in the user's activity. Never duplicate an existing todo. The proposal appears as a suggestion the user can approve or dismiss — it does not run anything.",
+        "Propose a task for the user to approve. Concrete, non-duplicate.",
       parameters: Type.Object({
-        title: Type.String({ description: "Short, concrete task title (imperative)." }),
-        rationale: Type.String({ description: "One or two sentences: why this is worth doing now." }),
+        title: Type.String({ description: "Short imperative task title." }),
+        rationale: Type.String({ description: "Why it's worth doing now." }),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         return call(ctx, "propose_todo", { title: params.title, rationale: params.rationale })
@@ -86,9 +137,9 @@ export default function (pi: ExtensionAPI) {
       name: "remark",
       label: "Remark",
       description:
-        "Give the user a brief, ephemeral update via the Cate Agent's speech bubble. Not saved or actionable — end every turn with one.",
+        "A brief update to the user. End every turn with one.",
       parameters: Type.Object({
-        text: Type.String({ description: "One short, conversational sentence grounded in what the user is doing." }),
+        text: Type.String({ description: "One short sentence about what the user is doing." }),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         return call(ctx, "remark", { text: params.text })
@@ -96,91 +147,58 @@ export default function (pi: ExtensionAPI) {
     })
   }
 
-  if (role === "executor") {
-    // --- Canvas / terminal management (the agent does these DIRECTLY, no CLI) ---
+  if (role === "orchestrator") {
+    // --- Orchestrator: define → iterate → select. Never chooses agents or edits
+    //     files. Each iteration is checked automatically by a verifier driver. ---
 
     pi.registerTool({
-      name: "list_terminals",
-      label: "List terminals",
+      name: "set_goal",
+      label: "Set goal",
       description:
-        "List EVERY terminal currently open on the canvas — including ones the user opened, not just yours. Returns JSON {terminals: [{terminalId, title, busy}]}. Use this to discover terminals before reading, driving, or closing them (e.g. to honour a 'close my terminals' request).",
-      parameters: Type.Object({}),
-      async execute(_id, _params, _signal, _onUpdate, ctx) {
-        return call(ctx, "list_terminals", {})
-      },
-    })
-
-    pi.registerTool({
-      name: "list_panels",
-      label: "List panels",
-      description:
-        "List EVERY panel currently open on the canvas (terminals, editors, browsers, documents, nested canvases). Returns JSON {panels: [{panelId, type, title}]}. Use this to manage the canvas — e.g. to find panels to close or focus.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, _signal, _onUpdate, ctx) {
-        return call(ctx, "list_panels", {})
-      },
-    })
-
-    pi.registerTool({
-      name: "close_panel",
-      label: "Close panel",
-      description:
-        "Close ANY panel on the canvas by id (a terminal, editor, browser, document, or nested canvas) — not limited to panels you opened. Use list_panels / list_terminals to find the id first.",
-      parameters: Type.Object({ panelId: Type.String({ description: "A panel id from list_panels / list_terminals." }) }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "close_panel", { panelId: params.panelId })
-      },
-    })
-
-    pi.registerTool({
-      name: "focus_panel",
-      label: "Focus panel",
-      description:
-        "Bring a panel to the front and focus it on the canvas (raises its node, makes it the active panel). Use list_panels / list_terminals to find the id first.",
-      parameters: Type.Object({ panelId: Type.String({ description: "A panel id from list_panels / list_terminals." }) }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "focus_panel", { panelId: params.panelId })
-      },
-    })
-
-    pi.registerTool({
-      name: "create_terminal",
-      label: "Create terminal",
-      description:
-        "Open a VISIBLE terminal on the canvas for this todo (in its isolated worktree when one exists, otherwise the project root) and run a command in it. Use this for everything — shell commands (test/build/git) AND launching a coding-agent CLI of your choice. You have no direct shell/edit; all work happens through terminals. By DEFAULT it WAITS for the command to finish (the shell goes idle, or a coding-agent CLI parks awaiting input) and returns the terminal's screen + state. Pass background:true to launch and return immediately — use that to run several CLIs at once, then end your turn to be woken when one needs attention. Returns JSON {terminalId, output, agentState, ...}.",
+        "Define the goal and how to verify it, before iterating.",
       parameters: Type.Object({
-        todoId: Type.String(),
-        command: Type.String({ description: "The command line to run (a shell command or a CLI invocation)." }),
-        background: Type.Optional(Type.Boolean({ description: "Launch and return immediately instead of waiting for the command to finish (default false)." })),
+        goal: Type.String({ description: "What 'done' means." }),
+        check: Type.String({ description: "How an agent confirms it: tests/build to run, or what to look for in the diff." }),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "create_terminal", { todoId: params.todoId, command: params.command, background: params.background })
+        return call(ctx, "set_goal", { goal: params.goal, check: params.check })
       },
     })
 
     pi.registerTool({
-      name: "send_keys",
-      label: "Send keys",
+      name: "iterate",
+      label: "Iterate",
       description:
-        "Type input into a running terminal (e.g. give a coding-agent CLI its next instruction, or answer a prompt). Appends a newline unless you set enter:false. By DEFAULT it WAITS for the resulting work to finish and returns the terminal's screen + state. Pass background:true to send and return immediately (for fanning out across terminals). Returns JSON {output, agentState, ...}.",
+        "Spawn one attempt: a fresh worktree driven from this overview by a driver that picks the agents. Call several times to race attempts. Returns {iterationId}; end your turn after — each is verified automatically and you're woken with the verdict.",
       parameters: Type.Object({
-        terminalId: Type.String(),
-        keys: Type.String({ description: "Text to type into the terminal." }),
-        enter: Type.Optional(Type.Boolean({ description: "Send a trailing Enter (default true)." })),
-        background: Type.Optional(Type.Boolean({ description: "Return immediately instead of waiting for the resulting work to finish (default false)." })),
+        overview: Type.String({ description: "What this attempt should accomplish." }),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "send_keys", { terminalId: params.terminalId, keys: params.keys, enter: params.enter, background: params.background })
+        return call(ctx, "iterate", { overview: params.overview })
       },
     })
 
     pi.registerTool({
-      name: "close_terminal",
-      label: "Close terminal",
-      description: "Close a terminal you opened once you no longer need it.",
-      parameters: Type.Object({ terminalId: Type.String() }),
+      name: "select_winner",
+      label: "Select winner",
+      description:
+        "Keep one verified iteration's work: moves the todo to review on its worktree and discards the rest.",
+      parameters: Type.Object({
+        iterationId: Type.String(),
+        reason: Type.Optional(Type.String({ description: "Why this attempt won (shown on the card)." })),
+      }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "close_terminal", { terminalId: params.terminalId })
+        return call(ctx, "select_winner", { iterationId: params.iterationId, reason: params.reason })
+      },
+    })
+
+    pi.registerTool({
+      name: "remark",
+      label: "Remark",
+      description: "A short status update for the user, between rounds.",
+      parameters: Type.Object({ text: Type.String() }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "remark", { text: params.text })
       },
     })
 
@@ -188,27 +206,12 @@ export default function (pi: ExtensionAPI) {
       name: "answer",
       label: "Answer",
       description:
-        "Deliver a TEXT result to the user — the answer to a question, or a summary of what you found. The text is shown on the job card and kept until the user dismisses it. Calling this COMPLETES the job (no review/merge needed), so use it for questions and read-only/management tasks instead of update_todo. For a code change that needs landing, use update_todo status 'review' instead.",
+        "Deliver a text result and complete the job — for questions and read-only tasks.",
       parameters: Type.Object({
-        todoId: Type.String(),
-        text: Type.String({ description: "The user-facing answer or result. Markdown is fine; keep it focused." }),
+        text: Type.String({ description: "The user-facing answer. Markdown ok." }),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "answer", { todoId: params.todoId, text: params.text })
-      },
-    })
-
-    pi.registerTool({
-      name: "set_topic",
-      label: "Set topic",
-      description:
-        "Set a short 2–5 word topic that titles this job in the UI (e.g. 'Fix login redirect'). Call this ONCE at the very start, before doing anything else.",
-      parameters: Type.Object({
-        todoId: Type.String(),
-        topic: Type.String({ description: "A concise 2–5 word title for the task." }),
-      }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "set_topic", { todoId: params.todoId, topic: params.topic })
+        return call(ctx, "answer", { text: params.text })
       },
     })
 
@@ -216,20 +219,49 @@ export default function (pi: ExtensionAPI) {
       name: "update_todo",
       label: "Update todo",
       description:
-        "Update a todo's status and/or note. When the work is complete and verified, set status to 'review' so the user can land it; set 'failed' with a note if you cannot complete it. Do NOT merge — landing is the user's call.",
+        "Set a todo's topic/note, or fail it ('failed' + note). To land work use select_winner instead.",
       parameters: Type.Object({
-        todoId: Type.String(),
-        status: Type.Optional(
-          Type.Union([
-            Type.Literal("in_progress"),
-            Type.Literal("review"),
-            Type.Literal("failed"),
-          ]),
-        ),
+        topic: Type.Optional(Type.String({ description: "Clean 2–5 word title for the job card." })),
+        status: Type.Optional(Type.Literal("failed")),
         note: Type.Optional(Type.String()),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "update_todo", { todoId: params.todoId, status: params.status, note: params.note })
+        return call(ctx, "update_todo", { topic: params.topic, status: params.status, note: params.note })
+      },
+    })
+  }
+
+  if (role === "driver") {
+    // --- Driver: open terminals, launch coding-agent CLIs, drive them. ---
+    // create_terminal + send_keys here; read_terminal is registered above for every
+    // role. It opens a bare shell, launches the CLI, answers startup/permission
+    // prompts, submits the task with background:true, and is woken on completion.
+    pi.registerTool({
+      name: "create_terminal",
+      label: "Create terminal",
+      description:
+        "Open a bare shell in this iteration's worktree. Takes no command — launch the CLI yourself with the first send_keys. Returns {terminalId}.",
+      parameters: Type.Object({
+        title: Type.Optional(Type.String({ description: "Short label for what this terminal is for. Shown on its tab and the job-card chip." })),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "create_terminal", { title: params.title })
+      },
+    })
+
+    pi.registerTool({
+      name: "send_keys",
+      label: "Send keys",
+      description:
+        "Type into a terminal; appends Enter to submit unless enter:false. Set background:true when submitting the task — returns immediately and wakes you when the agent finishes; plain for launch commands and dialog answers. Returns {ok}.",
+      parameters: Type.Object({
+        terminalId: Type.String(),
+        keys: Type.String(),
+        enter: Type.Optional(Type.Boolean({ description: "Append Enter to submit (default true). Set false to type without submitting — e.g. fill a field before answering a dialog." })),
+        background: Type.Optional(Type.Boolean({ description: "True when submitting the task: wakes you on the terminal's running->finished transition." })),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "send_keys", { terminalId: params.terminalId, keys: params.keys, enter: params.enter, background: params.background })
       },
     })
   }

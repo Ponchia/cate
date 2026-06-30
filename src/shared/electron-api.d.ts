@@ -470,6 +470,11 @@ export interface ElectronAPI {
   /** Confirm reloading the canvas after workspace.json changed on disk. */
   confirmReloadWorkspace(payload: { name?: string }): Promise<'reload' | 'cancel'>
 
+  /** Native confirmation shown when discarding an agent job, which deletes its
+   *  worktree and closes its terminals. The detail adapts to what the job has.
+   *  Returns 'discard' | 'cancel'. */
+  confirmDiscardJob(payload: { hasWorktree?: boolean; terminalCount?: number }): Promise<'discard' | 'cancel'>
+
   /** Native confirmation shown when external files/folders are dropped onto the
    *  file explorer. Returns 'copy' (duplicate into the directory), 'move'
    *  (relocate into the directory, removing the originals), or 'cancel'. */

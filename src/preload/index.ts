@@ -98,6 +98,7 @@ import {
   DIALOG_CONFIRM_CLOSE_TERMINAL,
   DIALOG_CONFIRM_CLOSE_CANVAS,
   DIALOG_CONFIRM_RELOAD_WORKSPACE,
+  DIALOG_CONFIRM_DISCARD_JOB,
   DIALOG_CONFIRM_IMPORT,
   DIALOG_TERMINAL_LINK_OPEN,
   RECENT_PROJECTS_GET,
@@ -397,6 +398,7 @@ const invokeForwarders = {
   confirmCloseTerminal: makeInvoker<'confirmCloseTerminal'>(DIALOG_CONFIRM_CLOSE_TERMINAL),
   confirmCloseCanvas: makeInvoker<'confirmCloseCanvas'>(DIALOG_CONFIRM_CLOSE_CANVAS),
   confirmReloadWorkspace: makeInvoker<'confirmReloadWorkspace'>(DIALOG_CONFIRM_RELOAD_WORKSPACE),
+  confirmDiscardJob: makeInvoker<'confirmDiscardJob'>(DIALOG_CONFIRM_DISCARD_JOB),
   confirmImportEntries: makeInvoker<'confirmImportEntries'>(DIALOG_CONFIRM_IMPORT),
 
   // Recent projects / sidebar / remote projects

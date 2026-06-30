@@ -29,7 +29,6 @@ import { useAppStore } from '../stores/appStore'
 import { Tooltip } from '../ui/Tooltip'
 import { CateAgentToolbarButton } from '../cateAgent/CateAgentToolbarButton'
 import { CateAgentInputBar } from '../cateAgent/CateAgentInputBar'
-import type { WorktreeTarget } from '../cateAgent/CateAgentWorktreeSelect'
 import { CateAgentFeedback } from '../cateAgent/CateAgentFeedback'
 import { useCateAgentWs, useCateAgentStore } from '../cateAgent/cateAgentStore'
 import { cateAgentController } from '../cateAgent/cateAgentController'
@@ -227,8 +226,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const inputOpen = cateAgent.inputOpen
   const toggleAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, !inputOpen)
   const closeAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, false)
-  const [agentWorktreeTarget, setAgentWorktreeTarget] = useState<WorktreeTarget>('new')
-  const sendAgentPrompt = (text: string) => void cateAgentController.prompt(workspaceId, rootPath, text, agentWorktreeTarget)
+  const sendAgentPrompt = (text: string) => void cateAgentController.prompt(workspaceId, rootPath, text)
   // Attention persists while any todo still needs a decision; transient remarks
   // (the `unseen` flag) flash it until the panel is opened. Either way, an open
   // panel means the user is already looking, so no indicator then.
@@ -430,9 +428,6 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 <div className={`flex-1 min-w-0 flex ${agentAlign}`}>
                   <CateAgentInputBar
                     workspaceId={workspaceId}
-                    rootPath={rootPath}
-                    worktreeTarget={agentWorktreeTarget}
-                    onWorktreeTargetChange={setAgentWorktreeTarget}
                     multiline={agentMultiline}
                     onSend={sendAgentPrompt}
                     onClose={closeAgentInput}

@@ -12,13 +12,26 @@ export interface CateAgentContext {
   /** Workspace locator / root path (the agent cwd). */
   rootPath: string
   role: CateAgentRole
-  /** The todo this executor session is running (executor sessions only). */
+  /** The todo this orchestrator/driver session is working on. */
   todoId?: string
-  /** Monotonic run token (executor only). A todo can be stopped and restarted
+  /** Monotonic run token (orchestrator only). A todo can be stopped and restarted
    *  (editJob) reusing the same todoId/panelId; the epoch distinguishes the new
    *  run from the old, so an in-flight wake/continuation from the old run bails
    *  instead of driving the new one. */
   epoch?: number
+  // --- driver-only fields (one driver per iteration; see codingAgentLauncher) ---
+  /** The iteration this driver is executing (work driver) or checking (verifier). */
+  iterationId?: string
+  /** Whether this driver runs the iteration's work or its verification — its
+   *  create_terminal terminals are recorded on the iteration only for 'work'. */
+  driverKind?: 'work' | 'verify'
+  /** Worktree cwd the driver's terminals open in (create_terminal has no cwd of
+   *  its own — it always opens in the iteration's worktree). */
+  cwd?: string
+  /** Glow color for the driver's controlled terminals. */
+  glow?: string
+  /** Worktree the driver's terminals belong to (for the panel's worktree tag). */
+  worktreeId?: string
 }
 
 /** The controller implements this so the bridge can resolve session context and
@@ -26,7 +39,7 @@ export interface CateAgentContext {
  *
  *  RUN vs TURN: pi emits `agent_start`/`agent_end` once per run (one prompt), and
  *  `turn_start`/`turn_end` after EVERY tool turn within that run. Completion must
- *  key off the run (`agent_end`) — keying off a turn would finalize the executor
+ *  key off the run (`agent_end`) — keying off a turn would finalize the orchestrator
  *  right after its first tool call. */
 export interface CateAgentBridgeHost {
   contextFor(panelId: string): CateAgentContext | null

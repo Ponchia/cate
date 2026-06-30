@@ -12,7 +12,6 @@
 
 import React from 'react'
 import { ArrowUp } from '@phosphor-icons/react'
-import { CateAgentWorktreeSelect, type WorktreeTarget } from './CateAgentWorktreeSelect'
 
 /** Cap the textarea growth; beyond this it scrolls internally. */
 const MAX_HEIGHT = 160
@@ -37,16 +36,13 @@ const saveDraft = (wsId: string, value: string): void => {
 
 export const CateAgentInputBar: React.FC<{
   workspaceId: string
-  rootPath: string
-  worktreeTarget: WorktreeTarget
-  onWorktreeTargetChange: (target: WorktreeTarget) => void
   /** Bottom-anchor controls when the input has wrapped (else vertically center). */
   multiline: boolean
   onSend: (text: string) => void
   onClose: () => void
   /** Reports the textarea's current content height (px) so the toolbar resizes. */
   onHeightChange?: (px: number) => void
-}> = ({ workspaceId, rootPath, worktreeTarget, onWorktreeTargetChange, multiline, onSend, onClose, onHeightChange }) => {
+}> = ({ workspaceId, multiline, onSend, onClose, onHeightChange }) => {
   // Seed from the persisted draft so a reopened bar (or a fresh app launch)
   // restores whatever was typed but not sent.
   const [text, setText] = React.useState(() => loadDraft(workspaceId))
@@ -93,17 +89,6 @@ export const CateAgentInputBar: React.FC<{
 
   return (
     <div className={`flex ${multiline ? 'items-end' : 'items-center'} gap-1.5 w-full pl-1`}>
-      {/* Select-only worktree target for the prompt (collapsible color tag). The
-          fixed 36px slot keeps the small circle centered on the CATE/send line in
-          both single- and multi-line layouts. */}
-      <div className="flex-shrink-0 flex items-center" style={{ height: 36 }}>
-        <CateAgentWorktreeSelect
-          workspaceId={workspaceId}
-          rootPath={rootPath}
-          value={worktreeTarget}
-          onChange={onWorktreeTargetChange}
-        />
-      </div>
       <textarea
         ref={ref}
         rows={1}
@@ -118,7 +103,7 @@ export const CateAgentInputBar: React.FC<{
             onClose()
           }
         }}
-        placeholder="Ask the Cate Agent…"
+        placeholder="Create a todo…"
         className="flex-1 min-w-0 resize-none bg-transparent text-sm leading-snug text-primary px-2 py-1.5 outline-none placeholder:text-muted"
         style={{ maxHeight: MAX_HEIGHT }}
       />

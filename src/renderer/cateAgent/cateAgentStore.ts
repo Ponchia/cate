@@ -38,7 +38,7 @@ export interface CateAgentWsState {
   inputOpen: boolean
   /** Persistent-per-session feedback log shown above the toolbar, newest last. */
   feed: CateAgentFeedItem[]
-  /** Terminals the executor is actively driving → their pulsing glow color, keyed
+  /** Terminals the orchestrator is actively driving → their pulsing glow color, keyed
    *  by panelId. The color is the job's worktree color, or the theme accent
    *  (`rgb(var(--agent-rgb))`) when the job runs with no worktree. */
   controlledTerminals: Record<string, string>
@@ -66,6 +66,8 @@ interface CateAgentStore {
   reset: (wsId: string) => void
   setInputOpen: (wsId: string, open: boolean) => void
   appendFeed: (wsId: string, kind: CateAgentFeedKind, text: string) => void
+  /** Remove a single feed line by id (the per-remark dismiss button). */
+  dismissFeedItem: (wsId: string, id: number) => void
   clearFeed: (wsId: string) => void
   /** Flag/clear unseen agent activity (drives the toolbar attention indicator). */
   setUnseen: (wsId: string, value: boolean) => void
@@ -104,6 +106,15 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
       // is closed becomes unseen activity → toolbar attention indicator.
       const unseen = prev.unseen || (kind !== 'user' && !prev.inputOpen)
       return { byWs: { ...s.byWs, [wsId]: { ...prev, feed: [...prev.feed, item].slice(-MAX_FEED), unseen } } }
+    })
+  },
+
+  dismissFeedItem(wsId, id) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      const feed = prev.feed.filter((f) => f.id !== id)
+      if (feed.length === prev.feed.length) return s
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, feed } } }
     })
   },
 
@@ -156,7 +167,7 @@ export function useCateAgentWs(wsId: string | null | undefined): CateAgentWsStat
   return useCateAgentStore((s) => (wsId ? s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS : DEFAULT_CATE_AGENT_WS))
 }
 
-/** Hook: the glow color for a terminal the executor is driving, or null when it
+/** Hook: the glow color for a terminal the orchestrator is driving, or null when it
  *  isn't controlled. The color is the job's worktree color (theme accent when the
  *  job has no worktree). */
 export function useTerminalGlow(wsId: string | null | undefined, panelId: string): string | null {

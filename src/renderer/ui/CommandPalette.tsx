@@ -30,6 +30,7 @@ import {
   ArrowUUpLeft,
   ArrowUUpRight,
   Sparkle,
+  Eye,
 } from '@phosphor-icons/react'
 import type { PanelType, MenuActionId } from '../../shared/types'
 import { PaletteDialogShell } from './Modal'
@@ -44,6 +45,7 @@ import { useWorkspacePanelTree } from '../lib/workspace/useWorkspacePanelTree'
 import { revealPanel } from '../lib/workspace/panelReveal'
 import { openFileAsPanel } from '../lib/fs/fileRouting'
 import { getRecentFiles } from '../lib/fs/recentFiles'
+import { cateAgentController } from '../cateAgent/cateAgentController'
 
 // -----------------------------------------------------------------------------
 // Command definitions
@@ -75,6 +77,7 @@ const DeleteRuntimeIcon = () => <Trash size={ICON_SIZE} />
 const TutorialIcon = () => <GraduationCap size={ICON_SIZE} />
 const SkillsIcon = () => <PuzzlePiece size={ICON_SIZE} />
 const AgentIcon = () => <Sparkle size={ICON_SIZE} />
+const ObserveIcon = () => <Eye size={ICON_SIZE} />
 const CloseIcon = () => <X size={ICON_SIZE} />
 const MinimapIcon = () => <MapTrifold size={ICON_SIZE} />
 const UndoIcon = () => <ArrowUUpLeft size={ICON_SIZE} />
@@ -158,6 +161,20 @@ export const CommandPalette: React.FC = () => {
       { id: 'newBrowser', title: 'New Browser', icon: <GlobeIcon />, action: run('newBrowser') },
       { id: 'newEditor', title: 'New Editor', icon: <FileTextIcon />, action: run('newEditor') },
       { id: 'newAgent', title: 'New Agent', icon: <AgentIcon />, action: run('newAgent') },
+      {
+        id: 'observeNow',
+        title: 'Run Cate Agent Observer',
+        icon: <ObserveIcon />,
+        // Ensure the observer session is running (summon is idempotent — starts it
+        // if needed, returns early otherwise) then force one observe turn now.
+        action: () => {
+          const app = useAppStore.getState()
+          const wsId = app.selectedWorkspaceId
+          const ws = app.workspaces.find((w) => w.id === wsId)
+          if (!ws?.rootPath) return
+          void cateAgentController.summon(wsId, ws.rootPath).then(() => cateAgentController.observeNow(wsId))
+        },
+      },
       { id: 'newCanvas', title: 'New Canvas', icon: <LayoutIcon />, action: run('newCanvas') },
       { id: 'closePanel', title: 'Close Panel', icon: <CloseIcon />, action: run('closePanel') },
       { id: 'saveFile', title: 'Save File', icon: <SaveIcon />, action: run('saveFile') },
