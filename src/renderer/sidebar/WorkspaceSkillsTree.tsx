@@ -19,7 +19,7 @@ import { getAgentLogoById } from '../lib/agent/agentLogos'
 import { CateLogo } from '../ui/CateLogo'
 import { SKILL_TARGETS, type SkillTargetId } from '../../shared/skills'
 import type { AgentId } from '../../shared/agents'
-import { toSkillTargetGroups, type SkillTargetGroup } from './skillChips'
+import { toSkillTargetGroups, type SkillTargetGroup } from './skillTargetGroups'
 import log from '../lib/logger'
 
 const api = () => window.electronAPI
