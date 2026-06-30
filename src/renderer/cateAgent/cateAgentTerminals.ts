@@ -14,6 +14,8 @@ import { useCateAgentStore } from './cateAgentStore'
 import { terminalRegistry } from '../lib/terminal/terminalRegistry'
 import { getWorkspaceCanvasStore } from '../lib/workspace/canvasAccess'
 import { viewToCanvas } from '../lib/canvas/coordinates'
+import { nudgeToFree } from '../canvas/placement'
+import { resolvePanelSize } from '../../shared/panels'
 import type { Point, AgentState } from '../../shared/types'
 import { getExitCode, clearExit } from './cateAgentTerminalExits'
 import log from '../lib/logger'
@@ -72,16 +74,22 @@ export function closeCanvasPanel(wsId: string, panelId: string): void {
 }
 
 /** Compute an EXPLICIT canvas-space position so a Cate Agent terminal auto-places
- *  silently (never the interactive "click to place" ghost). Cascades per index so
- *  terminals tile instead of stacking exactly. */
+ *  silently (never the interactive "click to place" ghost). Anchors at the viewport
+ *  centre (fanned per index so a burst doesn't pile on one spot), then lets
+ *  `nudgeToFree` push it off any existing panel — including the terminals earlier
+ *  iterations just opened — so agent terminals never land on top of the user's work. */
 function terminalPosition(wsId: string, index: number): Point | undefined {
   const store = getWorkspaceCanvasStore(wsId)
   if (!store) return undefined // no canvas → panel docks (no ghost), leave undefined
   const s = store.getState()
+  const size = resolvePanelSize('terminal')
   const center = { x: s.containerSize.width / 2, y: s.containerSize.height / 2 }
   const canvasCenter = viewToCanvas(center, s.zoomLevel, s.viewportOffset)
-  const step = 40
-  return { x: canvasCenter.x - 240 + index * step, y: canvasCenter.y - 170 + index * step }
+  const desired = {
+    x: canvasCenter.x - size.width / 2 + index * 40,
+    y: canvasCenter.y - size.height / 2 + index * 40,
+  }
+  return nudgeToFree(s.nodes, size, desired)
 }
 
 /** Wait until a freshly created panel has a live pty, or give up. */

@@ -7,31 +7,11 @@
 // (checkout + registry + territory) and moves the todo to its terminal status.
 // =============================================================================
 
-import type { Todo, WorktreeMeta } from '../../shared/types'
-import { useAppStore } from '../stores/appStore'
+import type { Todo } from '../../shared/types'
 import { useTodosStore } from '../stores/todosStore'
-import { gitStatusStore } from '../stores/gitStatusStore'
 import { closeCanvasPanel } from './cateAgentTerminals'
+import { worktreeMetaFor, teardownWorktree } from './cateAgentWorktrees'
 import log from '../lib/logger'
-
-function worktreeMeta(wsId: string, worktreeId: string | undefined): WorktreeMeta | undefined {
-  if (!worktreeId) return undefined
-  const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
-  return ws?.worktrees?.find((w) => w.id === worktreeId)
-}
-
-/** Drop the worktree from disk + store (checkout, additional root, territory). */
-async function cleanupWorktree(wsId: string, rootPath: string, meta: WorktreeMeta, force: boolean): Promise<void> {
-  try {
-    await window.electronAPI.gitWorktreeRemove(rootPath, meta.path, { force })
-  } catch (err) {
-    log.warn('[cateAgentReview] worktree remove failed: %O', err)
-  }
-  const app = useAppStore.getState()
-  app.removeWorktree(wsId, meta.id)
-  app.removeAdditionalRoot(wsId, meta.path)
-  gitStatusStore.refresh(rootPath)
-}
 
 export interface ReviewResult {
   ok: boolean
@@ -40,7 +20,7 @@ export interface ReviewResult {
 
 /** Merge the todo's branch into the current branch, then tidy up. */
 export async function mergeTodo(wsId: string, rootPath: string, todo: Todo): Promise<ReviewResult> {
-  const meta = worktreeMeta(wsId, todo.worktreeId)
+  const meta = worktreeMetaFor(wsId, todo.worktreeId)
   if (!meta || !todo.branch) return { ok: false, message: 'No worktree to merge' }
   let toBranch = 'main'
   try {
@@ -55,14 +35,14 @@ export async function mergeTodo(wsId: string, rootPath: string, todo: Todo): Pro
     useTodosStore.getState().patchTodo(rootPath, todo.id, { note: message })
     return { ok: false, message }
   }
-  await cleanupWorktree(wsId, rootPath, meta, false)
+  await teardownWorktree(wsId, rootPath, meta.id, { force: false })
   useTodosStore.getState().patchTodo(rootPath, todo.id, { status: 'done', note: `Merged into ${toBranch}` })
   return { ok: true }
 }
 
 /** Push the branch and open a PR. Leaves the worktree in place (PR is live). */
 export async function openPrTodo(wsId: string, rootPath: string, todo: Todo): Promise<ReviewResult> {
-  const meta = worktreeMeta(wsId, todo.worktreeId)
+  const meta = worktreeMetaFor(wsId, todo.worktreeId)
   if (!meta || !todo.branch) return { ok: false, message: 'No worktree for PR' }
   const res = await window.electronAPI.gitCreatePR(meta.path, todo.branch)
   if (!res.ok) {
@@ -99,10 +79,7 @@ export async function teardownTodoWork(
   const worktreeIds = new Set<string>()
   if (todo.worktreeId) worktreeIds.add(todo.worktreeId)
   for (const it of todo.iterations ?? []) if (it.worktreeId) worktreeIds.add(it.worktreeId)
-  for (const id of worktreeIds) {
-    const meta = worktreeMeta(wsId, id)
-    if (meta) await cleanupWorktree(wsId, rootPath, meta, true)
-  }
+  for (const id of worktreeIds) await teardownWorktree(wsId, rootPath, id)
 
   if (opts.deleteBranch && todo.branch) {
     try {

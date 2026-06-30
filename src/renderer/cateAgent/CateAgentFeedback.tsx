@@ -31,7 +31,6 @@ import {
   CircleNotch,
   CheckCircle,
   CaretDown,
-  Target,
   Trophy,
   WarningCircle,
   MagnifyingGlass,
@@ -329,26 +328,20 @@ const JobWorktreePill: React.FC<{ worktree: JoinedWorktree }> = ({ worktree }) =
 // tally and per-iteration counts are dropped — the agent rows (and the canvas)
 // already show what's running; the card only needs the goal and the agents.
 const IterationSection: React.FC<{ job: Todo; wsId: string }> = ({ job, wsId }) => {
+  // Only reached for a parallel race (more than one live attempt), under the
+  // "Attempts" field — each attempt keeps its boxed, enumerated framing. The goal is
+  // rendered separately as the card's Task field.
   const iters = (job.iterations ?? []).filter((i) => i.status !== 'cancelled')
-  if (!job.goal && iters.length === 0) return null
-  // Only a parallel race (more than one live attempt) needs the boxed, enumerated
-  // framing; a single attempt renders its agents flat, as plain rows.
-  const framed = iters.length > 1
+  if (iters.length === 0) return null
 
   return (
     <div className="flex flex-col gap-1.5">
-      {job.goal && (
-        <div className="flex items-start gap-1.5 text-xs leading-snug text-secondary">
-          <Target size={12} className="mt-[2px] flex-shrink-0 text-muted" />
-          <span className="break-words">{job.goal}</span>
-        </div>
-      )}
       {iters.map((it, i) => (
         <IterationRow
           key={it.id}
           it={it}
           index={i}
-          framed={framed}
+          framed
           winner={job.recommendedIterationId === it.id}
           wsId={wsId}
         />
@@ -379,7 +372,7 @@ const IterationRow: React.FC<{ it: Iteration; index: number; framed: boolean; wi
         </div>
       )}
       {it.verify && (
-        <div className={`text-[11px] leading-snug break-words ${it.verify.met ? 'text-green-400/90' : 'text-red-400/80'}`}>
+        <div className={`text-[11px] leading-snug break-words line-clamp-3 ${it.verify.met ? 'text-green-400/90' : 'text-red-400/80'}`}>
           {it.verify.reason}
         </div>
       )}
@@ -400,6 +393,44 @@ const IterationRow: React.FC<{ it: Iteration; index: number; framed: boolean; wi
       }`}
     >
       {body}
+    </div>
+  )
+}
+
+// One labeled, independently-collapsible detail row on a job card. The label is the
+// toggle: collapsed, the value folds to a single dimmed preview line (clicking it, or
+// the label, reopens); open, the full value shows. Labels share a fixed-width column
+// so every value lines up at the same left edge — replacing the lone goal icon and its
+// hanging indent with one consistent structure.
+const JobField: React.FC<{ label: string; defaultOpen?: boolean; preview?: string; children: React.ReactNode }> = ({
+  label,
+  defaultOpen = true,
+  preview,
+  children,
+}) => {
+  const [open, setOpen] = React.useState(defaultOpen)
+  return (
+    <div className="flex items-start gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={open ? 'Collapse' : 'Expand'}
+        className="flex-shrink-0 mt-[1px] w-[4.25rem] text-left text-[11px] font-semibold uppercase tracking-wide text-muted hover:text-secondary transition-colors truncate"
+      >
+        {label}
+      </button>
+      {open ? (
+        <div className="flex-1 min-w-0">{children}</div>
+      ) : (
+        preview && (
+          <div
+            onClick={() => setOpen(true)}
+            className="flex-1 min-w-0 truncate text-xs leading-snug text-muted/70 cursor-pointer"
+          >
+            {preview}
+          </div>
+        )
+      )}
     </div>
   )
 }
@@ -425,9 +456,18 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
   const worktree = wtIds.size === 1 ? worktrees.find((w) => w.id === [...wtIds][0]) : undefined
   const terminals = job.terminalNodeIds ?? []
   const hasWorktree = !!job.worktreeId || (job.iterations?.some((i) => i.worktreeId) ?? false)
-  const hasIterations = (job.iterations?.length ?? 0) > 0 || !!job.goal
   const title = job.topic || job.title
   const running = job.status === 'in_progress'
+
+  // A single attempt renders as flat Result + Agents fields; only a parallel race
+  // (more than one live attempt) keeps the boxed, enumerated per-attempt framing.
+  const iters = (job.iterations ?? []).filter((i) => i.status !== 'cancelled')
+  const framed = iters.length > 1
+  const lastVerify = iters.length ? iters[iters.length - 1].verify : undefined
+  // The live agent chips, flattened across iterations (or the raw terminal ids for a
+  // non-loop job) — shown under the Agents field.
+  const iterAgentIds = iters.flatMap((i) => i.agents.map((a) => a.terminalId))
+  const flatChipIds = iterAgentIds.length ? iterAgentIds : terminals
 
   const runReview = async (fn: (w: string, r: string, t: Todo) => Promise<unknown>) => {
     setBusy(true)
@@ -472,32 +512,58 @@ const JobCard: React.FC<{ job: Todo; wsId: string; rootPath: string; worktrees: 
         {worktree && <JobWorktreePill worktree={worktree} />}
       </div>
 
-      {/* Note / rationale. */}
-      {job.note && (
-        <div className={`text-xs leading-snug break-words ${job.status === 'review' ? 'text-secondary' : 'text-muted'}`}>
-          {job.note}
-        </div>
-      )}
+      {/* Detail as labeled, independently-collapsible fields. Each label toggles only
+          its own value, so the verbose bits (the ask, the rationale) sit collapsed to a
+          one-line preview by default while the outcome stays open. */}
+      <div className="flex flex-col gap-1">
+        {job.goal && (
+          <JobField label="Task" defaultOpen={false} preview={job.goal}>
+            <div className="text-xs leading-snug text-secondary break-words">{job.goal}</div>
+          </JobField>
+        )}
 
-      {/* Answer / output — the user-facing result (markdown), selectable and kept until dismissed. */}
-      {job.output && (
-        <div className="mt-0.5 rounded-lg bg-surface-0 border border-subtle px-2.5 py-2 text-xs leading-relaxed text-primary max-h-60 overflow-y-auto">
-          <Markdown text={job.output} />
-        </div>
-      )}
+        {job.note && (
+          <JobField label="Note" defaultOpen={false} preview={job.note}>
+            <div className={`text-xs leading-snug break-words ${job.status === 'review' ? 'text-secondary' : 'text-muted'}`}>
+              {job.note}
+            </div>
+          </JobField>
+        )}
 
-      {/* Loop progress: goal, verification, and the parallel iterations. */}
-      {hasIterations ? (
-        <IterationSection job={job} wsId={wsId} />
-      ) : (
-        terminals.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {terminals.map((tid) => (
-              <TerminalChip key={tid} wsId={wsId} panelId={tid} />
-            ))}
-          </div>
-        )
-      )}
+        {job.output && (
+          <JobField label="Answer" defaultOpen>
+            <div className="rounded-lg bg-surface-0 border border-subtle px-2.5 py-2 text-xs leading-relaxed text-primary max-h-60 overflow-y-auto">
+              <Markdown text={job.output} />
+            </div>
+          </JobField>
+        )}
+
+        {framed ? (
+          // A parallel race: each attempt keeps its own boxed verdict + agents.
+          <JobField label="Attempts" defaultOpen>
+            <IterationSection job={job} wsId={wsId} />
+          </JobField>
+        ) : (
+          <>
+            {lastVerify && (
+              <JobField label="Result" defaultOpen preview={lastVerify.reason}>
+                <div className={`text-[11px] leading-snug break-words ${lastVerify.met ? 'text-green-400/90' : 'text-red-400/80'}`}>
+                  {lastVerify.reason}
+                </div>
+              </JobField>
+            )}
+            {flatChipIds.length > 0 && (
+              <JobField label="Agents" defaultOpen>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {flatChipIds.map((tid) => (
+                    <TerminalChip key={tid} wsId={wsId} panelId={tid} />
+                  ))}
+                </div>
+              </JobField>
+            )}
+          </>
+        )}
+      </div>
 
       {/* Edit prompt (inline). */}
       {editing ? (

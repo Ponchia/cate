@@ -45,6 +45,7 @@ import {
   shortId,
 } from './cateAgentTerminals'
 import { runDriverToCompletion, openDriverTerminal, armBackgroundSend } from './codingAgentLauncher'
+import { worktreeMetaFor, teardownWorktree } from './cateAgentWorktrees'
 import log from '../lib/logger'
 
 const json = (v: unknown): string => JSON.stringify(v)
@@ -108,11 +109,6 @@ export function deriveTopic(prompt: string): string {
   return out.join(' ') || oneLine.slice(0, 48)
 }
 
-function worktreeMetaFor(wsId: string, worktreeId: string): WorktreeMeta | undefined {
-  const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
-  return ws?.worktrees?.find((w) => w.id === worktreeId)
-}
-
 async function isGitRepo(rootPath: string): Promise<boolean> {
   try {
     return await window.electronAPI.gitIsRepo(rootPath)
@@ -152,22 +148,6 @@ export async function createWorktree(
   useAppStore.getState().addAdditionalRoot(wsId, targetPath)
   gitStatusStore.refresh(rootPath)
   return { worktreeId: meta.id, branch, cwd: targetPath }
-}
-
-/** Tear down a worktree (disk + store) by id. Best-effort. */
-export async function removeWorktreeById(wsId: string, rootPath: string, worktreeId: string | undefined): Promise<void> {
-  if (!worktreeId) return
-  const meta = worktreeMetaFor(wsId, worktreeId)
-  if (!meta) return
-  try {
-    await window.electronAPI.gitWorktreeRemove(rootPath, meta.path, { force: true })
-  } catch (err) {
-    log.warn('[cateAgentTools] worktree remove failed: %O', err)
-  }
-  const app = useAppStore.getState()
-  app.removeWorktree(wsId, meta.id)
-  app.removeAdditionalRoot(wsId, meta.path)
-  gitStatusStore.refresh(rootPath)
 }
 
 /** Surface a short FYI from the Cate Agent into the persistent feedback log. */
@@ -478,7 +458,7 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
         // Discard the previous round's worktrees (and their terminals).
         for (const old of curIters) {
           for (const tid of iterationTerminalIds(old)) closeCanvasPanel(wsId, tid)
-          await removeWorktreeById(wsId, rootPath, old.worktreeId)
+          await teardownWorktree(wsId, rootPath, old.worktreeId)
         }
         const kept = (todo.iterations ?? []).map((i) => (i.round === curRound ? { ...i, status: 'cancelled' as const } : i))
         todos.patchTodo(rootPath, todoId, { iterations: kept, round })
@@ -539,7 +519,7 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       for (const it of todo.iterations ?? []) {
         if (it.id === iterationId) continue
         for (const tid of iterationTerminalIds(it)) closeCanvasPanel(wsId, tid)
-        await removeWorktreeById(wsId, rootPath, it.worktreeId)
+        await teardownWorktree(wsId, rootPath, it.worktreeId)
       }
       const iterations = (todo.iterations ?? []).map((i) =>
         i.id === iterationId ? { ...i, status: 'passed' as const } : { ...i, status: 'cancelled' as const },
