@@ -16,7 +16,7 @@ import { act } from 'react'
 
 vi.mock('../lib/portalRegistry', () => ({ portalRegistry: { register: vi.fn(), unregister: vi.fn() } }))
 
-import ExtensionPanel from './ExtensionPanel'
+import ExtensionPanel, { readDroppedFiles } from './ExtensionPanel'
 
 const proxyUrl = vi.fn(async (_args: { extensionId: string; workspaceId: string; panelId: string }) => ({
   url: 'http://127.0.0.1:9/ext/tok/?x',
@@ -32,6 +32,9 @@ function mount(props: { workspaceId: string }): void {
     extensionProxyUrl: proxyUrl,
     extensionPanelClosed: panelClosed,
     extensionServerRestart: vi.fn(async () => undefined),
+    // The panel ensures the extension registry is loaded (for the files.drop scope).
+    extensionList: vi.fn(async () => []),
+    onExtensionsChanged: vi.fn(),
   }
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -86,5 +89,68 @@ describe('ExtensionPanel', () => {
     })
     // Re-mount a throwaway so afterEach's unmount has a live root.
     mount({ workspaceId: 'ws-real-123' })
+  })
+})
+
+// A minimal DataTransfer stand-in: jsdom doesn't construct one with files.
+function fakeDataTransfer(opts: { files?: File[]; data?: Record<string, string> }): DataTransfer {
+  const data = opts.data ?? {}
+  return {
+    files: opts.files ?? [],
+    getData: (type: string) => data[type] ?? '',
+  } as unknown as DataTransfer
+}
+
+describe('readDroppedFiles', () => {
+  it('reads OS File drops in-renderer (no IPC, resolves path via getPathForFile)', async () => {
+    const fsReadFile = vi.fn()
+    const getPathForFile = vi.fn(() => '/Users/me/.claude/projects/x/sess.jsonl')
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = { fsReadFile, getPathForFile }
+
+    const file = new File(['{"type":"session"}\n'], 'sess.jsonl', { type: 'application/json' })
+    const out = await readDroppedFiles(fakeDataTransfer({ files: [file] }), 'ws-1')
+
+    expect(out).toEqual([
+      {
+        name: 'sess.jsonl',
+        path: '/Users/me/.claude/projects/x/sess.jsonl',
+        text: '{"type":"session"}\n',
+        size: file.size,
+        truncated: false,
+      },
+    ])
+    // OS files are read client-side; fsReadFile must NOT be called.
+    expect(fsReadFile).not.toHaveBeenCalled()
+  })
+
+  it('reads Cate file-explorer paths over IPC (application/cate-files)', async () => {
+    const fsReadFile = vi.fn(async (p: string) => `content-of:${p}`)
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = { fsReadFile, getPathForFile: vi.fn() }
+
+    const dt = fakeDataTransfer({
+      data: { 'application/cate-files': JSON.stringify(['/ws/.cate/a.jsonl', '/ws/.cate/b.jsonl']) },
+    })
+    const out = await readDroppedFiles(dt, 'ws-7')
+
+    expect(fsReadFile).toHaveBeenCalledWith('/ws/.cate/a.jsonl', 'ws-7')
+    expect(out.map((f) => f.name)).toEqual(['a.jsonl', 'b.jsonl'])
+    expect(out[0].text).toBe('content-of:/ws/.cate/a.jsonl')
+  })
+
+  it('falls back to the single application/cate-file path', async () => {
+    const fsReadFile = vi.fn(async () => 'x')
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = { fsReadFile, getPathForFile: vi.fn() }
+    const dt = fakeDataTransfer({ data: { 'application/cate-file': '/ws/only.jsonl' } })
+    const out = await readDroppedFiles(dt, 'ws-1')
+    expect(out).toHaveLength(1)
+    expect(out[0].path).toBe('/ws/only.jsonl')
+  })
+
+  it('skips files whose IPC read is denied (outside the workspace)', async () => {
+    const fsReadFile = vi.fn(async () => { throw new Error('Access denied') })
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = { fsReadFile, getPathForFile: vi.fn() }
+    const dt = fakeDataTransfer({ data: { 'application/cate-file': '/etc/passwd' } })
+    const out = await readDroppedFiles(dt, 'ws-1')
+    expect(out).toEqual([])
   })
 })

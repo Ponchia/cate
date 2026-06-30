@@ -12,7 +12,13 @@
 // =============================================================================
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentTurnResult, CateHost, CateHostTheme, CateHostWorkspace } from '../shared/cate-host-api'
+import type {
+  AgentTurnResult,
+  CateDroppedFile,
+  CateHost,
+  CateHostTheme,
+  CateHostWorkspace,
+} from '../shared/cate-host-api'
 
 // Channel names are inlined (NOT imported from ../shared/ipc-channels) on
 // purpose: this is a SECOND preload entry, and sharing a runtime module with
@@ -72,6 +78,21 @@ const api: CateHost = {
     dispose: (sessionId: string) => invoke('cate.agent.dispose', { sessionId }),
     run: (prompt: string) => invoke('cate.agent.run', { prompt }) as Promise<AgentTurnResult | { error: string }>,
     cancel: () => invoke('cate.agent.cancel'),
+  },
+
+  files: {
+    onDrop: (cb: (files: CateDroppedFile[]) => void) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        payload: { panelId: string; topic: string; payload?: { files?: CateDroppedFile[] } },
+      ): void => {
+        if (payload?.topic === 'files.drop' && payload.panelId === panelId) {
+          cb(Array.isArray(payload.payload?.files) ? (payload.payload!.files as CateDroppedFile[]) : [])
+        }
+      }
+      ipcRenderer.on(CATE_HOST_EVENT, listener)
+      return () => ipcRenderer.removeListener(CATE_HOST_EVENT, listener)
+    },
   },
 
   storage: {

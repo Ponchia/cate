@@ -51,6 +51,23 @@ export interface CatePanel {
   setTitle(title: string): Promise<void>
 }
 
+/** A file the user dragged onto this extension's panel, delivered to
+ *  `cate.files.onDrop`. The host reads the file (the user gesture authorises it),
+ *  so the guest never touches the filesystem. `text` is the UTF-8 content, capped
+ *  by the host; `truncated` flags when the file was larger than the cap. */
+export interface CateDroppedFile {
+  /** Base name, e.g. `019f0072-….jsonl`. */
+  name: string
+  /** Absolute path on disk, or null for an OS drop with no resolvable path. */
+  path: string | null
+  /** UTF-8 file content (possibly truncated). */
+  text: string
+  /** Byte size on disk when known. */
+  size?: number
+  /** True when `text` was cut to the host's size cap. */
+  truncated?: boolean
+}
+
 export interface CateHost {
   /** API version int, for feature detection. */
   version(): Promise<number>
@@ -72,6 +89,13 @@ export interface CateHost {
   }
   ui: {
     notify(message: string, level?: 'info' | 'warn' | 'error'): Promise<unknown>
+  }
+  /** Files dropped onto this panel (from the OS or Cate's file explorer). Requires
+   *  the `files.drop` scope; the host reads each file and hands the guest its
+   *  content, so the extension never gets raw filesystem access. */
+  files: {
+    /** Subscribe to drops on this panel. Returns an unsubscribe function. */
+    onDrop(cb: (files: CateDroppedFile[]) => void): () => void
   }
   /** Drive Cate's bundled agent (requires the `agent` scope + first-use user
    *  consent). pi owns all conversation state on its session file; the handle

@@ -74,3 +74,31 @@ describe('cateHost preload — invoke wire contract', () => {
     expect(invoke).toHaveBeenCalledWith('cate:invoke', { ...IDENTITY, method: 'cate.agent.cancel', args: undefined })
   })
 })
+
+describe('cateHost preload — files.onDrop', () => {
+  beforeEach(() => { on.mockClear(); removeListener.mockClear() })
+
+  it('delivers files for this panel and ignores other topics/panels', () => {
+    const seen: unknown[] = []
+    const off = cate.files.onDrop((files: unknown) => seen.push(files))
+    // The preload registered a cate:event listener; grab it.
+    const [channel, listener] = on.mock.calls.at(-1) as [string, (...a: unknown[]) => void]
+    expect(channel).toBe('cate:event')
+
+    const dropped = [{ name: 'a.jsonl', path: '/a.jsonl', text: '{}', truncated: false }]
+    listener({}, { panelId: 'panel-1', topic: 'files.drop', payload: { files: dropped } })
+    expect(seen).toEqual([dropped])
+
+    // Wrong panel and wrong topic are both ignored.
+    listener({}, { panelId: 'other', topic: 'files.drop', payload: { files: dropped } })
+    listener({}, { panelId: 'panel-1', topic: 'storage.change', payload: {} })
+    expect(seen).toHaveLength(1)
+
+    // A drop with no files array yields an empty list, not a throw.
+    listener({}, { panelId: 'panel-1', topic: 'files.drop', payload: {} })
+    expect(seen.at(-1)).toEqual([])
+
+    off()
+    expect(removeListener).toHaveBeenCalledWith('cate:event', listener)
+  })
+})

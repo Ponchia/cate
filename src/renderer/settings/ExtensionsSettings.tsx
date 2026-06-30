@@ -36,11 +36,12 @@ const PERMISSION_LABELS: Record<string, string> = {
   storage: 'Store extension data',
   canvas: 'Create canvas panels',
   agent: 'Run the agent on your behalf',
+  files: 'Receive dropped files',
+  'files.drop': 'Receive dropped files',
 }
 
 /** The extension's declared `cateApi` scopes shown as readable permission chips.
- *  Renders nothing when none are declared. The `agent` scope is highlighted as
- *  the most sensitive (it can run the agent using your model + credentials). */
+ *  Renders nothing when none are declared. */
 const Permissions = ({ scopes }: { scopes?: string[] }) => {
   if (!scopes || scopes.length === 0) return null
   return (
@@ -50,9 +51,7 @@ const Permissions = ({ scopes }: { scopes?: string[] }) => {
         <span
           key={s}
           title={s}
-          className={`text-[10px] px-1.5 py-0.5 rounded ${
-            s === 'agent' ? 'bg-amber-500/[0.14] text-amber-300' : 'bg-surface-3 text-muted'
-          }`}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-muted"
         >
           {PERMISSION_LABELS[s] ?? s}
         </span>

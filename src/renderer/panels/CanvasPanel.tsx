@@ -239,8 +239,11 @@ export default function CanvasPanel({ panelId, workspaceId, nodeId, renderPanelC
   // `visibleNodeIds` is viewport-culled: we only mount CanvasNodeWrapper for
   // nodes whose bbox overlaps the visible canvas rect (plus a 1-screen margin),
   // so off-screen terminals/editors don't hold live xterm/Monaco instances.
+  // `panels` lets the cull exempt webview-backed nodes (extensions) so panning
+  // them off-screen doesn't unmount the guest and reset its session state.
   const nodeIds = useNodeIds(store)
-  const visibleNodeIds = useVisibleNodeIds(store)
+  const panels = useAppStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.panels)
+  const visibleNodeIds = useVisibleNodeIds(store, panels)
   // Welcome page only shows on a brand-new workspace (no rootPath chosen yet).
   // After a folder is picked, deleting all panels leaves a blank canvas.
   const workspaceRootPath = useAppStore(

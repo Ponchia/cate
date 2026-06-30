@@ -11,8 +11,10 @@
 import { create, type UseBoundStore } from 'zustand'
 import { useStoreWithEqualityFn } from 'zustand/traditional'
 import type { StoreApi } from 'zustand'
-import type { CanvasNodeId, CanvasNodeState } from '../../shared/types'
+import type { CanvasNodeId, CanvasNodeState, PanelState } from '../../shared/types'
 import { ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT } from '../../shared/types'
+import { collectPanelIds } from '../../shared/collectPanelIds'
+import { keepsMountedOffscreen } from '../../shared/panels'
 import { perfCount } from '../lib/perf/perfClient'
 import { primitiveArrayEqual } from './selectorUtils'
 import log from '../lib/logger'
@@ -200,8 +202,10 @@ export function useNodeIds(store?: UseBoundStore<StoreApi<CanvasStore>>): string
 /**
  * Viewport-culled variant of useNodeIds. Only returns ids for nodes whose
  * bounding box intersects the visible canvas rect (expanded by a 1-screen
- * margin so panning doesn't thrash mount state at the edges). Focused and
- * pinned nodes are always included so they keep their live state.
+ * margin so panning doesn't thrash mount state at the edges). Focused, pinned,
+ * and keep-mounted (webview-backed, e.g. extensions) nodes are always included
+ * so they keep their live state. `panels` resolves each node's panel type(s) for
+ * the keep-mounted check; omit it to skip that exemption (pure geometric cull).
  *
  * This is the primary lever for reducing memory/CPU when many terminals or
  * editors are open on a canvas — off-screen nodes don't mount at all.
@@ -223,49 +227,88 @@ function sortedNodesByZOrder(nodes: Record<CanvasNodeId, CanvasNodeState>): Canv
   return sorted
 }
 
-export function useVisibleNodeIds(store?: UseBoundStore<StoreApi<CanvasStore>>): string[] {
+// Nodes that host a panel which must stay mounted off-screen (webview-backed
+// extensions — see keepsMountedOffscreen). Geometric culling unmounts off-screen
+// nodes, which destroys a <webview>'s guest process and resets all its in-page
+// state; these nodes opt out so panning away and back preserves the session.
+// Cached by the `nodes` object identity and guarded on `panels`, so a pure
+// pan/zoom (both stable) reuses the set instead of re-walking every dock layout
+// on each frame. zustand swaps `nodes`/`panels` immutably on any real change.
+const EMPTY_KEEP_ALIVE: ReadonlySet<string> = new Set()
+const keepAliveCache = new WeakMap<object, { panels: unknown; ids: ReadonlySet<string> }>()
+function keepAliveNodeIds(
+  nodes: Record<CanvasNodeId, CanvasNodeState>,
+  panels: Record<string, PanelState> | undefined,
+): ReadonlySet<string> {
+  if (!panels) return EMPTY_KEEP_ALIVE
+  const cached = keepAliveCache.get(nodes)
+  if (cached && cached.panels === panels) return cached.ids
+  const ids = new Set<string>()
+  for (const n of Object.values(nodes)) {
+    const panelIds = n.dockLayout ? collectPanelIds(n.dockLayout) : [n.panelId]
+    if (panelIds.some((pid) => keepsMountedOffscreen(panels[pid]?.type))) ids.add(n.id)
+  }
+  keepAliveCache.set(nodes, { panels, ids })
+  return ids
+}
+
+/** Pure core of {@link useVisibleNodeIds}. Returns the z-ordered ids of nodes
+ *  that should be mounted: those intersecting the margin-expanded viewport, plus
+ *  the always-mounted exemptions (focused, pinned, keep-mounted webview nodes).
+ *  Exported for unit testing. */
+export function selectVisibleNodeIds(
+  s: Pick<CanvasStore, 'nodes' | 'viewportOffset' | 'zoomLevel' | 'containerSize' | 'focusedNodeId'>,
+  panels?: Record<string, PanelState>,
+): string[] {
+  perfCount('canvasCullEval')
+  const { nodes, viewportOffset, zoomLevel, containerSize, focusedNodeId } = s
+  const z = zoomLevel
+  const cw = containerSize.width
+  const ch = containerSize.height
+
+  const sorted = sortedNodesByZOrder(nodes)
+
+  // Before the container size is known, render everything — prevents an
+  // initial flash where no nodes appear while the ResizeObserver settles.
+  if (cw === 0 || ch === 0 || z <= 0) {
+    return sorted.map((n) => n.id)
+  }
+
+  const keepAlive = keepAliveNodeIds(nodes, panels)
+
+  // Visible canvas-space rect. worldTransform is scale(z) then
+  // translate(offset/z), so a canvas point p maps to p*z + offset in view
+  // space. Inverting: canvas = (view - offset) / z.
+  const marginX = cw / z
+  const marginY = ch / z
+  const left = -viewportOffset.x / z - marginX
+  const top = -viewportOffset.y / z - marginY
+  const right = (cw - viewportOffset.x) / z + marginX
+  const bottom = (ch - viewportOffset.y) / z + marginY
+
+  const result: string[] = []
+  for (const n of sorted) {
+    if (n.id === focusedNodeId || n.isPinned || keepAlive.has(n.id)) {
+      result.push(n.id)
+      continue
+    }
+    const nx = n.origin.x
+    const ny = n.origin.y
+    const nr = nx + n.size.width
+    const nb = ny + n.size.height
+    if (nr < left || nx > right || nb < top || ny > bottom) continue
+    result.push(n.id)
+  }
+  return result
+}
+
+export function useVisibleNodeIds(
+  store?: UseBoundStore<StoreApi<CanvasStore>>,
+  panels?: Record<string, PanelState>,
+): string[] {
   return useStoreWithEqualityFn(
     store ?? useCanvasStore,
-    (s) => {
-      perfCount('canvasCullEval')
-      const { nodes, viewportOffset, zoomLevel, containerSize, focusedNodeId } = s
-      const z = zoomLevel
-      const cw = containerSize.width
-      const ch = containerSize.height
-
-      const sorted = sortedNodesByZOrder(nodes)
-
-      // Before the container size is known, render everything — prevents an
-      // initial flash where no nodes appear while the ResizeObserver settles.
-      if (cw === 0 || ch === 0 || z <= 0) {
-        return sorted.map((n) => n.id)
-      }
-
-      // Visible canvas-space rect. worldTransform is scale(z) then
-      // translate(offset/z), so a canvas point p maps to p*z + offset in view
-      // space. Inverting: canvas = (view - offset) / z.
-      const marginX = cw / z
-      const marginY = ch / z
-      const left = -viewportOffset.x / z - marginX
-      const top = -viewportOffset.y / z - marginY
-      const right = (cw - viewportOffset.x) / z + marginX
-      const bottom = (ch - viewportOffset.y) / z + marginY
-
-      const result: string[] = []
-      for (const n of sorted) {
-        if (n.id === focusedNodeId || n.isPinned) {
-          result.push(n.id)
-          continue
-        }
-        const nx = n.origin.x
-        const ny = n.origin.y
-        const nr = nx + n.size.width
-        const nb = ny + n.size.height
-        if (nr < left || nx > right || nb < top || ny > bottom) continue
-        result.push(n.id)
-      }
-      return result
-    },
+    (s) => selectVisibleNodeIds(s, panels),
     primitiveArrayEqual,
   )
 }

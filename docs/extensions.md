@@ -65,6 +65,7 @@ cate.theme.get()                               // { id, type, app, terminal } th
 cate.editor.openFile(path, { line?, column? }) // path is confined to the workspace root
 cate.canvas.createPanel(type, { position?, size?, props? })
 cate.ui.notify(message, level?)
+cate.files.onDrop(cb)                          // files dropped on this panel: [{ name, path, text, size?, truncated? }]
 cate.storage.get(key) / set(key, value) / delete(key) / keys()   // JSON KV, extension-scoped, persisted to <project>/.cate
 cate.storage.panel.get(key) / set(key, value)  // panel-scoped slice, keyed by cate.panel.id
 cate.storage.onChange(cb)                       // fires on external edits and writes from other panels
@@ -83,6 +84,10 @@ cate.agent.cancel()                             // abort this extension's in-fli
 - **One run at a time per extension**: a concurrent `run` returns `{ error: 'agent-busy' }`. This is the whole anti-runaway-loop guard for v1; token/cost budgets and rate limits are intentionally deferred.
 
 `cate.agent.run` is long-lived (a turn takes minutes); it resolves on the agent's terminal `agent_end`, so callers must not impose a short timeout.
+
+### File drops (`files.drop` scope)
+
+An extension that declares the **`files.drop`** scope receives files dropped onto its panel — from the OS file manager or from Cate's own file explorer. Because the panel is an isolated webview, Cate intercepts the drop on the host side, reads each file (the user's drag is the authorisation, so the extension never gets raw filesystem access), and hands the guest the content via `cate.files.onDrop(cb)`. The callback fires with an array of `{ name, path, text, size?, truncated? }`; `path` is the absolute path when resolvable (null for some OS drops) and `text` is the UTF-8 content, capped by the host (`truncated` flags an over-cap file). Extensions should also handle native webview `drop` events themselves as a fallback for windows where the host overlay isn't active.
 
 ## Persistence
 

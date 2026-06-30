@@ -11,10 +11,10 @@
 // =============================================================================
 
 import { describe, it, expect } from 'vitest'
-import { createCanvasStore } from './canvasStore'
+import { createCanvasStore, selectVisibleNodeIds } from './canvasStore'
 import { recommendPlacements, nudgeToFree } from '../canvas/placement'
 import { CANVAS_GRID_SIZE } from '../canvas/layoutEngine'
-import type { CanvasNodeState, CanvasNodeId } from '../../shared/types'
+import type { CanvasNodeState, CanvasNodeId, PanelState } from '../../shared/types'
 
 describe('canvasStore.addNode panelId dedup invariant', () => {
   it('single addNode produces exactly one node for that panelId', () => {
@@ -79,6 +79,45 @@ describe('canvasStore.addNode — canvas-on-canvas is rejected', () => {
     const result = store.getState().addNode('panel-canvas-1', 'canvas', { x: 10, y: 10 }, { width: 400, height: 300 })
     expect(result).toBe('')
     expect(Object.keys(store.getState().nodes)).toHaveLength(0)
+  })
+})
+
+// Viewport culling unmounts off-screen nodes to free terminal/editor resources.
+// Webview-backed nodes (extensions) hold non-reconstructible in-page state, so
+// they must stay mounted even off-screen — otherwise panning away resets them.
+// selectVisibleNodeIds is the pure cull core; `panels` resolves panel types.
+describe('canvasStore.selectVisibleNodeIds — keep-mounted webview nodes', () => {
+  const panel = (id: string, type: PanelState['type']): PanelState => ({
+    id, type, title: id, isDirty: false,
+  })
+
+  // A viewport that places nothing on-screen: far-away nodes are culled unless
+  // exempt. zoom 1, 800x600 → margin-expanded rect is x:[-800,1600] y:[-600,1200].
+  const offscreen = (store: ReturnType<typeof createCanvasStore>) => {
+    store.getState().setContainerSize({ width: 800, height: 600 })
+    store.setState({ zoomLevel: 1, viewportOffset: { x: 0, y: 0 }, focusedNodeId: null })
+  }
+
+  it('culls an off-screen editor but keeps an off-screen extension', () => {
+    const store = createCanvasStore()
+    const editorId = store.getState().addNode('p-editor', 'editor', { x: 5000, y: 5000 }, { width: 100, height: 80 })
+    const extId = store.getState().addNode('p-ext', 'extension', { x: 5000, y: 6000 }, { width: 100, height: 80 })
+    offscreen(store)
+
+    const panels = { 'p-editor': panel('p-editor', 'editor'), 'p-ext': panel('p-ext', 'extension') }
+    const visible = selectVisibleNodeIds(store.getState(), panels)
+
+    expect(visible).toContain(extId)
+    expect(visible).not.toContain(editorId)
+  })
+
+  it('without a panels map, the extension is culled like any other node', () => {
+    const store = createCanvasStore()
+    const extId = store.getState().addNode('p-ext', 'extension', { x: 5000, y: 6000 }, { width: 100, height: 80 })
+    offscreen(store)
+
+    // No panels arg → no type resolution → pure geometric cull.
+    expect(selectVisibleNodeIds(store.getState())).not.toContain(extId)
   })
 })
 

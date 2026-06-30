@@ -12,7 +12,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { PuzzlePiece } from '@phosphor-icons/react'
 import { portalRegistry } from '../lib/portalRegistry'
+import { useExtensionsStore, ensureExtensionsStarted } from '../stores/extensionsStore'
+import { CATE_HOST_EVENT } from '../../shared/ipc-channels'
+import type { CateDroppedFile } from '../../shared/cate-host-api'
 import type { ExtensionPanelProps } from './types'
+
+// Cap forwarded file content so a huge drop can't choke the IPC bridge / guest.
+const MAX_DROP_BYTES = 32 * 1024 * 1024
 
 // -----------------------------------------------------------------------------
 // Type declarations for Electron's <webview> element (mirrors BrowserPanel).
@@ -21,8 +27,75 @@ import type { ExtensionPanelProps } from './types'
 interface WebviewElement extends HTMLElement {
   reload(): void
   getWebContentsId(): number
+  send(channel: string, ...args: unknown[]): void
   addEventListener(type: string, listener: (event: any) => void): void
   removeEventListener(type: string, listener: (event: any) => void): void
+}
+
+// -----------------------------------------------------------------------------
+// File-drop forwarding. A Cate file-explorer drag is an in-renderer DnD the
+// isolated guest <webview> can never see, AND an HTML overlay can't reliably sit
+// above a webview to catch it. So when the extension declares `files.drop` we
+// catch the drop at the WINDOW capture phase, hit-test it against this panel's
+// rect, read the file host-side (the user's drag authorises it — the guest never
+// touches the filesystem), and push the content to the guest on the same
+// `cate:event` channel its preload already listens on. OS-file drops are NOT
+// handled here: they reach the guest's own DOM natively, so the extension reads
+// them itself (file.text()) without any host involvement.
+// -----------------------------------------------------------------------------
+
+/** True when the manifest's declared scopes grant file drops. */
+function grantsFileDrop(scopes: string[] | undefined): boolean {
+  return !!scopes && scopes.some((s) => s === 'files' || s === 'files.drop')
+}
+
+function clampText(text: string): { text: string; truncated: boolean } {
+  // Byte-aware clamp: most session files are ASCII-ish, but guard multi-byte.
+  if (text.length <= MAX_DROP_BYTES) return { text, truncated: false }
+  return { text: text.slice(0, MAX_DROP_BYTES), truncated: true }
+}
+
+/** Resolve a drop event into the files to hand the guest. OS drops carry File
+ *  objects we read in-renderer (any path, no workspace restriction); Cate
+ *  file-explorer drops carry in-workspace paths read over IPC.
+ *  Exported for unit testing. */
+export async function readDroppedFiles(
+  dt: DataTransfer,
+  workspaceId: string,
+): Promise<CateDroppedFile[]> {
+  const out: CateDroppedFile[] = []
+
+  // 1. OS files: content is already in the renderer — read it directly so paths
+  //    outside the workspace (e.g. ~/.claude/projects) work without a grant.
+  for (const file of Array.from(dt.files ?? [])) {
+    try {
+      const raw = await file.text()
+      const { text, truncated } = clampText(raw)
+      let filePath: string | null = null
+      try { filePath = window.electronAPI.getPathForFile(file) || null } catch { filePath = null }
+      out.push({ name: file.name, path: filePath, text, size: file.size, truncated })
+    } catch { /* unreadable file — skip */ }
+  }
+  if (out.length > 0) return out
+
+  // 2. Cate file-explorer drag: a path (or JSON array of paths) we read via IPC.
+  const paths: string[] = []
+  const many = dt.getData('application/cate-files')
+  if (many) {
+    try { for (const p of JSON.parse(many)) if (typeof p === 'string') paths.push(p) } catch { /* ignore */ }
+  }
+  if (paths.length === 0) {
+    const one = dt.getData('application/cate-file')
+    if (one) paths.push(one)
+  }
+  for (const p of paths) {
+    try {
+      const raw = await window.electronAPI.fsReadFile(p, workspaceId)
+      const { text, truncated } = clampText(raw)
+      out.push({ name: p.split('/').pop() || p, path: p, text, truncated })
+    } catch { /* denied / unreadable — skip */ }
+  }
+  return out
 }
 
 type ResolveState =
@@ -44,6 +117,20 @@ export default function ExtensionPanel({
   const [state, setState] = useState<ResolveState>({ phase: 'loading' })
   // Bumped by Retry to force the resolve effect to re-run.
   const [retryNonce, setRetryNonce] = useState(0)
+
+  // Ensure the extension registry is loaded so the manifest (and its scopes) is
+  // available even when this panel was opened without going through the toolbar.
+  useEffect(() => { ensureExtensionsStarted() }, [])
+
+  // The wrapper element, used to hit-test window-level drops against this panel.
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  // Does this extension accept file drops? (manifest `files.drop` scope). When it
+  // does, the wrapper is a [data-filedrop] target (so the shared indicator shows)
+  // and a window-capture listener forwards in-app drops to the guest.
+  const acceptsDrops = useExtensionsStore((s) =>
+    grantsFileDrop(s.entries.find((e) => e.manifest.id === extensionId)?.manifest.cateApi),
+  )
 
   // workspaceId comes from the panel props (renderPanelComponent passes the
   // owning window's workspace). It is NOT read from window.location.search —
@@ -95,6 +182,68 @@ export default function ExtensionPanel({
       .finally(() => setRetryNonce((n) => n + 1))
   }
 
+  // In-app (Cate file-explorer) drags are an HTML5 DnD the isolated guest
+  // <webview> can't see — and while the cursor is over the webview it captures
+  // the drag, so neither the host's drop handler nor the shared drop indicator
+  // ever fire over the panel. Fix: while a Cate drag is in flight, make the
+  // webview transparent to hit-testing (pointer-events:none) so dragover/drop
+  // fall through to the host DOM. The shared tracker can then find this panel's
+  // [data-filedrop] wrapper (indicator shows), and we hit-test the drop against
+  // it, read the file host-side, and push it to the guest on the `cate:event`
+  // channel its preload listens on. OS-file drags (types are just 'Files') are
+  // left alone — the guest handles those natively via its own DOM.
+  useEffect(() => {
+    if (!acceptsDrops || state.phase !== 'ready') return
+
+    const isCateDrag = (dt: DataTransfer | null): boolean =>
+      !!dt && (dt.types.includes('application/cate-file') || dt.types.includes('application/cate-files'))
+
+    const setPassthrough = (on: boolean): void => {
+      const webview = webviewRef.current
+      if (webview) webview.style.pointerEvents = on ? 'none' : ''
+    }
+
+    const onDragOver = (e: DragEvent): void => {
+      if (isCateDrag(e.dataTransfer)) setPassthrough(true)
+    }
+    const onDragLeave = (e: DragEvent): void => {
+      // relatedTarget null === cursor left the window entirely.
+      if (!e.relatedTarget) setPassthrough(false)
+    }
+    const onDragEnd = (): void => setPassthrough(false)
+    const onWindowDrop = (e: DragEvent): void => {
+      setPassthrough(false)
+      const dt = e.dataTransfer
+      const root = rootRef.current
+      const webview = webviewRef.current
+      if (!dt || !root || !webview || !isCateDrag(dt)) return
+      const r = root.getBoundingClientRect()
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return
+      // The drop is over this panel: claim it so the canvas/dock doesn't also open
+      // the file, then forward the content to the guest.
+      e.preventDefault()
+      e.stopPropagation()
+      void readDroppedFiles(dt, workspaceId).then((files) => {
+        if (files.length === 0) return
+        try {
+          webview.send(CATE_HOST_EVENT, { panelId, topic: 'files.drop', payload: { files } })
+        } catch { /* guest gone */ }
+      })
+    }
+
+    window.addEventListener('dragover', onDragOver, true)
+    window.addEventListener('dragleave', onDragLeave, true)
+    window.addEventListener('dragend', onDragEnd, true)
+    window.addEventListener('drop', onWindowDrop, true)
+    return () => {
+      window.removeEventListener('dragover', onDragOver, true)
+      window.removeEventListener('dragleave', onDragLeave, true)
+      window.removeEventListener('dragend', onDragEnd, true)
+      window.removeEventListener('drop', onWindowDrop, true)
+      setPassthrough(false)
+    }
+  }, [acceptsDrops, state.phase, workspaceId, panelId])
+
   // Register the live guest webContents with the portal registry once it's up
   // (mirrors BrowserPanel) so cross-window/portal machinery can find it.
   useEffect(() => {
@@ -143,8 +292,15 @@ export default function ExtensionPanel({
   // Keyed by panelId + extensionId so a reused slot pointed at a different
   // extension remounts with a fresh webContents. Security-conscious attributes
   // match BrowserPanel: no nodeintegration; per-extension persistent partition.
+  // data-filedrop on the wrapper (not an overlay) lets the shared drag tracker
+  // find this target; the drop effect above toggles the webview to
+  // pointer-events:none during a Cate drag so hit-testing reaches the wrapper.
   return (
-    <div className="w-full h-full">
+    <div
+      ref={rootRef}
+      className="w-full h-full"
+      {...(acceptsDrops ? { 'data-filedrop': 'extension', 'data-filedrop-id': panelId } : {})}
+    >
       <webview
         key={`${panelId}:${extensionId}`}
         ref={webviewRef as any}
