@@ -19,7 +19,7 @@ import {
   FileText,
   SquaresFour,
   FileDoc,
-  Sparkle,
+  ChatCircle,
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react'
 import type { PanelType, Point, BrowserTab } from '../../shared/types'
@@ -109,7 +109,7 @@ export const PANEL_REGISTRY: Record<PanelType, RendererPanelDefinition> = {
   },
   agent: {
     ...PANEL_DEFINITIONS.agent,
-    icon: Sparkle,
+    icon: ChatCircle,
     Component: AgentPanel,
     create: ({ workspaceId, canvasPoint, placement }) =>
       trackCreated('agent', useAppStore.getState().createAgent(workspaceId, canvasPoint, placement) || null),

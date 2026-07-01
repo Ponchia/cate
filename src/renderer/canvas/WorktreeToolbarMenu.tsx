@@ -25,7 +25,7 @@ import {
   Warning,
   X,
   GitPullRequest,
-  Sparkle,
+  ChatCircle,
 } from '@phosphor-icons/react'
 import { Tooltip } from '../ui/Tooltip'
 import { CreateWorktreeForm } from '../sidebar/CreateWorktreeForm'
@@ -491,7 +491,7 @@ const WorktreeRow: React.FC<{
               onClick={() => onLaunch('terminal')}
             />
             <SpawnButton
-              icon={<Sparkle size={12} />}
+              icon={<ChatCircle size={12} />}
               title="Agent"
               panelType="agent"
               cwd={wt.path}
@@ -527,7 +527,7 @@ const WorktreeRow: React.FC<{
               )}
               {openAgents > 0 && (
                 <span className="flex items-center gap-0.5">
-                  <Sparkle size={10} />
+                  <ChatCircle size={10} />
                   {openAgents}
                 </span>
               )}

@@ -15,7 +15,7 @@ import {
   Cursor,
   Hand,
   X,
-  Sparkle,
+  ChatCircle,
 } from '@phosphor-icons/react'
 import Minimap from './Minimap'
 import WorktreeToolbarMenu from './WorktreeToolbarMenu'
@@ -399,7 +399,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
               <FileText size={18} />
             </ToolbarButton>
             <ToolbarButton onClick={onNewAgent} title="Agent" size="panel">
-              <Sparkle size={18} />
+              <ChatCircle size={18} />
             </ToolbarButton>
 
             {/* Divider */}

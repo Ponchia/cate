@@ -29,7 +29,7 @@ import {
   Selection,
   ArrowUUpLeft,
   ArrowUUpRight,
-  Sparkle,
+  ChatCircle,
   Eye,
 } from '@phosphor-icons/react'
 import type { PanelType, MenuActionId } from '../../shared/types'
@@ -76,7 +76,7 @@ const ReloadIcon = () => <ArrowsClockwise size={ICON_SIZE} />
 const DeleteRuntimeIcon = () => <Trash size={ICON_SIZE} />
 const TutorialIcon = () => <GraduationCap size={ICON_SIZE} />
 const SkillsIcon = () => <PuzzlePiece size={ICON_SIZE} />
-const AgentIcon = () => <Sparkle size={ICON_SIZE} />
+const AgentIcon = () => <ChatCircle size={ICON_SIZE} />
 const ObserveIcon = () => <Eye size={ICON_SIZE} />
 const CloseIcon = () => <X size={ICON_SIZE} />
 const MinimapIcon = () => <MapTrifold size={ICON_SIZE} />
@@ -579,6 +579,6 @@ function PanelIcon({ type }: { type: PanelType }) {
   if (type === 'terminal') return <span className={`${cls} text-emerald-400`}><Terminal size={ICON_SIZE} /></span>
   if (type === 'browser')  return <span className={`${cls} text-sky-400`}><Globe size={ICON_SIZE} /></span>
   if (type === 'editor' || type === 'document') return <span className={`${cls} text-orange-400`}><FileText size={ICON_SIZE} /></span>
-  if (type === 'agent')    return <span className={`${cls} text-[rgb(var(--agent-rgb))]`}><Sparkle size={ICON_SIZE} /></span>
+  if (type === 'agent')    return <span className={`${cls} text-[rgb(var(--agent-rgb))]`}><ChatCircle size={ICON_SIZE} /></span>
   return <span className={`${cls} text-violet-400`}><Square size={ICON_SIZE} /></span>
 }

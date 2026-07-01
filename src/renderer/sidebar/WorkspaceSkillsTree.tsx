@@ -12,7 +12,7 @@
 // =============================================================================
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { PuzzlePiece, CaretRight, Sparkle } from '@phosphor-icons/react'
+import { PuzzlePiece, CaretRight, ChatCircle } from '@phosphor-icons/react'
 import { useAppStore } from '../stores/appStore'
 import { useUIStore } from '../stores/uiStore'
 import { getAgentLogoById } from '../lib/agent/agentLogos'
@@ -28,8 +28,8 @@ const TARGET_LABEL: Record<string, string> = Object.fromEntries(
 )
 
 // Skill target → agent id for the logo lookup. cate-agent is Cate's built-in
-// Agent panel — it has no bundled SVG and uses the panel's Sparkle mark instead;
-// pi-native's logo lives under `pi`.
+// Agent panel — it has no bundled SVG and uses the panel's chat-bubble mark
+// instead; pi-native's logo lives under `pi`.
 const TARGET_LOGO_ID: Partial<Record<SkillTargetId, AgentId>> = {
   'claude-code': 'claude-code',
   'pi-native': 'pi',
@@ -40,7 +40,7 @@ const TARGET_LOGO_ID: Partial<Record<SkillTargetId, AgentId>> = {
 
 const AgentIcon: React.FC<{ targetId: SkillTargetId }> = ({ targetId }) => {
   if (targetId === 'cate-agent') {
-    return <Sparkle size={11} className="flex-shrink-0 text-[rgb(var(--agent-rgb))]" style={{ opacity: 0.9 }} />
+    return <ChatCircle size={11} className="flex-shrink-0 text-[rgb(var(--agent-rgb))]" style={{ opacity: 0.9 }} />
   }
   const logo = getAgentLogoById(TARGET_LOGO_ID[targetId])
   if (logo) {
