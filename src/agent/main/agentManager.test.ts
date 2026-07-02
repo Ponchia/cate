@@ -154,3 +154,76 @@ describe('AgentManager.runTurn', () => {
     await expect(result).rejects.toThrow('model not supported')
   })
 })
+
+// openForExtension keys extSessions by pi's session-file handle. Because a
+// workspace's .cate/pi-agent dir is SHARED across all its extensions, extension
+// B could pass extension A's LIVE handle as `resume` and silently overwrite A's
+// routing entry — stranding A's pi child in `sessions` (leak) and forking two
+// extensions onto one jsonl. The open must refuse a handle already owned by a
+// different extension.
+describe('AgentManager.openForExtension session ownership', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  function makeExtManager() {
+    const mgr = new AgentManager(fakeAuthManager)
+    const sessions = (mgr as unknown as { sessions: Map<string, unknown> }).sessions
+    // Stub create so opening injects a fake pi session for the panel without
+    // spawning anything; the client just echoes back a session-file path.
+    vi.spyOn(
+      mgr as unknown as { create: (o: { panelId: string; sessionFile?: string }, s: unknown) => Promise<void> },
+      'create',
+    ).mockImplementation(async (opts) => {
+      sessions.set(opts.panelId, {
+        panelId: opts.panelId,
+        sender: { id: 1 },
+        client: { getState: async () => ({ sessionFile: opts.sessionFile ?? `fresh-${opts.panelId}` }) },
+      })
+    })
+    vi.spyOn(
+      mgr as unknown as { resolveDefaultModel: () => Promise<null> },
+      'resolveDefaultModel',
+    ).mockResolvedValue(null)
+    const extSessions = (mgr as unknown as {
+      extSessions: Map<string, { extensionId: string; panelId: string; handle: string }>
+    }).extSessions
+    return { mgr, sessions, extSessions }
+  }
+
+  const openOpts = (extensionId: string, resume?: string) => ({
+    workspaceId: 'ws',
+    locator: 'local:/ws',
+    extensionId,
+    sender: { id: 1 } as never,
+    resume,
+  })
+
+  it('rejects an extension resuming a handle owned by a different extension', async () => {
+    const { mgr, sessions, extSessions } = makeExtManager()
+
+    // Extension A opens and owns handle H (its own session file).
+    const { sessionId: H } = await mgr.openForExtension(openOpts('ext-a', '/ws/.cate/pi-agent/H.jsonl'))
+    const aPanel = extSessions.get(H)!.panelId
+    expect(extSessions.get(H)!.extensionId).toBe('ext-a')
+
+    // Extension B tries to resume A's live handle — must be refused, not overwrite.
+    await expect(mgr.openForExtension(openOpts('ext-b', H))).rejects.toThrow(
+      'session-owned-by-another-extension',
+    )
+
+    // A's routing survived unchanged and B did not strand a leaked pi session.
+    expect(extSessions.get(H)!.extensionId).toBe('ext-a')
+    expect(extSessions.get(H)!.panelId).toBe(aPanel)
+    expect(sessions.has(aPanel)).toBe(true)
+    expect(sessions.size).toBe(1)
+  })
+
+  it('still lets the same extension re-open its own live handle path', async () => {
+    const { mgr, extSessions } = makeExtManager()
+
+    const { sessionId: H } = await mgr.openForExtension(openOpts('ext-a', '/ws/.cate/pi-agent/H.jsonl'))
+    // The same extension re-opening while its session is live hits the
+    // one-live-session-per-extension cap (agent-busy), never the ownership guard.
+    await expect(mgr.openForExtension(openOpts('ext-a', H))).rejects.toThrow('agent-busy')
+    expect(extSessions.get(H)!.extensionId).toBe('ext-a')
+  })
+})

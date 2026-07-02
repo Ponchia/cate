@@ -27,8 +27,9 @@ import log from '../logger'
 import { extensionManager } from './ExtensionManager'
 import { extensionServerManager } from './ExtensionServerManager'
 import { openTunnelDuplex } from './serverTunnel'
-import { parseLocator, LOCAL_RUNTIME_ID } from '../runtime/locator'
+import { parseLocator } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
+import { hostJoin } from '../../agent/main/agentDir'
 import { getWorkspaceInfo } from '../workspaceManager'
 import type { Runtime } from '../runtime/types'
 import type { ExtensionManifest } from '../../shared/extensions'
@@ -96,13 +97,23 @@ function registerRoute(extensionId: string, workspaceId: string): string {
 export function identityForGuestUrl(
   rawUrl: string,
 ): { extensionId: string; workspaceId: string } | null {
-  let pathname: string
+  let parsedUrl: URL
   try {
-    pathname = new URL(rawUrl).pathname
+    parsedUrl = new URL(rawUrl)
   } catch {
     return null
   }
-  const parsed = parseExtPath(pathname)
+  // Security: the routeToken alone is not enough — a guest that navigates to
+  // `https://attacker.com/ext/<validToken>/…` would otherwise resolve to the
+  // extension's identity and get the full cate.* API. Only a URL served by THIS
+  // proxy's own origin (127.0.0.1:<port>) is a trusted route.
+  // Security: the routeToken alone is not enough — a guest that navigates to
+  // `https://attacker.com/ext/<validToken>/…` would otherwise resolve to the
+  // extension's identity and get the full cate.* API. Only a URL served by THIS
+  // proxy's own origin (127.0.0.1:<port>) is a trusted route.
+  const origin = getProxyOrigin()
+  if (!origin || parsedUrl.origin !== origin) return null
+  const parsed = parseExtPath(parsedUrl.pathname)
   if (!parsed) return null
   const route = routesByToken.get(parsed.token)
   return route ? { extensionId: route.extensionId, workspaceId: route.workspaceId } : null
@@ -126,8 +137,7 @@ function resolveAssetPath(runtime: Runtime, rootDir: string, relPath: string): s
   if (path.posix.isAbsolute(decoded)) return null
   const segments = decoded.split('/').filter((s) => s !== '' && s !== '.')
   if (segments.length === 0 || segments.some((s) => s === '..')) return null
-  const joiner = runtime.id === LOCAL_RUNTIME_ID ? path : path.posix
-  return joiner.join(rootDir, ...segments)
+  return hostJoin(runtime.id, rootDir, ...segments)
 }
 
 // Immutable-per-version asset cache, keyed by `<hostRootDir>\0<relPath>`. The
@@ -406,7 +416,12 @@ export async function ensureProxyServer(): Promise<number> {
         try { (socket as Duplex).destroy() } catch { /* noop */ }
       })
     })
-    s.on('error', reject)
+    s.on('error', (err) => {
+      // Clear the cached promise so a later call retries rather than replaying
+      // this same rejection forever.
+      startPromise = null
+      reject(err)
+    })
     s.listen(0, '127.0.0.1', () => {
       server = s
       const addr = s.address()

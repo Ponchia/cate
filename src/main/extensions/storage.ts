@@ -24,11 +24,11 @@
 // (suppressing our own write echo by content compare).
 // =============================================================================
 
-import path from 'path'
 import log from '../logger'
-import { parseLocator, LOCAL_RUNTIME_ID } from '../runtime/locator'
+import { parseLocator, type RuntimeId } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import { getWorkspaceInfo } from '../workspaceManager'
+import { hostJoin } from '../../agent/main/agentDir'
 import type { Runtime } from '../runtime/types'
 
 /** Reserved sub-object holding per-panel slices. */
@@ -54,12 +54,10 @@ export interface ExtensionStorage {
 
 interface Store {
   handle: ExtensionStorage
-}
-
-/** Join a path on the runtime HOST: native for LOCAL (client == host, same OS),
- *  posix for remote daemons (Linux/WSL). */
-function hostJoin(runtime: Runtime, ...parts: string[]): string {
-  return runtime.id === LOCAL_RUNTIME_ID ? path.join(...parts) : path.posix.join(...parts)
+  /** Flush nothing / stop the watcher and release resources. Called when a
+   *  runtime disconnects (disposeStoresForRuntime) so we don't strand a watcher
+   *  bound to a dead runtime handle. */
+  dispose(): void
 }
 
 // Cache keyed by `<runtimeId>\0<hostFilePath>`; the promise is stored so two
@@ -80,14 +78,14 @@ function locate(workspaceId: string): { runtime: Runtime; root: string } | null 
   }
 }
 
-function storageFile(runtime: Runtime, projectRoot: string, extensionId: string): string {
-  return hostJoin(runtime, projectRoot, '.cate', 'extensions', extensionId, 'storage.json')
+function storageFile(runtimeId: RuntimeId, projectRoot: string, extensionId: string): string {
+  return hostJoin(runtimeId, projectRoot, '.cate', 'extensions', extensionId, 'storage.json')
 }
 
 /** Read + parse the host file, or {} when missing/corrupt. */
-async function loadData(runtime: Runtime, file: string): Promise<StorageShape> {
+async function loadData(file: string, host: Runtime['file']): Promise<StorageShape> {
   try {
-    const parsed = JSON.parse(await runtime.file.readFile(file)) as unknown
+    const parsed = JSON.parse(await host.readFile(file)) as unknown
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return { ...(parsed as StorageShape) }
     }
@@ -97,11 +95,21 @@ async function loadData(runtime: Runtime, file: string): Promise<StorageShape> {
   return {}
 }
 
-async function createStore(runtime: Runtime, file: string): Promise<Store> {
-  let data: StorageShape = await loadData(runtime, file)
+async function createStore(runtimeId: RuntimeId, file: string): Promise<Store> {
+  // Resolve the runtime FRESH per operation from the registry rather than
+  // capturing it: a disconnect/reconnect builds a NEW Runtime under the same id,
+  // and this long-lived store must write/read/watch through the CURRENT one, not
+  // the dead handle it was created with (otherwise writes are silently lost).
+  const currentFileHost = (): Runtime['file'] | null => {
+    try { return runtimes.resolve(runtimeId).file } catch { return null }
+  }
+
+  const host0 = currentFileHost()
+  let data: StorageShape = host0 ? await loadData(file, host0) : {}
   const subscribers = new Set<() => void>()
   let writeTimer: ReturnType<typeof setTimeout> | null = null
-  let watching = false
+  /** The runtime watcher disposer, kept so we can stop watching (finding #2). */
+  let unwatch: (() => void) | null = null
   // The JSON of our last scheduled write, so the watcher can ignore the change
   // event our own writeFile produces (otherwise every set() would echo back).
   let lastWritten: string | null = null
@@ -110,9 +118,14 @@ async function createStore(runtime: Runtime, file: string): Promise<Store> {
     if (writeTimer) return
     writeTimer = setTimeout(() => {
       writeTimer = null
+      const host = currentFileHost()
+      if (!host) {
+        log.warn('[extensions] storage write skipped, runtime %s not connected: %s', runtimeId, file)
+        return
+      }
       const json = JSON.stringify(data, null, 2)
       lastWritten = json
-      void runtime.file
+      void host
         .writeFile(file, json)
         .catch((err) => log.warn('[extensions] storage write failed %s: %O', file, err))
     }, WRITE_DEBOUNCE_MS)
@@ -125,11 +138,14 @@ async function createStore(runtime: Runtime, file: string): Promise<Store> {
   }
 
   const ensureWatching = (): void => {
-    if (watching) return
-    watching = true
-    runtime.file.watch(file, () => {
+    if (unwatch) return
+    const host = currentFileHost()
+    if (!host) return
+    unwatch = host.watch(file, () => {
       void (async () => {
-        const fresh = await loadData(runtime, file)
+        const h = currentFileHost()
+        if (!h) return
+        const fresh = await loadData(file, h)
         const json = JSON.stringify(fresh, null, 2)
         if (json === lastWritten) return // our own write echoed back
         data = fresh
@@ -138,6 +154,12 @@ async function createStore(runtime: Runtime, file: string): Promise<Store> {
         }
       })()
     })
+  }
+
+  const stopWatching = (): void => {
+    if (!unwatch) return
+    try { unwatch() } catch { /* disposer must not throw on teardown */ }
+    unwatch = null
   }
 
   const handle: ExtensionStorage = {
@@ -187,11 +209,23 @@ async function createStore(runtime: Runtime, file: string): Promise<Store> {
     onChange(cb) {
       subscribers.add(cb)
       ensureWatching()
-      return () => { subscribers.delete(cb) }
+      return () => {
+        subscribers.delete(cb)
+        // Last subscriber gone → stop the runtime watcher so it isn't left live
+        // for a closed panel (finding #2). A later subscriber re-arms it.
+        if (subscribers.size === 0) stopWatching()
+      }
     },
   }
 
-  return { handle }
+  return {
+    handle,
+    dispose() {
+      if (writeTimer) { clearTimeout(writeTimer); writeTimer = null }
+      subscribers.clear()
+      stopWatching()
+    },
+  }
 }
 
 /**
@@ -206,12 +240,28 @@ export async function getExtensionStorage(
 ): Promise<ExtensionStorage | null> {
   const loc = locate(workspaceId)
   if (!loc) return null
-  const file = storageFile(loc.runtime, loc.root, extensionId)
+  const file = storageFile(loc.runtime.id, loc.root, extensionId)
   const cacheKey = `${loc.runtime.id}\0${file}`
   let entry = stores.get(cacheKey)
   if (!entry) {
-    entry = createStore(loc.runtime, file)
+    entry = createStore(loc.runtime.id, file)
     stores.set(cacheKey, entry)
   }
   return (await entry).handle
+}
+
+/**
+ * Evict + dispose every cached store bound to `runtimeId` (stop its watcher,
+ * cancel any pending write). Exported so ExtensionManager can call it when a
+ * runtime disconnects, so watchers/data don't survive against a dead handle.
+ * A subsequent getExtensionStorage rebuilds the store against the current runtime.
+ */
+export function disposeStoresForRuntime(runtimeId: RuntimeId): void {
+  const prefix = `${runtimeId}\0`
+  for (const key of [...stores.keys()]) {
+    if (!key.startsWith(prefix)) continue
+    const entry = stores.get(key)
+    stores.delete(key)
+    void entry?.then((s) => s.dispose()).catch(() => { /* creation failed; nothing to dispose */ })
+  }
 }

@@ -169,6 +169,15 @@ export function useCateHostActionResponder(): void {
             const title = typeof args.title === 'string' ? args.title : undefined
             const targetPanelId = typeof args.panelId === 'string' ? args.panelId : payload.panelId
             if (!title) return reply(false, { error: 'title required' })
+            // This responder mutates ONLY this window's app store. A panel that was
+            // detached into a separate dock/panel window is no longer in this store,
+            // so updatePanelTitle would silently no-op — don't tell the extension the
+            // (non-)op succeeded. Reject instead of reporting a lie. (Full
+            // cross-window routing is a larger change.)
+            const panelInWindow = useAppStore
+              .getState()
+              .workspaces.find((w) => w.id === workspaceId)?.panels?.[targetPanelId]
+            if (!panelInWindow) return reply(false, { error: 'panel-not-in-window' })
             useAppStore.getState().updatePanelTitle(workspaceId, targetPanelId, title)
             return reply(true)
           }

@@ -16,20 +16,14 @@
 // over the runtime, so the same writeBinary/extract path runs for it too.
 // =============================================================================
 
-import path from 'path'
 import { readFile } from 'fs/promises'
 import log from '../logger'
 import { LOCAL_RUNTIME_ID } from '../runtime/locator'
 import type { Runtime } from '../runtime/types'
 import { uploadEntriesToRuntime } from '../runtime/uploadEntries'
+import { hostJoin } from '../../agent/main/agentDir'
 import { stageArtifact } from './download'
 import type { CatalogEntry } from './catalog'
-
-/** Join a path on the runtime HOST: native for LOCAL (client == host, same OS),
- *  posix for remote daemons (Linux/WSL hosts the daemon runs on). */
-function hostJoin(runtime: Runtime, ...parts: string[]): string {
-  return runtime.id === LOCAL_RUNTIME_ID ? path.join(...parts) : path.posix.join(...parts)
-}
 
 /**
  * Provision a catalog extension onto `runtime` and return its host-absolute root
@@ -45,11 +39,11 @@ export async function provisionCatalogToRuntime(
 ): Promise<string> {
   const { id, version, tgzPath } = await stageArtifact(entry, force)
   const extRoot = await runtime.file.extensionsRoot()
-  const dest = hostJoin(runtime, extRoot, id, version)
+  const dest = hostJoin(runtime.id, extRoot, id, version)
 
   if (!force) {
     const installed = await runtime.file
-      .stat(hostJoin(runtime, dest, '.ok'))
+      .stat(hostJoin(runtime.id, dest, '.ok'))
       .then(() => true)
       .catch(() => false)
     if (installed) return dest
@@ -77,10 +71,17 @@ export async function provisionSideloadToRuntime(
   extensionId: string,
   folder: string,
 ): Promise<string> {
-  if (runtime.id === LOCAL_RUNTIME_ID) return folder
+  if (runtime.id === LOCAL_RUNTIME_ID) {
+    // The dev folder lives OUTSIDE the daemon's default allowed roots (home,
+    // ~/.cate/extensions, tmpdir, workspace roots), so serveStatic's readBinary
+    // would fail validatePathStrict → every asset 404s. Register it as an allowed
+    // root so the daemon's authoritative path checks permit reading its assets.
+    await runtime.addAllowedRoot(folder)
+    return folder
+  }
 
   const extRoot = await runtime.file.extensionsRoot()
-  const dest = hostJoin(runtime, extRoot, extensionId, 'sideload')
+  const dest = hostJoin(runtime.id, extRoot, extensionId, 'sideload')
   // Replace any prior upload so dev edits propagate on re-provision.
   await runtime.file.remove(dest).catch(() => {})
   await runtime.file.mkdir(dest)

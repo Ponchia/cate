@@ -102,17 +102,23 @@ export class ExtensionServerManager {
    */
   async ensureServer(extensionId: string, workspaceId: string): Promise<ServerEndpoint> {
     const key = keyFor(extensionId, workspaceId)
-    return this.withLock(key, async () => {
-      const session = this.getOrCreateSession(extensionId, workspaceId)
-      if (session.state === 'READY' && session.handle) {
-        return { runtime: session.runtime, port: session.handle.port, token: session.token }
-      }
-      await this.startServer(session)
-      if (!session.handle) {
-        throw new Error(session.lastError ?? 'Extension server failed to start')
-      }
+    return this.withLock(key, () => this.ensureServerLocked(extensionId, workspaceId))
+  }
+
+  /** ensureServer's body WITHOUT acquiring the lock — so joinPanel can register a
+   *  panel and ensure the server under ONE lock acquisition (no gap for a
+   *  disable→stopForExtension to interleave between the two). Always called under
+   *  withLock(key). */
+  private async ensureServerLocked(extensionId: string, workspaceId: string): Promise<ServerEndpoint> {
+    const session = this.getOrCreateSession(extensionId, workspaceId)
+    if (session.state === 'READY' && session.handle) {
       return { runtime: session.runtime, port: session.handle.port, token: session.token }
-    })
+    }
+    await this.startServer(session)
+    if (!session.handle) {
+      throw new Error(session.lastError ?? 'Extension server failed to start')
+    }
+    return { runtime: session.runtime, port: session.handle.port, token: session.token }
   }
 
   /** Add a panel to the server's owners and ensure it's running. Cancels any
@@ -124,9 +130,11 @@ export class ExtensionServerManager {
     sender: WebContents,
   ): Promise<ServerEndpoint> {
     const key = keyFor(extensionId, workspaceId)
-    // Cancel grace + register the panel under the lock so a concurrent
-    // leave-driven grace expiry can't race past us.
-    await this.withLock(key, async () => {
+    // Cancel grace, register the panel, AND ensure the server all under ONE lock
+    // acquisition: a disable→stopForExtension (which takes the same lock) can no
+    // longer interleave between register and ensure and leave a spawned server for
+    // a now-disabled extension.
+    return this.withLock(key, async () => {
       const session = this.getOrCreateSession(extensionId, workspaceId)
       if (session.graceTimer) {
         clearTimeout(session.graceTimer)
@@ -135,8 +143,8 @@ export class ExtensionServerManager {
       }
       session.panels.add(panelId)
       session.owners.set(panelId, sender)
+      return this.ensureServerLocked(extensionId, workspaceId)
     })
-    return this.ensureServer(extensionId, workspaceId)
   }
 
   /** Remove a panel. When the last panel leaves, start a grace timer; on expiry
@@ -324,6 +332,16 @@ export class ExtensionServerManager {
    *  until the ready probe passes. Sets handle + READY, or ERROR + lastError. */
   private async startServer(session: ServerSession): Promise<void> {
     if (session.state === 'READY' && session.handle) return
+
+    // Re-check enable state under the lock: a disable() may have landed after this
+    // panel joined (its stopForExtension serializes on the same lock). Bail before
+    // spawning so a disabled extension is never left with a running server that no
+    // leavePanel would ever stop.
+    if (!extensionManager.isEnabled(session.extensionId)) {
+      session.state = 'IDLE'
+      session.lastError = 'Extension is disabled'
+      throw new Error(session.lastError)
+    }
 
     const manifest = extensionManager.getManifest(session.extensionId)
     const server = manifest?.server

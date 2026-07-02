@@ -15,7 +15,7 @@
 // =============================================================================
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Plus, Trash, PuzzlePiece, CircleNotch, ArrowsClockwise, ArrowCircleUp, Warning } from '@phosphor-icons/react'
+import { Plus, Trash, CircleNotch, ArrowsClockwise, ArrowCircleUp, Warning, CaretRight } from '@phosphor-icons/react'
 import { SettingRow, SearchableBlock, SecondaryButton, Toggle, TextInput } from './SettingsComponents'
 import { Tooltip } from '../ui/Tooltip'
 import { errorMessage } from '../lib/errorMessage'
@@ -40,20 +40,47 @@ const PERMISSION_LABELS: Record<string, string> = {
   'files.drop': 'Receive dropped files',
 }
 
-/** The extension's declared `cateApi` scopes shown as readable permission chips.
- *  Renders nothing when none are declared. */
+/** A small muted icon button (reinstall / remove / remove source).
+ *  Hoisted to module scope so it isn't redefined on every ExtensionsSettings
+ *  render (which would remount its subtrees on every keystroke). */
+const IconAction = ({
+  label,
+  onClick,
+  disabled,
+  danger,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  danger?: boolean
+  children: ReactNode
+}) => (
+  <Tooltip label={label}>
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className={`shrink-0 p-0.5 rounded text-muted disabled:opacity-30 ${
+        danger ? 'hover:text-red-400' : 'hover:text-primary'
+      }`}
+    >
+      {children}
+    </button>
+  </Tooltip>
+)
+
+/** The extension's declared `cateApi` scopes as readable permission chips,
+ *  shown in the expanded row body. Renders nothing when none are declared. */
 const Permissions = ({ scopes }: { scopes?: string[] }) => {
   if (!scopes || scopes.length === 0) return null
+  // Dedup after mapping — e.g. `files` and `files.drop` share one label.
+  const labels = [...new Set(scopes.map((s) => PERMISSION_LABELS[s] ?? s))]
   return (
-    <div className="flex flex-wrap items-center gap-1 pl-6">
-      <span className="text-[10px] text-muted">Permissions:</span>
-      {scopes.map((s) => (
-        <span
-          key={s}
-          title={s}
-          className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-muted"
-        >
-          {PERMISSION_LABELS[s] ?? s}
+    <div className="flex flex-wrap items-center gap-1">
+      {labels.map((l) => (
+        <span key={l} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-muted">
+          {l}
         </span>
       ))}
     </div>
@@ -78,6 +105,18 @@ export function ExtensionsSettings() {
   // instead of a misleading "no extensions" message while the first-run
   // background catalog fetch is still in flight.
   const [initialLoad, setInitialLoad] = useState(true)
+  // Accordion state: keys of rows whose detail body (id, description,
+  // permissions) is expanded. Keyed by `source:id` so a sideloaded copy of a
+  // catalog extension can't collide.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const toggleExpanded = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
 
   const refresh = useCallback(async () => {
     try {
@@ -228,58 +267,37 @@ export function ExtensionsSettings() {
   // Shared rows
   // ---------------------------------------------------------------------------
 
-  /** A small hover-revealed icon button (matches the sideload Remove affordance). */
-  const IconAction = ({
-    label,
-    onClick,
-    disabled,
-    danger,
-    children,
-  }: {
-    label: string
-    onClick: () => void
-    disabled?: boolean
-    danger?: boolean
-    children: ReactNode
-  }) => (
-    <Tooltip label={label}>
-      <button
-        onClick={onClick}
-        disabled={disabled}
-        aria-label={label}
-        className={`shrink-0 p-0.5 rounded text-muted opacity-0 group-hover:opacity-100 disabled:opacity-30 transition-opacity ${
-          danger ? 'hover:text-red-400' : 'hover:text-primary'
-        }`}
-      >
-        {children}
-      </button>
-    </Tooltip>
-  )
-
-  /** A sideloaded extension row — always installed, removable, enable/disable. */
+  /** A sideloaded extension row — always installed, removable, enable/disable.
+   *  Clicking the row expands its detail body (id, folder, permissions). */
   const renderSideloadRow = (entry: ExtensionListEntry) => {
     const m = entry.manifest
+    const key = `sideload:${m.id}`
+    const open = expanded.has(key)
     return (
-      <div
-        key={m.id}
-        className="group flex flex-col gap-2 px-3 py-2.5 border-b border-subtle last:border-0 hover:bg-hover"
-      >
-        <div className="flex items-center gap-2.5">
-          <PuzzlePiece size={14} className="text-muted shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-primary truncate">{m.name}</span>
-              {m.version && <span className="text-[10px] text-muted font-mono">v{m.version}</span>}
-              <span className="text-[10px] text-muted px-1.5 py-0.5 rounded bg-surface-3">local</span>
-            </div>
-            <div className="text-[11px] text-muted font-mono truncate">{m.id}</div>
+      <div key={key} className="px-3 py-2 border-b border-subtle last:border-0 hover:bg-hover">
+        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => toggleExpanded(key)}>
+          <CaretRight
+            size={10}
+            className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`}
+          />
+          <span className="shrink-0 max-w-[45%] truncate text-[12px] text-primary">{m.name}</span>
+          {m.version && <span className="shrink-0 text-[10px] text-muted font-mono">v{m.version}</span>}
+          <span className="shrink-0 text-[10px] text-muted px-1.5 py-0.5 rounded bg-surface-3">local</span>
+          <span className="flex-1 min-w-0 text-[11px] text-muted font-mono truncate">{m.id}</span>
+          <div className="flex items-center gap-2.5" onClick={(e) => e.stopPropagation()}>
+            <IconAction label="Remove" danger onClick={() => void removeSideload(entry.rootDir)}>
+              <Trash size={12} />
+            </IconAction>
+            <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
           </div>
-          <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
-          <IconAction label="Remove" danger onClick={() => void removeSideload(entry.rootDir)}>
-            <Trash size={12} />
-          </IconAction>
         </div>
-        <Permissions scopes={m.cateApi} />
+
+        {open && (
+          <div className="mt-2 pl-5 flex flex-col gap-1.5">
+            <div className="text-[11px] text-muted font-mono break-all">{entry.rootDir}</div>
+            <Permissions scopes={m.cateApi} />
+          </div>
+        )}
       </div>
     )
   }
@@ -293,55 +311,56 @@ export function ExtensionsSettings() {
     const inFlight = pending.has(id)
     const version = entry.version ?? m.version
     const description = entry.description
+    const key = `catalog:${id}`
+    const open = expanded.has(key)
     return (
-      <div
-        key={id}
-        className="group flex flex-col gap-2 px-3 py-2.5 border-b border-subtle last:border-0 hover:bg-hover"
-      >
-        <div className="flex items-center gap-2.5">
-          <PuzzlePiece size={14} className="text-muted shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-primary truncate">{m.name}</span>
-              {version && <span className="text-[10px] text-muted font-mono">v{version}</span>}
-              {entry.updateAvailable && (
-                <span className="text-[10px] text-blue-400 px-1.5 py-0.5 rounded bg-blue-500/[0.12]">
-                  update available
-                </span>
-              )}
-            </div>
-            <div className="text-[11px] text-muted font-mono truncate">{id}</div>
-            {description && <div className="text-[11px] text-muted truncate">{description}</div>}
+      <div key={key} className="px-3 py-2 border-b border-subtle last:border-0 hover:bg-hover">
+        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => toggleExpanded(key)}>
+          <CaretRight
+            size={10}
+            className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`}
+          />
+          <span className="shrink-0 max-w-[45%] truncate text-[12px] text-primary">{m.name}</span>
+          {version && <span className="shrink-0 text-[10px] text-muted font-mono">v{version}</span>}
+          <span className="flex-1 min-w-0 text-[11px] text-muted truncate">{description}</span>
+          <div className="flex items-center gap-2.5" onClick={(e) => e.stopPropagation()}>
+            {!entry.installed ? (
+              <SecondaryButton onClick={() => void install(entry)} disabled={inFlight}>
+                {inFlight ? <CircleNotch size={11} className="animate-spin" /> : <Plus size={11} />}
+                {inFlight ? 'Installing…' : 'Install'}
+              </SecondaryButton>
+            ) : (
+              <>
+                {inFlight && <CircleNotch size={12} className="animate-spin text-muted shrink-0" />}
+                {entry.updateAvailable && (
+                  <SecondaryButton onClick={() => void update(id)} disabled={inFlight}>
+                    <ArrowCircleUp size={11} />
+                    Update
+                  </SecondaryButton>
+                )}
+                <IconAction label="Reinstall" disabled={inFlight} onClick={() => void reinstall(id)}>
+                  <ArrowsClockwise size={12} />
+                </IconAction>
+                <IconAction label="Remove" danger disabled={inFlight} onClick={() => void uninstall(id)}>
+                  <Trash size={12} />
+                </IconAction>
+                <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
+              </>
+            )}
           </div>
-
-          {!entry.installed ? (
-            <SecondaryButton onClick={() => void install(entry)} disabled={inFlight}>
-              {inFlight ? <CircleNotch size={11} className="animate-spin" /> : <Plus size={11} />}
-              {inFlight ? 'Installing…' : 'Install'}
-            </SecondaryButton>
-          ) : (
-            <>
-              {inFlight && <CircleNotch size={12} className="animate-spin text-muted shrink-0" />}
-              {entry.updateAvailable && (
-                <SecondaryButton onClick={() => void update(id)} disabled={inFlight}>
-                  <ArrowCircleUp size={11} />
-                  Update
-                </SecondaryButton>
-              )}
-              <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
-              <IconAction label="Reinstall" disabled={inFlight} onClick={() => void reinstall(id)}>
-                <ArrowsClockwise size={12} />
-              </IconAction>
-              <IconAction label="Remove" danger disabled={inFlight} onClick={() => void uninstall(id)}>
-                <Trash size={12} />
-              </IconAction>
-            </>
-          )}
         </div>
 
-        <Permissions scopes={m.cateApi} />
+        {open && (
+          <div className="mt-2 pl-5 flex flex-col gap-1.5">
+            <div className="text-[11px] text-muted font-mono">{id}</div>
+            {description && (
+              <div className="text-[11px] text-secondary leading-relaxed">{description}</div>
+            )}
+            <Permissions scopes={m.cateApi} />
+          </div>
+        )}
 
-        {rowErr[id] && <div className="text-[11px] text-red-400 pl-6">{rowErr[id]}</div>}
+        {rowErr[id] && <div className="text-[11px] text-red-400 mt-1 pl-5">{rowErr[id]}</div>}
       </div>
     )
   }
@@ -408,9 +427,9 @@ export function ExtensionsSettings() {
             Remote URLs Cate fetches the extension catalog from.
           </p>
 
-          <div className="my-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/[0.08] px-3 py-2">
-            <Warning size={14} className="mt-0.5 shrink-0 text-amber-400" />
-            <p className="text-[11px] leading-relaxed text-secondary">
+          <div className="my-2 flex items-start gap-2.5 rounded-md border border-subtle bg-surface-2 px-3 py-2">
+            <Warning size={13} className="mt-0.5 shrink-0 text-amber-400/80" />
+            <p className="text-[11px] leading-relaxed text-muted">
               Only add sources you trust. An extension can run its own code on your machine, so a
               malicious catalog can do anything you can. Stick to the official Cate catalog (governed
               by the Cate team), or build and sideload your own extensions.
@@ -441,18 +460,12 @@ export function ExtensionsSettings() {
               {sources.map((url) => (
                 <div
                   key={url}
-                  className="group flex items-center gap-2.5 px-3 py-2 border-b border-subtle last:border-0 hover:bg-hover"
+                  className="flex items-center gap-2.5 px-3 py-2 border-b border-subtle last:border-0 hover:bg-hover"
                 >
                   <span className="flex-1 min-w-0 text-[11px] text-secondary font-mono truncate">{url}</span>
-                  <Tooltip label="Remove source">
-                    <button
-                      onClick={() => void removeSource(url)}
-                      className="shrink-0 p-0.5 rounded text-muted opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity"
-                      aria-label="Remove source"
-                    >
-                      <Trash size={12} />
-                    </button>
-                  </Tooltip>
+                  <IconAction label="Remove source" danger onClick={() => void removeSource(url)}>
+                    <Trash size={12} />
+                  </IconAction>
                 </div>
               ))}
             </div>

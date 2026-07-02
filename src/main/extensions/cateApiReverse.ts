@@ -18,9 +18,8 @@ import http from 'http'
 import { Duplex } from 'stream'
 import log from '../logger'
 import type { Runtime } from '../runtime/types'
-import { dispatchCateInvoke, forwardToOwner } from './cateApiHandlers'
+import { dispatchCateInvoke, forwardToActiveWindow } from './cateApiHandlers'
 import { reverseDuplex } from './serverTunnel'
-import { getActiveMainWindow } from '../windowRegistry'
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024
 
@@ -95,15 +94,11 @@ export function createCateApiReverse(session: ReverseSession): CateApiReverseEnd
           // No owning panel/sender on the server side: panel-scoped storage and
           // forwarded methods target the workspace best-effort.
           panelId: undefined,
-          forward: (payload) => {
-            // State-mutating methods (editor.openFile / canvas.createPanel /
-            // panel.setTitle) need a renderer. The server has no sender, so we
-            // forward to the workspace's active main window (best-effort —
-            // there's no authoritative workspace→window map for main windows).
-            const win = getActiveMainWindow()
-            if (!win) return Promise.resolve({ error: 'no-owner', method: payload.method })
-            return forwardToOwner(win.webContents, payload)
-          },
+          // State-mutating methods (editor.openFile / canvas.createPanel /
+          // panel.setTitle) need a renderer. The server has no sender, so we
+          // forward to the active main window (best-effort — there's no
+          // authoritative workspace→window map for main windows).
+          forward: forwardToActiveWindow,
         },
         method,
         parsed.args,

@@ -146,6 +146,22 @@ export function forwardToOwner(
   })
 }
 
+/**
+ * Forward a state-mutating cate.* method to the active main window's renderer
+ * (where useCateHostActionResponder is mounted). Shared by both entry points
+ * that have no direct owner sender: the CATE_HOST_INVOKE guest path (the guest's
+ * WebContents doesn't host the responder) and the CATE_API reverse path (the
+ * extension server has no sender at all). Best-effort — there's no authoritative
+ * workspace→window map for main windows.
+ */
+export function forwardToActiveWindow(payload: InvokePayload): Promise<InvokeResult> {
+  const win = getActiveMainWindow()
+  if (!win || win.isDestroyed()) {
+    return Promise.resolve({ error: 'no-host-window', method: payload.method })
+  }
+  return forwardToOwner(win.webContents, payload)
+}
+
 // ---------------------------------------------------------------------------
 // Method dispatch
 // ---------------------------------------------------------------------------
@@ -313,6 +329,13 @@ export async function dispatchCateInvoke(
     return { error: 'scope-denied', method }
   }
 
+  // Storage (handled in main, backed by storage.ts). Routed by prefix — mirrors
+  // requiredScopeFor's storage.* branch — so dispatchStorage's switch is the sole
+  // enumeration of the six storage methods.
+  if (method.startsWith('cate.storage.')) {
+    return await dispatchStorage(method, panelId ?? '', args, extensionId, workspaceId)
+  }
+
   switch (method) {
     case 'cate.version':
       return CATE_API_VERSION
@@ -344,15 +367,6 @@ export async function dispatchCateInvoke(
       log.info('[extensions] %s notify (%s): %s', extensionId, a.level ?? 'info', message)
       return { ok: true }
     }
-
-    // --- Storage (handled in main, backed by storage.ts) --------------------
-    case 'cate.storage.get':
-    case 'cate.storage.set':
-    case 'cate.storage.delete':
-    case 'cate.storage.keys':
-    case 'cate.storage.panel.get':
-    case 'cate.storage.panel.set':
-      return await dispatchStorage(method, panelId ?? '', args, extensionId, workspaceId)
 
     // --- Agent: drive a pi session through the bundled pi --------------------
     // pi owns all conversation state on its session jsonl; Cate only holds the
@@ -451,13 +465,7 @@ async function dispatchInvoke(
       // useCateHostActionResponder. Forward state-mutating methods to the active
       // main window's renderer instead (where the responder is mounted), mirroring
       // the CATE_API reverse path in cateApiReverse.ts.
-      forward: (p) => {
-        const win = getActiveMainWindow()
-        if (!win || win.isDestroyed()) {
-          return Promise.resolve({ error: 'no-host-window', method: p.method })
-        }
-        return forwardToOwner(win.webContents, p)
-      },
+      forward: forwardToActiveWindow,
     },
     payload.method,
     payload.args,
@@ -599,6 +607,12 @@ export function registerExtensionHandlers(): void {
   // panels) rather than one per proxy-url resolve.
   const hookedExtSenders = new Set<number>()
 
+  // Same dedup for the subscribe path: repeated subscribe/unsubscribe cycles on
+  // one webContents must not stack a fresh 'destroyed' listener each time
+  // (MaxListenersExceededWarning). One hook per webContents disposes ALL its
+  // subscriptions on teardown.
+  const hookedSubSenders = new Set<number>()
+
   ipcMain.handle(
     EXTENSION_PROXY_URL,
     async (event, args: { extensionId: string; workspaceId: string; panelId: string }) => {
@@ -689,8 +703,18 @@ export function registerExtensionHandlers(): void {
       })
       const sub: Subscription = { wc, extensionId, workspaceId, panelId, topic, dispose }
       subscriptions.add(sub)
-      // Auto-clean when the guest webContents is destroyed.
-      wc.once('destroyed', () => disposeSubscriptionsFor(wc))
+      // Auto-clean when the guest webContents is destroyed. Hook it ONCE per
+      // webContents — a fresh listener per subscribe would stack up across
+      // subscribe/unsubscribe cycles (unsubscribe removes the Subscription, not
+      // this hook) and trip MaxListenersExceededWarning.
+      if (!hookedSubSenders.has(wc.id)) {
+        hookedSubSenders.add(wc.id)
+        const wcId = wc.id
+        wc.once('destroyed', () => {
+          hookedSubSenders.delete(wcId)
+          disposeSubscriptionsFor(wc)
+        })
+      }
       return { ok: true }
     },
   )

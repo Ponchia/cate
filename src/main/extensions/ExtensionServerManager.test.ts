@@ -35,6 +35,7 @@ vi.mock('../runtime/locator', () => ({
 vi.mock('../workspaceManager', () => ({
   getWorkspaceInfo: () => ({ rootPath: '/ws' }),
 }))
+const isEnabledState = vi.hoisted(() => ({ enabled: true }))
 vi.mock('./ExtensionManager', () => ({
   extensionManager: {
     getManifest: () => ({
@@ -44,6 +45,7 @@ vi.mock('./ExtensionManager', () => ({
       server: { command: 'node server.js', readyPath: '/health', portEnv: 'PORT' },
     }),
     ensureProvisioned: async () => '/fake/ext/cate.echo',
+    isEnabled: () => isEnabledState.enabled,
   },
 }))
 vi.mock('../logger', () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
@@ -72,6 +74,7 @@ describe('ExtensionServerManager', () => {
     vi.clearAllMocks()
     vi.useFakeTimers()
     onExitCb = null
+    isEnabledState.enabled = true
     startResolves()
     mgr = new ExtensionServerManager()
   })
@@ -207,6 +210,16 @@ describe('ExtensionServerManager', () => {
     // Grace timer was cleared, so advancing past it does not stop again.
     await vi.advanceTimersByTimeAsync(30_000)
     expect(serverStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not spawn a server for a disabled extension (disable raced the join)', async () => {
+    // A disable() lands after the panel joined but before startServer runs (both
+    // serialize on the per-key lock). startServer must re-check enable state and
+    // bail, so no server is left running for the disabled extension.
+    isEnabledState.enabled = false
+    await expect(mgr.joinPanel(EXT, WS, 'p1', fakeSender(1))).rejects.toThrow(/disabled/)
+    expect(serverStart).not.toHaveBeenCalled()
+    expect(mgr.getState(EXT, WS)).not.toBe('READY')
   })
 
   it('stopForExtension is a no-op when no session matches', async () => {

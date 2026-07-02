@@ -15,9 +15,8 @@ const store = vi.hoisted(() => new Map<string, unknown>())
 const dispatchCateInvoke = vi.hoisted(() => vi.fn())
 vi.mock('./cateApiHandlers', () => ({
   dispatchCateInvoke,
-  forwardToOwner: vi.fn(),
+  forwardToActiveWindow: vi.fn(async () => ({ error: 'no-host-window' })),
 }))
-vi.mock('../windowRegistry', () => ({ getActiveMainWindow: vi.fn(() => undefined) }))
 vi.mock('../logger', () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 
 import { createCateApiReverse } from './cateApiReverse'

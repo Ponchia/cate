@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => h.userData, getAppPath: () => h.appPath },
 }))
 
-import { provisionCatalogToRuntime } from './install'
+import { provisionCatalogToRuntime, provisionSideloadToRuntime } from './install'
 import { buildDaemonRuntime } from '../../runtime/capabilities'
 import { addAllowedRoot, removeAllowedRoot } from '../ipc/pathValidation'
 import type { CatalogEntry } from './catalog'
@@ -106,5 +106,26 @@ describe('provisionCatalogToRuntime', () => {
     writeFileSync(path.join(dest, 'index.html'), 'TAMPERED')
     await provisionCatalogToRuntime(runtime, entry, true)
     expect(readFileSync(path.join(dest, 'index.html'), 'utf8')).toContain('hi')
+  })
+})
+
+describe('provisionSideloadToRuntime', () => {
+  it('registers a local dev folder as an allowed root so its assets are readable', async () => {
+    // A sideload dev folder OUTSIDE the daemon's default roots (only hostRoot was
+    // added). Before the fix, serveStatic's readBinary → validatePathStrict would
+    // reject it and every asset 404s; registering it as an allowed root fixes that.
+    const folder = path.join(tmp, 'dev-ext')
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(path.join(folder, 'index.html'), '<!doctype html><h1>hi</h1>')
+    const runtime = runtimeWithId('local')
+
+    const dest = await provisionSideloadToRuntime(runtime, 'cate.dev', folder)
+    try {
+      expect(dest).toBe(folder)
+      // The folder's assets are now readable back through the runtime.
+      expect((await runtime.file.readBinary(path.join(folder, 'index.html'))).toString()).toContain('hi')
+    } finally {
+      removeAllowedRoot(folder)
+    }
   })
 })

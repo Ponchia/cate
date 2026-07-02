@@ -49,10 +49,21 @@ function grantsFileDrop(scopes: string[] | undefined): boolean {
   return !!scopes && scopes.some((s) => s === 'files' || s === 'files.drop')
 }
 
-function clampText(text: string): { text: string; truncated: boolean } {
-  // Byte-aware clamp: most session files are ASCII-ish, but guard multi-byte.
-  if (text.length <= MAX_DROP_BYTES) return { text, truncated: false }
-  return { text: text.slice(0, MAX_DROP_BYTES), truncated: true }
+/** Clamp `text` so its UTF-8 encoding fits in MAX_DROP_BYTES. The cap is a BYTE
+ *  budget, not a code-unit count: multi-byte chars (CJK = 3 bytes, many emoji =
+ *  4) mean a string well under `text.length === MAX_DROP_BYTES` can still encode
+ *  to 2-4x the budget, so measuring `text.length` under-counts and lets oversized
+ *  payloads through webview.send. Measure real bytes, and when truncating, cut on
+ *  a UTF-8 sequence boundary so we never split a multi-byte char.
+ *  Exported for unit testing. */
+export function clampText(text: string): { text: string; truncated: boolean } {
+  const bytes = new TextEncoder().encode(text)
+  if (bytes.length <= MAX_DROP_BYTES) return { text, truncated: false }
+  // Back the cut off any trailing UTF-8 continuation byte (0b10xxxxxx) so we land
+  // on a character boundary, then decode the fitting prefix back to a string.
+  let end = MAX_DROP_BYTES
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--
+  return { text: new TextDecoder().decode(bytes.subarray(0, end)), truncated: true }
 }
 
 /** Resolve a drop event into the files to hand the guest. OS drops carry File

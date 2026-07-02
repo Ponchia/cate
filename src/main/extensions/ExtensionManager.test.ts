@@ -13,6 +13,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 const enabled = vi.hoisted(() => ({ ids: ['cate.test'] }))
+// Catalog-advertised (latest) version + the versions staged on disk, made
+// configurable so a test can model "catalog bumped past what's installed".
+const catalogState = vi.hoisted(() => ({ version: '1.0.0' }))
+const stagedState = vi.hoisted(() => ({ versions: ['1.0.0'] }))
+// A gate the catalog read awaits, so a test can hold a scan mid-flight and probe
+// what a concurrent refresh() observes before the scan finishes.
+const catalogGate = vi.hoisted(() => ({ wait: async (): Promise<void> => {} }))
 let connectCb: ((id: string, runtime: unknown) => void) | null = null
 let disconnectCb: ((id: string) => void) | null = null
 const disposeForRuntime = vi.hoisted(() => vi.fn(async () => {}))
@@ -27,15 +34,18 @@ vi.mock('../settingsFile', () => ({
 }))
 vi.mock('./manifest', () => ({ loadManifestFromDir: vi.fn(async () => null) }))
 vi.mock('./catalog', () => ({
-  getCachedCatalog: async () => [
-    { manifest: { id: 'cate.test', name: 'Test', version: '1.0.0', panels: [{ id: 'm', label: 'M' }] }, artifactUrl: 'file:///x.tgz' },
-  ],
+  getCachedCatalog: async () => {
+    await catalogGate.wait()
+    return [
+      { manifest: { id: 'cate.test', name: 'Test', version: catalogState.version, panels: [{ id: 'm', label: 'M' }] }, artifactUrl: 'file:///x.tgz' },
+    ]
+  },
   fetchCatalog: vi.fn(),
   writeCatalogCache: vi.fn(),
 }))
 vi.mock('./download', () => ({
-  stageArtifact: vi.fn(async () => ({ id: 'cate.test', version: '1.0.0', tgzPath: '/tmp/x.tgz' })),
-  stagedVersions: vi.fn(async () => ['1.0.0']),
+  stageArtifact: vi.fn(async () => ({ id: 'cate.test', version: catalogState.version, tgzPath: '/tmp/x.tgz' })),
+  stagedVersions: vi.fn(async () => stagedState.versions),
   removeStaged: vi.fn(),
   removeStagedVersionsExcept: vi.fn(),
 }))
@@ -69,6 +79,9 @@ let extensionManager: ExtensionManager
 
 beforeEach(() => {
   enabled.ids = ['cate.test']
+  catalogState.version = '1.0.0'
+  stagedState.versions = ['1.0.0']
+  catalogGate.wait = async () => {}
   connectCb = null
   disconnectCb = null
   disposeForRuntime.mockClear()
@@ -146,5 +159,51 @@ describe('ExtensionManager provisioning', () => {
     await extensionManager.refresh(true)
     await extensionManager.provisionAllEnabled(fakeRuntime as never)
     expect(provisionCatalog).not.toHaveBeenCalled()
+  })
+
+  it('concurrent refresh() calls both observe a fully-populated known map', async () => {
+    // Two callers race (startup `void refresh()` + a panel's proxy-url await).
+    // Hold the first scan mid-flight; the second must NOT short-circuit on `loaded`
+    // and resolve against a still-empty map — it must await the in-flight scan.
+    let release: () => void = () => {}
+    catalogGate.wait = () => new Promise<void>((r) => { release = r })
+
+    const p1 = extensionManager.refresh()
+    const p2 = extensionManager.refresh()
+    let p2Done = false
+    void p2.then(() => { p2Done = true })
+
+    // Let microtasks settle: the buggy version resolves p2 immediately (loaded was
+    // set before the scan) while `known` is still empty.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(p2Done).toBe(false)
+    expect(extensionManager.isKnown('cate.test')).toBe(false)
+
+    release()
+    await Promise.all([p1, p2])
+    expect(extensionManager.isKnown('cate.test')).toBe(true)
+  })
+
+  it('provisions the INSTALLED (pinned) version, not the catalog latest', async () => {
+    // Catalog advertises 2.0 but only 1.0 is staged on disk (a catalog refresh
+    // bumped latest past what's installed).
+    catalogState.version = '2.0.0'
+    stagedState.versions = ['1.0.0']
+    await extensionManager.refresh(true)
+
+    const before = extensionManager.list().find((e) => e.manifest.id === 'cate.test')!
+    expect(before.installedVersion).toBe('1.0.0')
+    expect(before.updateAvailable).toBe(true)
+
+    // Opening/provisioning a panel must serve 1.0, NOT silently pull 2.0.
+    await extensionManager.ensureProvisioned('cate.test', fakeRuntime as never)
+    const entry = provisionCatalog.mock.calls.at(-1)![1] as { manifest: { version: string } }
+    expect(entry.manifest.version).toBe('1.0.0')
+
+    // installedVersion stays 1.0 and updateAvailable stays true (no silent update).
+    const after = extensionManager.list().find((e) => e.manifest.id === 'cate.test')!
+    expect(after.installedVersion).toBe('1.0.0')
+    expect(after.updateAvailable).toBe(true)
   })
 })

@@ -13,8 +13,8 @@
 // earlier one on a duplicate extension id. A failing source is logged + skipped,
 // never fatal to the whole fetch.
 //
-// The merged index is cached to userData/extensions/catalog-cache.json (plain
-// atomic write) so getCachedCatalog() returns the last good catalog with no
+// The merged index is cached to userData/extensions/catalog-cache.json (atomic
+// write via writeJsonAtomic) so getCachedCatalog() returns the last good catalog with no
 // network. artifactUrl values are stored verbatim so a relative/file:// path in
 // a local index resolves the same way on install.
 // =============================================================================
@@ -23,8 +23,9 @@ import { app } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync } from 'fs'
-import { mkdir, readFile, rename, writeFile } from 'fs/promises'
+import { readFile } from 'fs/promises'
 import log from '../logger'
+import { writeJsonAtomic } from '../writeJsonAtomic'
 import { normalizeManifest, type ExtensionManifest } from '../../shared/extensions'
 
 export interface CatalogEntry {
@@ -169,29 +170,37 @@ function storedSourceIsLocal(raw: unknown): boolean {
  * and never throws. Later sources override earlier ones on duplicate id.
  */
 export async function fetchCatalog(sources: string[]): Promise<CatalogEntry[]> {
-  const merged = new Map<string, CatalogEntry>()
-  for (const source of sources) {
-    if (!source) continue
-    try {
+  // Fetch every source concurrently — each is independently bounded by
+  // CATALOG_INDEX_TIMEOUT_MS, so total time is ~one timeout instead of N×.
+  // allSettled keeps a failing source from rejecting the whole fetch.
+  const results = await Promise.allSettled(
+    sources.map(async (source) => {
+      if (!source) return [] as CatalogEntry[]
       const local = isLocalSource(source)
       const text = await loadSourceText(source)
-      for (const entry of parseIndex(text, source, () => local)) {
-        merged.set(entry.manifest.id, entry)
-      }
-    } catch (err) {
-      log.warn('[extensions] catalog source failed (%s): %O', source, err)
+      return parseIndex(text, source, () => local)
+    }),
+  )
+  // Merge in the ORIGINAL source order so later-source-wins precedence (and the
+  // resulting value order) is identical to the old sequential loop, regardless
+  // of which fetch settled first.
+  const merged = new Map<string, CatalogEntry>()
+  sources.forEach((source, i) => {
+    const result = results[i]
+    if (result.status === 'fulfilled') {
+      for (const entry of result.value) merged.set(entry.manifest.id, entry)
+    } else if (source) {
+      log.warn('[extensions] catalog source failed (%s): %O', source, result.reason)
     }
-  }
+  })
   return Array.from(merged.values())
 }
 
 /** Persist the merged catalog so getCachedCatalog() works offline. */
 export async function writeCatalogCache(entries: CatalogEntry[]): Promise<void> {
-  const dest = cacheFile()
-  await mkdir(extensionsDir(), { recursive: true })
-  const tmp = `${dest}.${process.pid}.part`
-  await writeFile(tmp, JSON.stringify({ extensions: entries }, null, 2))
-  await rename(tmp, dest)
+  // writeJsonAtomic handles mkdir + unique tmp suffix + win32 rename retry + tmp
+  // cleanup on failure — no need to hand-roll the atomic write here.
+  await writeJsonAtomic(cacheFile(), { extensions: entries })
 }
 
 /**

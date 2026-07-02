@@ -36,6 +36,7 @@ import {
   removeStagedVersionsExcept,
 } from './download'
 import { provisionCatalogToRuntime, provisionSideloadToRuntime } from './install'
+import { disposeStoresForRuntime } from './storage'
 import { runtimes } from '../runtime/runtimeManager'
 import type { Runtime } from '../runtime/types'
 import type { RuntimeId } from '../runtime/locator'
@@ -65,6 +66,11 @@ export class ExtensionManager {
   private known = new Map<string, KnownExtension>()
   private loaded = false
   private initialized = false
+  // In-flight scan promise. Concurrent refresh() callers await THIS instead of
+  // short-circuiting on `loaded` before the scan has populated `known` (startup
+  // fires `void refresh()`; a restored panel's proxy-url await must not race past
+  // it against a half-built map).
+  private refreshing: Promise<void> | null = null
 
   // runtimeId -> (extensionId -> { host root dir, generation provisioned }). The
   // result of provisioning an extension onto a host: where its bytes live on that
@@ -96,6 +102,9 @@ export class ExtensionManager {
     // static cycle (ExtensionServerManager imports this module at the top level).
     runtimes.onDisconnected((id) => {
       this.provisioned.delete(id)
+      // Evict extension storage bound to the dead runtime handle so its watcher
+      // is torn down and the next access rebinds against the reconnected runtime.
+      disposeStoresForRuntime(id)
       void import('./ExtensionServerManager')
         .then((m) => m.extensionServerManager.disposeForRuntime(id))
         .catch((err) => { log.warn('[extensions] disposeForRuntime %s failed: %O', id, err) })
@@ -106,7 +115,29 @@ export class ExtensionManager {
    *  Idempotent on the first call; pass `force` to re-scan after a change. */
   async refresh(force = false): Promise<void> {
     if (this.loaded && !force) return
-    this.loaded = true
+    // Coalesce concurrent scans: a caller arriving mid-scan awaits the SAME
+    // in-flight promise, so it can't observe a half-built `known` map (or set
+    // `loaded` before the scan has actually populated it).
+    const inflight = this.refreshing
+    if (inflight) {
+      await inflight
+      // The in-flight scan just repopulated `known`; a plain (non-force) caller is
+      // satisfied. A force caller still needs a fresh scan (settings just changed).
+      if (!force) return
+    }
+    const scan = this.scan()
+    this.refreshing = scan
+    try {
+      await scan
+      this.loaded = true
+    } finally {
+      if (this.refreshing === scan) this.refreshing = null
+    }
+  }
+
+  /** The actual (re)scan. Builds a fresh map and only swaps it into `known` once
+   *  fully populated, so a concurrent reader never sees a partial map. */
+  private async scan(): Promise<void> {
     const next = new Map<string, KnownExtension>()
 
     // --- Catalog (from the cached merged index) -----------------------------
@@ -117,7 +148,8 @@ export class ExtensionManager {
       const latest = entry.manifest.version ?? '0.0.0'
       // Any extracted version counts as installed (a catalog refresh may have
       // bumped `latest` past what's on disk — that surfaces as updateAvailable).
-      // Prefer serving `latest` when it's present, else whatever is on disk.
+      // Prefer serving `latest` when it's present, else the highest on disk
+      // (stagedVersions is semver-sorted ascending, so [-1] is the newest).
       const versions = await stagedVersions(id)
       const installed = versions.length > 0
       const served = versions.includes(latest) ? latest : versions[versions.length - 1]
@@ -227,9 +259,21 @@ export class ExtensionManager {
     if (!known.catalogEntry) {
       throw new Error(`Extension ${known.manifest.id} has no catalog entry to provision`)
     }
-    const dest = await provisionCatalogToRuntime(runtime, known.catalogEntry, force)
+    const latest = known.catalogEntry.manifest.version ?? '0.0.0'
+    // Provision the currently-INSTALLED (pinned) version, NOT the catalog's latest.
+    // Merely opening a panel after a catalog refresh must never silently download +
+    // run a version the user didn't choose to update to; explicit update() re-stages
+    // latest and moves installedVersion forward, so THAT path provisions the new one.
+    const version = known.installedVersion ?? latest
+    const entry =
+      version === latest
+        ? known.catalogEntry
+        : { ...known.catalogEntry, manifest: { ...known.catalogEntry.manifest, version } }
+    const dest = await provisionCatalogToRuntime(runtime, entry, force)
     known.installed = true
-    known.installedVersion = known.manifest.version ?? '0.0.0'
+    // Keep installedVersion in sync with what we actually served (never jump it to
+    // latest here — that would silently clear updateAvailable without an update).
+    known.installedVersion = version
     return dest
   }
 

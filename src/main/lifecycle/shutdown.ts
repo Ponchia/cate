@@ -49,6 +49,47 @@ const DOCK_FLUSH_TIMEOUT_MS = 600
 // unresponsive remote socket can't stall quit (the daemon reaps orphans anyway).
 const EXIT_DISPOSE_TIMEOUT_MS = 800
 
+// Re-entrancy guard for the hard-exit path: once we've prevented Electron's
+// natural teardown and kicked off the bounded dispose, a second will-quit fire
+// must not start dispose again (it would double-SIGTERM children and re-arm the
+// exit timer). Set once, checked in the handler.
+let hardExitStarted = false
+
+/**
+ * Prevent Electron's natural quit teardown, run a bounded async dispose of the
+ * extension servers + runtimes, then hard-exit via `exit(0)`. Extracted from the
+ * will-quit handler so it is unit-testable.
+ *
+ * `event.preventDefault()` is REQUIRED here: without it Electron proceeds with
+ * node::FreeEnvironment → CleanupHandles → uv_run synchronously after the handler
+ * returns, which drains node-pty's ThreadSafeFunction callbacks in a torn-down
+ * context and SIGABRTs the process — and it also races (and can truncate) the
+ * awaited SIGTERM to the extension-server children below. So we take over the
+ * quit: prevent the natural path, await the dispose (bounded), then reallyExit.
+ *
+ * `exit(0)` ALWAYS runs — on a clean dispose AND on timeout — so quit can never
+ * hang on an unresponsive runtime/remote socket.
+ */
+export async function runHardExit(
+  event: { preventDefault: () => void },
+  deps: {
+    disposeAll: () => Promise<unknown>
+    exit: (code: number) => void
+    timeoutMs: number
+  },
+): Promise<void> {
+  event.preventDefault()
+  try {
+    await Promise.race([
+      deps.disposeAll(),
+      new Promise((resolve) => setTimeout(resolve, deps.timeoutMs)),
+    ])
+  } catch {
+    /* best-effort — exit regardless */
+  }
+  deps.exit(0)
+}
+
 /** A confirmation dialog to show before quitting, or null to quit immediately.
  *  Two independent reasons gate quit: terminals still running a foreground
  *  process (data-loss warning, takes precedence so its specific message wins),
@@ -214,7 +255,7 @@ export function registerLifecycleHandlers(): void {
       })
   })
 
-  app.on('will-quit', () => {
+  app.on('will-quit', (event) => {
     // Last-resort synchronous save from cached session data.
     // The renderer flush above should have completed, but this ensures
     // we write something if it didn't.
@@ -250,28 +291,34 @@ export function registerLifecycleHandlers(): void {
       log.info('will-quit: update staged, yielding to electron-updater install-on-quit')
       return
     }
-    // Stop any server-backed extension servers BEFORE the hard exit. This is
-    // AWAITED (bounded) — `void`-ing it before reallyExit() let the libc exit()
-    // win the race, so the SIGTERM/SIGKILL to the server children never actually
-    // went out and they leaked. The daemon also reaps on transport close + on
-    // its next startup (reapOrphanServers), so this is the clean primary path,
-    // not the only safety net. Bound it so an unresponsive runtime can't hang
-    // quit, then force the hard exit either way.
-    void (async () => {
-      try {
-        await Promise.race([
-          Promise.allSettled([extensionServerManager.disposeAll(), runtimes.disposeAll()]),
-          new Promise((resolve) => setTimeout(resolve, EXIT_DISPOSE_TIMEOUT_MS)),
-        ])
-      } catch { /* best-effort — exit regardless */ }
-      // Force immediate exit to bypass node::FreeEnvironment → CleanupHandles →
-      // uv_run, which drains pending ThreadSafeFunction callbacks and can SIGABRT
-      // after node-pty teardown. process.reallyExit is Node's binding to libc
-      // exit() — it skips the 'exit' event and the cleanup path
-      // app.exit/process.exit would run. All important cleanup (session save,
-      // logger flush, watcher disposal, process group kills) is already done above.
-      ;(process as unknown as { reallyExit(code: number): never }).reallyExit(0)
-    })()
+    // Stop any server-backed extension servers + runtimes BEFORE the hard exit,
+    // AWAITED and bounded. We MUST preventDefault first (see runHardExit): letting
+    // Electron continue its natural teardown after this synchronous handler returns
+    // both SIGABRTs via node-pty's ThreadSafeFunction and races/truncates the
+    // awaited SIGTERM to the server children (an earlier `void`-before-reallyExit
+    // version leaked them for exactly that reason). The daemon also reaps on
+    // transport close + on its next startup (reapOrphanServers), so this is the
+    // clean primary path, not the only safety net. reallyExit(0) always runs (on
+    // clean dispose AND on timeout) so quit can't hang.
+    if (hardExitStarted) {
+      // Re-entrant will-quit fire — keep preventing natural teardown, but the
+      // dispose + exit is already in flight; don't start it twice.
+      event.preventDefault()
+      return
+    }
+    hardExitStarted = true
+    void runHardExit(event, {
+      disposeAll: () =>
+        Promise.allSettled([extensionServerManager.disposeAll(), runtimes.disposeAll()]),
+      // process.reallyExit is Node's binding to libc exit() — it skips the 'exit'
+      // event and the cleanup path app.exit/process.exit would run, bypassing
+      // node::FreeEnvironment → CleanupHandles → uv_run (which drains pending
+      // ThreadSafeFunction callbacks and can SIGABRT after node-pty teardown).
+      // All important cleanup (session save, logger flush, watcher disposal,
+      // process group kills) is already done synchronously above.
+      exit: (code) => (process as unknown as { reallyExit(code: number): never }).reallyExit(code),
+      timeoutMs: EXIT_DISPOSE_TIMEOUT_MS,
+    })
   })
 
   // Field-diagnostic trace for the install handoff. When an update is staged we

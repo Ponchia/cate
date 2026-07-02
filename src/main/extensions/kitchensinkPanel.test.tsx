@@ -73,7 +73,7 @@ function makeBridge() {
     canvas: { createPanel: vi.fn(async () => ({ panelId: 'p2' })) },
     ui: { notify: vi.fn(async () => ({ ok: true })) },
     storage: {
-      get: vi.fn(async (key: string) => (key === NOTES_KEY ? 'restored notes' : undefined)),
+      get: vi.fn(async (key: string): Promise<string | undefined> => (key === NOTES_KEY ? 'restored notes' : undefined)),
       set: vi.fn(async () => {}),
       delete: vi.fn(async () => {}),
       keys: vi.fn(async () => [NOTES_KEY]),

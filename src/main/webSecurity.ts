@@ -3,7 +3,7 @@ import log from './logger'
 import { disableWebviewHardening } from './featureFlags'
 import { BROWSER_SHORTCUT } from '../shared/ipc-channels'
 import type { BrowserShortcutAction } from '../shared/types'
-import { getProxyOrigin } from './extensions/proxyServer'
+import { getProxyOrigin, getCateHostPreloadPath } from './extensions/proxyServer'
 
 /** True iff `url` is served by the local extension proxy (an extension guest).
  *  Such guests keep their cateHost preload (the reverse-API bridge) rather than
@@ -178,12 +178,16 @@ export function installWebContentsSecurity(): void {
         return
       }
 
-      // Extension guests (served by the local proxy) keep the cateHost preload
-      // the renderer set — it's the sandboxed reverse-API bridge. Every other
-      // guest (browser panel) has its preload stripped: browser screenshots are
-      // captured from the main process via capturePage(), so no preload needed.
+      // Extension guests (served by the local proxy) get the cateHost preload —
+      // the sandboxed reverse-API bridge. Do NOT trust the preload path the
+      // renderer supplied (a compromised renderer could point it at an arbitrary
+      // file); PIN it to the canonical cateHost bundle. Every other guest
+      // (browser panel) has its preload stripped entirely: browser screenshots
+      // are captured from the main process via capturePage(), so no preload needed.
       if (isExtensionProxyUrl(src)) {
-        log.info('[webview] Allowing cateHost preload for extension guest %s', src)
+        ;(webPreferences as { preload?: string }).preload = getCateHostPreloadPath()
+        delete (webPreferences as { preloadURL?: string }).preloadURL
+        log.info('[webview] Pinned cateHost preload for extension guest %s', src)
       } else {
         delete (webPreferences as { preload?: string }).preload
         delete (webPreferences as { preloadURL?: string }).preloadURL

@@ -16,7 +16,7 @@ import { act } from 'react'
 
 vi.mock('../lib/portalRegistry', () => ({ portalRegistry: { register: vi.fn(), unregister: vi.fn() } }))
 
-import ExtensionPanel, { readDroppedFiles } from './ExtensionPanel'
+import ExtensionPanel, { readDroppedFiles, clampText } from './ExtensionPanel'
 
 const proxyUrl = vi.fn(async (_args: { extensionId: string; workspaceId: string; panelId: string }) => ({
   url: 'http://127.0.0.1:9/ext/tok/?x',
@@ -100,6 +100,33 @@ function fakeDataTransfer(opts: { files?: File[]; data?: Record<string, string> 
     getData: (type: string) => data[type] ?? '',
   } as unknown as DataTransfer
 }
+
+describe('clampText — byte-aware drop cap', () => {
+  const MAX_DROP_BYTES = 32 * 1024 * 1024
+
+  it('leaves an ASCII string under the byte budget untouched', () => {
+    const out = clampText('hello')
+    expect(out.truncated).toBe(false)
+    expect(out.text).toBe('hello')
+  })
+
+  it('clamps multi-byte (3-byte) text to the BYTE budget, not the code-unit length', () => {
+    // 'あ' is one UTF-16 code unit but 3 UTF-8 bytes. Pick a length whose
+    // code-unit count stays under the cap while the UTF-8 size exceeds it — the
+    // old text.length check let this whole ~36MB payload through.
+    const charCount = Math.ceil(MAX_DROP_BYTES / 2) // ~16.7M chars < cap (code units)
+    const text = 'あ'.repeat(charCount)
+    expect(text.length).toBeLessThan(MAX_DROP_BYTES) // UTF-16 length passes old check
+    expect(new TextEncoder().encode(text).length).toBeGreaterThan(MAX_DROP_BYTES)
+
+    const out = clampText(text)
+    expect(out.truncated).toBe(true)
+    const outBytes = new TextEncoder().encode(out.text).length
+    expect(outBytes).toBeLessThanOrEqual(MAX_DROP_BYTES)
+    // Cut on a char boundary: no replacement char / split sequence at the end.
+    expect(out.text.endsWith('あ')).toBe(true)
+  })
+})
 
 describe('readDroppedFiles', () => {
   it('reads OS File drops in-renderer (no IPC, resolves path via getPathForFile)', async () => {

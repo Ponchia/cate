@@ -42,7 +42,9 @@ vi.mock('../panels/registry', () => ({
 vi.mock('../stores/appStore', () => ({
   useAppStore: {
     getState: () => ({
-      workspaces: [{ id: WS, rootPath: ROOT }],
+      // `host-panel` lives in THIS window's store; a detached panel would be
+      // absent (drives the panel.setTitle not-in-window reply).
+      workspaces: [{ id: WS, rootPath: ROOT, panels: { 'host-panel': { id: 'host-panel', type: 'terminal', title: 'Term' } } }],
       createExtensionPanel: h.createExtensionPanel,
       updatePanelTitle: h.updatePanelTitle,
     }),
@@ -206,6 +208,15 @@ describe('useCateHostActionResponder', () => {
     await fire('cate.panel.setTitle', { title: 'Renamed' }, { panelId: 'host-panel' })
     expect(h.updatePanelTitle).toHaveBeenCalledWith(WS, 'host-panel', 'Renamed')
     expect(replies).toContainEqual({ requestId: 'req-cate.panel.setTitle', ok: true })
+  })
+
+  it('rejects panel.setTitle for a panel not in this window (e.g. detached), instead of a silent no-op', async () => {
+    // A panel detached into another window was removed from THIS window's store,
+    // so updatePanelTitle would no-op. The responder must report the failure
+    // rather than reply ok:true (a silent lie to the extension).
+    await fire('cate.panel.setTitle', { title: 'Renamed' }, { panelId: 'detached-panel' })
+    expect(h.updatePanelTitle).not.toHaveBeenCalled()
+    expect(replies).toContainEqual({ requestId: 'req-cate.panel.setTitle', ok: false, error: 'panel-not-in-window' })
   })
 
   it('replies unsupported for an unknown method', async () => {

@@ -19,8 +19,10 @@ import { createHash } from 'crypto'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { existsSync } from 'fs'
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'fs/promises'
+import { readdir, readFile, rm } from 'fs/promises'
 import log from '../logger'
+import { compareSemver } from '../semver'
+import { writeTextAtomic } from '../writeJsonAtomic'
 import { extensionsDir, readCappedBytes, type CatalogEntry } from './catalog'
 
 /** Remote artifact fetch is capped in time and size so a hostile/broken server
@@ -46,6 +48,9 @@ export async function stagedVersions(id: string): Promise<string[]> {
   return entries
     .filter((e) => e.isFile() && e.name.endsWith('.tgz'))
     .map((e) => e.name.slice(0, -'.tgz'.length))
+    // Semver-sort ascending (raw readdir order is arbitrary/lexical, so '0.9.0'
+    // could otherwise sort AFTER '0.10.0'); callers pick the newest as [-1].
+    .sort(compareSemver)
 }
 
 /** Remove every staged version of an extension (its whole id folder). */
@@ -132,8 +137,6 @@ export async function stageArtifact(
 
   if (!force && isStaged(id, version)) return { id, version, tgzPath: tgz }
 
-  await mkdir(path.dirname(tgz), { recursive: true })
-
   const artifactIsHttp = /^https?:\/\//i.test(entry.artifactUrl)
   // Trust class: an explicit sourceIsLocal (set by catalog.normalizeEntry for
   // every real entry) is authoritative. When it is absent — only directly
@@ -162,14 +165,9 @@ export async function stageArtifact(
   if (entry.sha256 && sha256(buf) !== entry.sha256.toLowerCase()) {
     throw new Error(`sha256 mismatch for ${id}@${version}`)
   }
-  const tmp = `${tgz}.${process.pid}.part`
-  try {
-    await writeFile(tmp, buf)
-    await rename(tmp, tgz)
-  } catch (err) {
-    await rm(tmp, { force: true }).catch(() => {})
-    throw err instanceof Error ? err : new Error(String(err))
-  }
+  // Atomic write (unique tmp + rename, parent dir created) via the shared
+  // primitive, so a present .tgz always means "fully downloaded".
+  await writeTextAtomic(tgz, buf)
   log.info('[extensions] staged %s@%s -> %s', id, version, tgz)
   return { id, version, tgzPath: tgz }
 }

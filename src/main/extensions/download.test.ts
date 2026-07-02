@@ -152,6 +152,18 @@ describe('stageArtifact', () => {
     expect(isStaged('cate.rmt', '0.1.0')).toBe(false)
   })
 
+  it('sorts staged versions by semver, not readdir/lexical order', async () => {
+    // '0.10.0' > '0.9.0' by semver, but lexically '0.10.0' < '0.9.0'; the newest
+    // must land last so callers ([-1]) serve the right one.
+    const a = buildArtifact('cate.multi', '0.9.0')
+    const b = buildArtifact('cate.multi', '0.10.0')
+    await stageArtifact(entryFor(a.file, undefined, 'cate.multi', '0.9.0'))
+    await stageArtifact(entryFor(b.file, undefined, 'cate.multi', '0.10.0'))
+    const versions = await stagedVersions('cate.multi')
+    expect(versions).toEqual(['0.9.0', '0.10.0'])
+    expect(versions[versions.length - 1]).toBe('0.10.0')
+  })
+
   it('falls back to the artifactUrl scheme for an unflagged entry (legacy compat)', async () => {
     // Directly-constructed entries (dev/test) with no sourceIsLocal flag keep
     // the legacy behavior: a local-path artifactUrl is treated as a local dev

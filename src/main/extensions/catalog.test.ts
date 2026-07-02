@@ -70,6 +70,16 @@ describe('fetchCatalog', () => {
     expect(byId.dup.description).toBe('second')
   })
 
+  it('preserves source order in the merged result (concurrent fetch)', async () => {
+    // Sources are now fetched concurrently, but the merge must still reflect the
+    // original source order regardless of which fetch settles first.
+    const s1 = writeIndex('order1.json', { extensions: [validEntry('acme.a'), validEntry('acme.b')] })
+    const s2 = writeIndex('order2.json', { extensions: [validEntry('acme.c')] })
+    const s3 = writeIndex('order3.json', { extensions: [validEntry('acme.d')] })
+    const entries = await fetchCatalog([s1, s2, s3])
+    expect(entries.map((e) => e.manifest.id)).toEqual(['acme.a', 'acme.b', 'acme.c', 'acme.d'])
+  })
+
   it('tolerates a failing source and keeps the good ones', async () => {
     const good = writeIndex('good.json', { extensions: [validEntry('acme.good')] })
     const missing = pathToFileURL(path.join(tmp, 'does-not-exist.json')).toString()

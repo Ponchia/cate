@@ -342,7 +342,17 @@ export class AgentManager {
     resume?: string
   }): Promise<{ sessionId: string }> {
     for (const s of this.extSessions.values()) {
+      // One live session per extension — the anti-runaway cap. Checked first, so
+      // an extension re-opening its OWN live handle sees 'agent-busy', not the
+      // ownership error below.
       if (s.extensionId === opts.extensionId) throw new Error('agent-busy')
+      // The workspace's .cate/pi-agent dir is shared across its extensions, so a
+      // `resume` handle can name a session live under a DIFFERENT extension.
+      // Refuse it — overwriting the routing entry would strand that extension's
+      // pi child (leak) and fork both onto one jsonl.
+      if (opts.resume && s.handle === opts.resume) {
+        throw new Error('session-owned-by-another-extension')
+      }
     }
     const panelId = `ext-${opts.extensionId}-${++this.extRunSeq}`
     const model = await this.resolveDefaultModel()
