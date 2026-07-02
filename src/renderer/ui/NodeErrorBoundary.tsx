@@ -13,7 +13,7 @@
 
 import React from 'react'
 import log from '../lib/logger'
-import { captureRendererException } from '../lib/sentry'
+import { BaseErrorBoundary } from './BaseErrorBoundary'
 
 interface Props {
   children?: React.ReactNode
@@ -22,39 +22,25 @@ interface Props {
   nodeId?: string
 }
 
-interface State {
-  error: Error | null
-}
-
-export class NodeErrorBoundary extends React.Component<Props, State> {
-  state: State = { error: null }
-
-  static getDerivedStateFromError(error: Error): State {
-    return { error }
-  }
-
-  componentDidUpdate(prev: Props): void {
-    if (this.state.error && prev.nodeId !== this.props.nodeId) {
-      this.setState({ error: null })
-    }
-  }
-
-  componentDidCatch(error: Error, info: React.ErrorInfo): void {
-    log.error(
-      'Canvas node render error (id=%s): %s\n%s',
-      this.props.nodeId ?? 'unknown',
-      error.message,
-      info.componentStack,
-    )
-    captureRendererException(error, {
-      nodeId: this.props.nodeId,
-      componentStack: info.componentStack,
-      source: 'NodeErrorBoundary',
-    })
-  }
-
-  render(): React.ReactNode {
-    if (this.state.error) return null
-    return this.props.children
-  }
+export function NodeErrorBoundary({ children, nodeId }: Props): React.ReactElement {
+  return (
+    <BaseErrorBoundary
+      resetKey={nodeId}
+      sentrySource="NodeErrorBoundary"
+      sentryContext={{ nodeId }}
+      logError={(error, info) =>
+        log.error(
+          'Canvas node render error (id=%s): %s\n%s',
+          nodeId ?? 'unknown',
+          error.message,
+          info.componentStack,
+        )
+      }
+      // A node that throws can't be positioned (its geometry is usually what's
+      // broken), so it simply disappears — no visible fallback.
+      fallback={() => null}
+    >
+      {children}
+    </BaseErrorBoundary>
+  )
 }
