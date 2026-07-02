@@ -11,10 +11,9 @@
 import { create, type UseBoundStore } from 'zustand'
 import { useStoreWithEqualityFn } from 'zustand/traditional'
 import type { StoreApi } from 'zustand'
-import type { CanvasNodeId, CanvasNodeState, PanelState } from '../../shared/types'
+import type { CanvasNodeId, CanvasNodeState } from '../../shared/types'
 import { ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT } from '../../shared/types'
 import { collectPanelIds } from '../../shared/collectPanelIds'
-import { keepsMountedOffscreen } from '../../shared/panels'
 import { perfCount } from '../lib/perf/perfClient'
 import { primitiveArrayEqual } from './selectorUtils'
 import log from '../lib/logger'
@@ -204,8 +203,11 @@ export function useNodeIds(store?: UseBoundStore<StoreApi<CanvasStore>>): string
  * bounding box intersects the visible canvas rect (expanded by a 1-screen
  * margin so panning doesn't thrash mount state at the edges). Focused, pinned,
  * and keep-mounted (webview-backed, e.g. extensions) nodes are always included
- * so they keep their live state. `panels` resolves each node's panel type(s) for
- * the keep-mounted check; omit it to skip that exemption (pure geometric cull).
+ * so they keep their live state. `keepMountedPanelIds` is the set of panel ids
+ * whose type must stay mounted off-screen (see keepsMountedOffscreen); a node is
+ * exempt from the cull when it hosts any of them. Omitting it skips that
+ * exemption entirely (pure geometric cull) — the hook below requires it so a
+ * real caller can never accidentally re-enable webview-destroying culling.
  *
  * This is the primary lever for reducing memory/CPU when many terminals or
  * editors are open on a canvas — off-screen nodes don't mount at all.
@@ -231,26 +233,39 @@ function sortedNodesByZOrder(nodes: Record<CanvasNodeId, CanvasNodeState>): Canv
 // extensions — see keepsMountedOffscreen). Geometric culling unmounts off-screen
 // nodes, which destroys a <webview>'s guest process and resets all its in-page
 // state; these nodes opt out so panning away and back preserves the session.
-// Cached by the `nodes` object identity and guarded on `panels`, so a pure
-// pan/zoom (both stable) reuses the set instead of re-walking every dock layout
-// on each frame. zustand swaps `nodes`/`panels` immutably on any real change.
+//
+// Cached by the identity of `keepMountedPanelIds` — the set of panel ids whose
+// type is keep-mounted, which the caller derives with an equality-checked
+// selector (see CanvasPanel). That set is STABLE across pan/zoom/drag/resize
+// frames (geometry updates swap `nodes` but never this set) and across pure
+// panel-state churn (a title edit doesn't add/remove a keep-mounted panel), so
+// the cache holds through a drag and the per-frame dock-layout walk is skipped.
+// The node COUNT is a cheap secondary key so node add/remove — including an async
+// session restore that lands the extension node after its panel — rebuilds the
+// set. (Set identity changes whenever a keep-mounted panel is added/removed,
+// covering the other way membership can change.)
 const EMPTY_KEEP_ALIVE: ReadonlySet<string> = new Set()
-const keepAliveCache = new WeakMap<object, { panels: unknown; ids: ReadonlySet<string> }>()
+const keepAliveCache = new WeakMap<object, { count: number; ids: ReadonlySet<string> }>()
 function keepAliveNodeIds(
   nodes: Record<CanvasNodeId, CanvasNodeState>,
-  panels: Record<string, PanelState> | undefined,
+  keepMountedPanelIds: ReadonlySet<string> | undefined,
 ): ReadonlySet<string> {
-  if (!panels) return EMPTY_KEEP_ALIVE
-  const cached = keepAliveCache.get(nodes)
-  if (cached && cached.panels === panels) return cached.ids
+  if (!keepMountedPanelIds || keepMountedPanelIds.size === 0) return EMPTY_KEEP_ALIVE
+  const count = Object.keys(nodes).length
+  const cached = keepAliveCache.get(keepMountedPanelIds)
+  if (cached && cached.count === count) return cached.ids
+  perfCount('canvasKeepAliveWalk')
   const ids = new Set<string>()
   for (const n of Object.values(nodes)) {
     const panelIds = n.dockLayout ? collectPanelIds(n.dockLayout) : [n.panelId]
-    if (panelIds.some((pid) => keepsMountedOffscreen(panels[pid]?.type))) ids.add(n.id)
+    if (panelIds.some((pid) => keepMountedPanelIds.has(pid))) ids.add(n.id)
   }
-  keepAliveCache.set(nodes, { panels, ids })
+  keepAliveCache.set(keepMountedPanelIds, { count, ids })
   return ids
 }
+
+/** Exported for unit testing: the raw keep-alive set builder (memoized). */
+export { keepAliveNodeIds as __keepAliveNodeIdsForTest }
 
 /** Pure core of {@link useVisibleNodeIds}. Returns the z-ordered ids of nodes
  *  that should be mounted: those intersecting the margin-expanded viewport, plus
@@ -258,7 +273,7 @@ function keepAliveNodeIds(
  *  Exported for unit testing. */
 export function selectVisibleNodeIds(
   s: Pick<CanvasStore, 'nodes' | 'viewportOffset' | 'zoomLevel' | 'containerSize' | 'focusedNodeId'>,
-  panels?: Record<string, PanelState>,
+  keepMountedPanelIds?: ReadonlySet<string>,
 ): string[] {
   perfCount('canvasCullEval')
   const { nodes, viewportOffset, zoomLevel, containerSize, focusedNodeId } = s
@@ -274,7 +289,7 @@ export function selectVisibleNodeIds(
     return sorted.map((n) => n.id)
   }
 
-  const keepAlive = keepAliveNodeIds(nodes, panels)
+  const keepAlive = keepAliveNodeIds(nodes, keepMountedPanelIds)
 
   // Visible canvas-space rect. worldTransform is scale(z) then
   // translate(offset/z), so a canvas point p maps to p*z + offset in view
@@ -303,12 +318,12 @@ export function selectVisibleNodeIds(
 }
 
 export function useVisibleNodeIds(
-  store?: UseBoundStore<StoreApi<CanvasStore>>,
-  panels?: Record<string, PanelState>,
+  store: UseBoundStore<StoreApi<CanvasStore>> | undefined,
+  keepMountedPanelIds: ReadonlySet<string>,
 ): string[] {
   return useStoreWithEqualityFn(
     store ?? useCanvasStore,
-    (s) => selectVisibleNodeIds(s, panels),
+    (s) => selectVisibleNodeIds(s, keepMountedPanelIds),
     primitiveArrayEqual,
   )
 }
