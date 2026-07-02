@@ -1368,9 +1368,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   // Extensions
   enabledExtensions: [],
-  // The official Cate extensions catalog (0-AI-UG/cate-extensions), published to
-  // GitHub Pages by that repo's CI. Users can add more sources or remove this.
-  extensionCatalogSources: ['https://0-ai-ug.github.io/cate-extensions/catalog/index.json'],
+  // The official Cate extensions catalog (0-AI-UG/cate-extensions). That repo's
+  // CI hosts index.json + artifact tarballs as assets on a rolling `catalog`
+  // GitHub Release. Users can add more sources or remove this.
+  extensionCatalogSources: [
+    'https://github.com/0-AI-UG/cate-extensions/releases/download/catalog/index.json',
+  ],
   extensionSideloadPaths: [],
 }
 
