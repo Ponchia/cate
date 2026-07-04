@@ -82,9 +82,20 @@ export interface CateHost {
     openFile(path: string, opts?: { line?: number; column?: number }): Promise<unknown>
   }
   canvas: {
+    /** Open a new panel. Only the fields declared here are honored by the host;
+     *  `position` pins the panel to that canvas point (otherwise it follows the
+     *  user's Cmd+T/Cmd+N placement setting). `filePath` is confined to the
+     *  workspace root. For `type: 'extension'`, `extensionPanelId` is required and
+     *  `extensionId` defaults to the calling extension. */
     createPanel(
       type: string,
-      opts?: { position?: unknown; size?: unknown; props?: unknown },
+      opts?: {
+        position?: { x: number; y: number }
+        url?: string
+        filePath?: string
+        extensionId?: string
+        extensionPanelId?: string
+      },
     ): Promise<unknown>
   }
   ui: {

@@ -61,8 +61,16 @@ const api: CateHost = {
   },
 
   canvas: {
-    createPanel: (type: string, opts?: { position?: unknown; size?: unknown; props?: unknown }) =>
-      invoke('cate.canvas.createPanel', { type, ...(opts ?? {}) }),
+    createPanel: (
+      type: string,
+      opts?: {
+        position?: { x: number; y: number }
+        url?: string
+        filePath?: string
+        extensionId?: string
+        extensionPanelId?: string
+      },
+    ) => invoke('cate.canvas.createPanel', { type, ...(opts ?? {}) }),
   },
 
   ui: {

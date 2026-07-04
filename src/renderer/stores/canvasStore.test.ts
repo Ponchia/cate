@@ -159,6 +159,39 @@ describe('canvasStore.selectVisibleNodeIds — keep-mounted webview nodes', () =
     const after = __keepAliveNodeIdsForTest(store.getState().nodes, keepMounted)
     expect(after.has(extId)).toBe(true)
   })
+
+  it('rebuilds when a keep-mounted panel moves between two existing nodes (count unchanged)', () => {
+    // Regression: dragging a keep-mounted extension tab from one existing node's
+    // dockLayout into another changes neither the node count nor the keep-mounted
+    // set identity, so a count-keyed cache returned a stale set naming the OLD
+    // node — culling then destroyed the extension webview on the destination.
+    const tabs = (panelIds: string[]) => ({
+      type: 'tabs' as const,
+      id: `stack-${panelIds.join('-')}`,
+      panelIds,
+      activeIndex: 0,
+    })
+    const store = createCanvasStore()
+    const nodeA = store.getState().addNode('p-ext', 'extension', { x: 0, y: 0 }, { width: 100, height: 80 })
+    const nodeB = store.getState().addNode('p-b', 'editor', { x: 0, y: 0 }, { width: 100, height: 80 })
+    // Node A hosts the keep-mounted tab alongside another; Node B hosts only its own.
+    store.getState().setNodeDockLayout(nodeA, tabs(['p-ext', 'p-a']))
+    store.getState().setNodeDockLayout(nodeB, tabs(['p-b']))
+
+    const keepMounted = new Set(['p-ext']) // stable identity across both calls
+    const before = __keepAliveNodeIdsForTest(store.getState().nodes, keepMounted)
+    expect(before.has(nodeA)).toBe(true)
+    expect(before.has(nodeB)).toBe(false)
+
+    // Move the keep-mounted tab A → B. Node count stays 2, set identity unchanged;
+    // only the two nodes' dockLayout objects change.
+    store.getState().setNodeDockLayout(nodeA, tabs(['p-a']))
+    store.getState().setNodeDockLayout(nodeB, tabs(['p-b', 'p-ext']))
+
+    const after = __keepAliveNodeIdsForTest(store.getState().nodes, keepMounted)
+    expect(after.has(nodeB)).toBe(true)
+    expect(after.has(nodeA)).toBe(false)
+  })
 })
 
 // focusEpoch is the signal panels watch to re-fire focus side effects when the

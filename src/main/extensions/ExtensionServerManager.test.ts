@@ -110,6 +110,23 @@ describe('ExtensionServerManager', () => {
     expect(mgr.getState(EXT, WS)).toBeNull()
   })
 
+  it('ensureServer during grace reuses the live server (no second spawn, grace cancelled)', async () => {
+    await mgr.joinPanel(EXT, WS, 'p1', fakeSender(1))
+    mgr.leavePanel(EXT, WS, 'p1')
+    expect(mgr.getState(EXT, WS)).toBe('GRACE')
+
+    // A straggler proxyHttp/handleUpgrade calls ensureServer directly during the
+    // grace window: it must reuse the live handle, not spawn a second child.
+    const ep = await mgr.ensureServer(EXT, WS)
+    expect(ep.port).toBe(5000)
+    expect(serverStart).toHaveBeenCalledTimes(1)
+    expect(mgr.getState(EXT, WS)).toBe('READY')
+
+    // Grace timer was cancelled by the reuse, so it never stops the server.
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(serverStop).not.toHaveBeenCalled()
+  })
+
   it('does not stop while other panels remain', async () => {
     await mgr.joinPanel(EXT, WS, 'p1', fakeSender(1))
     await mgr.joinPanel(EXT, WS, 'p2', fakeSender(1))

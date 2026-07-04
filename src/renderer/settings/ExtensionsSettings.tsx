@@ -9,8 +9,10 @@
 //   2. Sideloaded — local dev folders added via "Add local folder…", removable.
 //   3. Catalog sources — view/add/remove catalog source URLs and refresh.
 //
-// The list refreshes whenever the main process broadcasts a change
-// (enable/disable/install) and after any local install/refresh action resolves.
+// The extension list is read from extensionsStore, whose single module-level
+// subscription re-fetches on every EXTENSIONS_CHANGED broadcast (enable/disable/
+// uninstall/reinstall/update/sideload/catalog-refresh). Only install does NOT
+// broadcast, so that path alone still triggers an explicit store refresh.
 // Styling mirrors SkillsSettings.
 // =============================================================================
 
@@ -19,6 +21,7 @@ import { Plus, Trash, CircleNotch, ArrowsClockwise, ArrowCircleUp, Warning, Care
 import { SettingRow, SearchableBlock, SecondaryButton, Toggle, TextInput } from './SettingsComponents'
 import { Tooltip } from '../ui/Tooltip'
 import { errorMessage } from '../lib/errorMessage'
+import { useExtensionsStore, ensureExtensionsStarted } from '../stores/extensionsStore'
 import type { ExtensionListEntry } from '../../shared/extensions'
 
 const api = () => window.electronAPI
@@ -87,8 +90,54 @@ const Permissions = ({ scopes }: { scopes?: string[] }) => {
   )
 }
 
+/** The shared expandable-row shell for a single extension: caret + name +
+ *  version, a caller-supplied `middle` cluster (badges / id / description), a
+ *  stopPropagation action cluster (`actions`), the expanded detail body
+ *  (`detail`, always ending in Permissions), and an optional `footer` (row
+ *  error). Hoisted to module scope so it isn't a fresh component type on every
+ *  ExtensionsSettings render. Both the catalog and sideload rows use it. */
+const ExtensionRow = ({
+  name,
+  version,
+  open,
+  onToggleExpand,
+  middle,
+  actions,
+  detail,
+  footer,
+}: {
+  name: string
+  version?: string
+  open: boolean
+  onToggleExpand: () => void
+  middle: ReactNode
+  actions: ReactNode
+  detail: ReactNode
+  footer?: ReactNode
+}) => (
+  <div className="px-3 py-2 border-b border-subtle last:border-0 hover:bg-hover">
+    <div className="flex items-center gap-2.5 cursor-pointer" onClick={onToggleExpand}>
+      <CaretRight
+        size={10}
+        className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`}
+      />
+      <span className="shrink-0 max-w-[45%] truncate text-[12px] text-primary">{name}</span>
+      {version && <span className="shrink-0 text-[10px] text-muted font-mono">v{version}</span>}
+      {middle}
+      <div className="flex items-center gap-2.5" onClick={(e) => e.stopPropagation()}>
+        {actions}
+      </div>
+    </div>
+
+    {open && <div className="mt-2 pl-5 flex flex-col gap-1.5">{detail}</div>}
+
+    {footer}
+  </div>
+)
+
 export function ExtensionsSettings() {
-  const [entries, setEntries] = useState<ExtensionListEntry[]>([])
+  const entries = useExtensionsStore((s) => s.entries)
+  const refresh = useExtensionsStore((s) => s.refresh)
   const [sources, setSources] = useState<string[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -118,14 +167,6 @@ export function ExtensionsSettings() {
       return next
     })
 
-  const refresh = useCallback(async () => {
-    try {
-      setEntries(await api().extensionList())
-    } catch {
-      /* ignore */
-    }
-  }, [])
-
   const refreshSources = useCallback(async () => {
     try {
       setSources(await api().extensionCatalogSources())
@@ -135,11 +176,12 @@ export function ExtensionsSettings() {
   }, [])
 
   useEffect(() => {
+    // The store owns the entries list + its EXTENSIONS_CHANGED subscription.
+    ensureExtensionsStarted()
+    // Await one refresh purely to clear the "Loading catalog…" placeholder once
+    // the first fetch (or an already-populated store) settles.
     void refresh().finally(() => setInitialLoad(false))
     void refreshSources()
-    // Re-pull whenever main reports the extension set changed (including the
-    // first-run background catalog fetch completing).
-    return api().onExtensionsChanged(() => void refresh())
   }, [refresh, refreshSources])
 
   const setPendingFor = (id: string, on: boolean) =>
@@ -158,21 +200,21 @@ export function ExtensionsSettings() {
     try {
       const res = await api().extensionAddSideload(folderPath)
       if (!res.ok) setErr(errorMessage(res.error, 'Could not load that folder as an extension.'))
-      else await refresh()
+      // Success broadcasts EXTENSIONS_CHANGED; the store refreshes itself.
     } finally {
       setBusy(false)
     }
   }
 
   const removeSideload = async (rootDir: string) => {
+    // Broadcasts EXTENSIONS_CHANGED; the store refreshes itself.
     await api().extensionRemoveSideload(rootDir)
-    await refresh()
   }
 
   const toggle = async (entry: ExtensionListEntry) => {
+    // enable/disable broadcast EXTENSIONS_CHANGED; the store refreshes itself.
     if (entry.enabled) await api().extensionDisable(entry.manifest.id)
     else await api().extensionEnable(entry.manifest.id)
-    await refresh()
   }
 
   const install = async (entry: ExtensionListEntry) => {
@@ -188,6 +230,7 @@ export function ExtensionsSettings() {
       if (!res.ok) {
         setRowErr((prev) => ({ ...prev, [id]: errorMessage(res.error, 'Could not install this extension.') }))
       }
+      // Install does NOT broadcast EXTENSIONS_CHANGED, so refresh explicitly.
       await refresh()
     } finally {
       setPendingFor(id, false)
@@ -210,7 +253,7 @@ export function ExtensionsSettings() {
     try {
       const res = await fn()
       if (!res.ok) setRowErr((prev) => ({ ...prev, [id]: errorMessage(res.error, fallbackMsg) }))
-      await refresh()
+      // uninstall/reinstall/update broadcast EXTENSIONS_CHANGED; store refreshes.
     } finally {
       setPendingFor(id, false)
     }
@@ -229,7 +272,7 @@ export function ExtensionsSettings() {
     try {
       const res = await api().extensionCatalogRefresh()
       if (!res.ok) setSourceErr(errorMessage(res.error, 'Could not refresh the catalog.'))
-      await refresh()
+      // Broadcasts EXTENSIONS_CHANGED; the store refreshes itself.
     } finally {
       setRefreshing(false)
     }
@@ -247,7 +290,7 @@ export function ExtensionsSettings() {
       } else {
         setNewSource('')
         await refreshSources()
-        await refresh()
+        // addCatalogSource refreshes the catalog, which broadcasts; store updates.
       }
     } finally {
       setAddingSource(false)
@@ -257,7 +300,7 @@ export function ExtensionsSettings() {
   const removeSource = async (url: string) => {
     await api().extensionRemoveCatalogSource(url)
     await refreshSources()
-    await refresh()
+    // removeCatalogSource refreshes the catalog, which broadcasts; store updates.
   }
 
   const catalogEntries = entries.filter((e) => e.source === 'catalog')
@@ -274,31 +317,33 @@ export function ExtensionsSettings() {
     const key = `sideload:${m.id}`
     const open = expanded.has(key)
     return (
-      <div key={key} className="px-3 py-2 border-b border-subtle last:border-0 hover:bg-hover">
-        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => toggleExpanded(key)}>
-          <CaretRight
-            size={10}
-            className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`}
-          />
-          <span className="shrink-0 max-w-[45%] truncate text-[12px] text-primary">{m.name}</span>
-          {m.version && <span className="shrink-0 text-[10px] text-muted font-mono">v{m.version}</span>}
-          <span className="shrink-0 text-[10px] text-muted px-1.5 py-0.5 rounded bg-surface-3">local</span>
-          <span className="flex-1 min-w-0 text-[11px] text-muted font-mono truncate">{m.id}</span>
-          <div className="flex items-center gap-2.5" onClick={(e) => e.stopPropagation()}>
+      <ExtensionRow
+        key={key}
+        name={m.name}
+        version={m.version}
+        open={open}
+        onToggleExpand={() => toggleExpanded(key)}
+        middle={
+          <>
+            <span className="shrink-0 text-[10px] text-muted px-1.5 py-0.5 rounded bg-surface-3">local</span>
+            <span className="flex-1 min-w-0 text-[11px] text-muted font-mono truncate">{m.id}</span>
+          </>
+        }
+        actions={
+          <>
             <IconAction label="Remove" danger onClick={() => void removeSideload(entry.rootDir)}>
               <Trash size={12} />
             </IconAction>
             <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
-          </div>
-        </div>
-
-        {open && (
-          <div className="mt-2 pl-5 flex flex-col gap-1.5">
+          </>
+        }
+        detail={
+          <>
             <div className="text-[11px] text-muted font-mono break-all">{entry.rootDir}</div>
             <Permissions scopes={m.cateApi} />
-          </div>
-        )}
-      </div>
+          </>
+        }
+      />
     )
   }
 
@@ -314,54 +359,53 @@ export function ExtensionsSettings() {
     const key = `catalog:${id}`
     const open = expanded.has(key)
     return (
-      <div key={key} className="px-3 py-2 border-b border-subtle last:border-0 hover:bg-hover">
-        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => toggleExpanded(key)}>
-          <CaretRight
-            size={10}
-            className={`shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`}
-          />
-          <span className="shrink-0 max-w-[45%] truncate text-[12px] text-primary">{m.name}</span>
-          {version && <span className="shrink-0 text-[10px] text-muted font-mono">v{version}</span>}
-          <span className="flex-1 min-w-0 text-[11px] text-muted truncate">{description}</span>
-          <div className="flex items-center gap-2.5" onClick={(e) => e.stopPropagation()}>
-            {!entry.installed ? (
-              <SecondaryButton onClick={() => void install(entry)} disabled={inFlight}>
-                {inFlight ? <CircleNotch size={11} className="animate-spin" /> : <Plus size={11} />}
-                {inFlight ? 'Installing…' : 'Install'}
-              </SecondaryButton>
-            ) : (
-              <>
-                {inFlight && <CircleNotch size={12} className="animate-spin text-muted shrink-0" />}
-                {entry.updateAvailable && (
-                  <SecondaryButton onClick={() => void update(id)} disabled={inFlight}>
-                    <ArrowCircleUp size={11} />
-                    Update
-                  </SecondaryButton>
-                )}
-                <IconAction label="Reinstall" disabled={inFlight} onClick={() => void reinstall(id)}>
-                  <ArrowsClockwise size={12} />
-                </IconAction>
-                <IconAction label="Remove" danger disabled={inFlight} onClick={() => void uninstall(id)}>
-                  <Trash size={12} />
-                </IconAction>
-                <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
-              </>
-            )}
-          </div>
-        </div>
-
-        {open && (
-          <div className="mt-2 pl-5 flex flex-col gap-1.5">
+      <ExtensionRow
+        key={key}
+        name={m.name}
+        version={version}
+        open={open}
+        onToggleExpand={() => toggleExpanded(key)}
+        middle={<span className="flex-1 min-w-0 text-[11px] text-muted truncate">{description}</span>}
+        actions={
+          !entry.installed ? (
+            <SecondaryButton onClick={() => void install(entry)} disabled={inFlight}>
+              {inFlight ? <CircleNotch size={11} className="animate-spin" /> : <Plus size={11} />}
+              {inFlight ? 'Installing…' : 'Install'}
+            </SecondaryButton>
+          ) : (
+            <>
+              {inFlight && <CircleNotch size={12} className="animate-spin text-muted shrink-0" />}
+              {entry.updateAvailable && (
+                <SecondaryButton onClick={() => void update(id)} disabled={inFlight}>
+                  <ArrowCircleUp size={11} />
+                  Update
+                </SecondaryButton>
+              )}
+              <IconAction label="Reinstall" disabled={inFlight} onClick={() => void reinstall(id)}>
+                <ArrowsClockwise size={12} />
+              </IconAction>
+              <IconAction label="Remove" danger disabled={inFlight} onClick={() => void uninstall(id)}>
+                <Trash size={12} />
+              </IconAction>
+              <Toggle checked={entry.enabled} onChange={() => void toggle(entry)} />
+            </>
+          )
+        }
+        detail={
+          <>
             <div className="text-[11px] text-muted font-mono">{id}</div>
             {description && (
               <div className="text-[11px] text-secondary leading-relaxed">{description}</div>
             )}
             <Permissions scopes={m.cateApi} />
-          </div>
-        )}
-
-        {rowErr[id] && <div className="text-[11px] text-red-400 mt-1 pl-5">{rowErr[id]}</div>}
-      </div>
+          </>
+        }
+        footer={
+          rowErr[id] ? (
+            <div className="text-[11px] text-red-400 mt-1 pl-5">{rowErr[id]}</div>
+          ) : undefined
+        }
+      />
     )
   }
 

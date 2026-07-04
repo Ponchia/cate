@@ -118,6 +118,15 @@ describe.skipIf(!HAS_EXT)('proxyServer — frontend-only static serving (cate.fr
     expect(r.status).toBe(403)
   })
 
+  it('refuses backslash-delimited traversal (Windows-separator payload) (403)', async () => {
+    // %5c is a backslash: decoded to '..\..\..\package.json' this is ONE segment
+    // (split is on '/'), so a bare '..'-only check misses it. The host-native
+    // join (path.win32 on Windows) would treat the backslashes as separators and
+    // escape rootDir — the separator-in-segment check must reject it.
+    const r = await get(port, `/ext/${token}/..%5c..%5c..%5cpackage.json`)
+    expect(r.status).toBe(403)
+  })
+
   it('404s an unknown route token', async () => {
     const r = await get(port, `/ext/deadbeefdeadbeef/index.html`)
     expect(r.status).toBe(404)

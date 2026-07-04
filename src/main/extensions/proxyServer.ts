@@ -27,7 +27,7 @@ import log from '../logger'
 import { extensionManager } from './ExtensionManager'
 import { extensionServerManager } from './ExtensionServerManager'
 import { openTunnelDuplex } from './serverTunnel'
-import { parseLocator } from '../runtime/locator'
+import { parseLocator, LOCAL_RUNTIME_ID } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import { hostJoin } from '../../agent/main/agentDir'
 import { getWorkspaceInfo } from '../workspaceManager'
@@ -107,10 +107,6 @@ export function identityForGuestUrl(
   // `https://attacker.com/ext/<validToken>/…` would otherwise resolve to the
   // extension's identity and get the full cate.* API. Only a URL served by THIS
   // proxy's own origin (127.0.0.1:<port>) is a trusted route.
-  // Security: the routeToken alone is not enough — a guest that navigates to
-  // `https://attacker.com/ext/<validToken>/…` would otherwise resolve to the
-  // extension's identity and get the full cate.* API. Only a URL served by THIS
-  // proxy's own origin (127.0.0.1:<port>) is a trusted route.
   const origin = getProxyOrigin()
   if (!origin || parsedUrl.origin !== origin) return null
   const parsed = parseExtPath(parsedUrl.pathname)
@@ -136,8 +132,22 @@ function resolveAssetPath(runtime: Runtime, rootDir: string, relPath: string): s
   const decoded = decodeURIComponent(relPath)
   if (path.posix.isAbsolute(decoded)) return null
   const segments = decoded.split('/').filter((s) => s !== '' && s !== '.')
-  if (segments.length === 0 || segments.some((s) => s === '..')) return null
-  return hostJoin(runtime.id, rootDir, ...segments)
+  if (segments.length === 0) return null
+  // Reject a `..` segment OR any segment carrying a native separator ('\\' or
+  // '/'): the LOCAL runtime joins with the host's native separator (path.win32
+  // on Windows), so a backslash-delimited segment like '..\\..\\secret' is ONE
+  // non-'..' segment that would otherwise escape rootDir on a Windows host.
+  if (segments.some((s) => s === '..' || s.includes('\\') || s.includes('/'))) return null
+  const abs = hostJoin(runtime.id, rootDir, ...segments)
+  // Final containment re-check with the host's path flavor (native for LOCAL,
+  // posix for remote): the normalized join must stay inside rootDir — equal to
+  // it, or under it followed by the separator.
+  const p = runtime.id === LOCAL_RUNTIME_ID ? path : path.posix
+  const normRoot = p.normalize(rootDir)
+  const normAbs = p.normalize(abs)
+  const rootWithSep = normRoot.endsWith(p.sep) ? normRoot : normRoot + p.sep
+  if (normAbs !== normRoot && !normAbs.startsWith(rootWithSep)) return null
+  return abs
 }
 
 // Immutable-per-version asset cache, keyed by `<hostRootDir>\0<relPath>`. The

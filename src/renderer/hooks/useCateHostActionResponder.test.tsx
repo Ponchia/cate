@@ -17,6 +17,12 @@ import { act } from 'react'
 
 const ROOT = '/Users/dev/repo'
 const WS = 'ws-1'
+// A REMOTE workspace: the store holds a locator URI as rootPath, but
+// cate.workspace.get hands the extension the BARE path (/srv/proj). An absolute
+// path the extension echoes back must resolve against the bare form.
+const REMOTE_WS = 'ws-remote'
+const REMOTE_ROOT_BARE = '/srv/proj'
+const REMOTE_ROOT_LOCATOR = `cate-runtime://srv_a1${REMOTE_ROOT_BARE}`
 
 const h = vi.hoisted(() => ({
   openFileAsPanel: vi.fn(() => 'new-editor-id'),
@@ -44,7 +50,10 @@ vi.mock('../stores/appStore', () => ({
     getState: () => ({
       // `host-panel` lives in THIS window's store; a detached panel would be
       // absent (drives the panel.setTitle not-in-window reply).
-      workspaces: [{ id: WS, rootPath: ROOT, panels: { 'host-panel': { id: 'host-panel', type: 'terminal', title: 'Term' } } }],
+      workspaces: [
+        { id: WS, rootPath: ROOT, panels: { 'host-panel': { id: 'host-panel', type: 'terminal', title: 'Term' } } },
+        { id: REMOTE_WS, rootPath: REMOTE_ROOT_LOCATOR, panels: {} },
+      ],
       createExtensionPanel: h.createExtensionPanel,
       updatePanelTitle: h.updatePanelTitle,
     }),
@@ -78,11 +87,11 @@ let container: HTMLDivElement
 let root: Root
 
 /** Fire one forwarded action and wait for the hook's async handler + reply. */
-async function fire(method: string, args: unknown, extra?: Partial<{ panelId: string; extensionId: string }>): Promise<void> {
+async function fire(method: string, args: unknown, extra?: Partial<{ panelId: string; extensionId: string; workspaceId: string }>): Promise<void> {
   await act(async () => {
     await actionCb!({
       requestId: `req-${method}`,
-      workspaceId: WS,
+      workspaceId: extra?.workspaceId ?? WS,
       panelId: extra?.panelId ?? 'host-panel',
       extensionId: extra?.extensionId ?? 'cate.kitchensink',
       method,
@@ -163,6 +172,22 @@ describe('useCateHostActionResponder', () => {
   it('allows an absolute openFile path that is inside the workspace root', async () => {
     await fire('cate.editor.openFile', { path: `${ROOT}/src/app.ts` })
     expect(h.openFileAsPanel).toHaveBeenCalledWith(WS, `${ROOT}/src/app.ts`, undefined, ACTIVE_PLACEMENT)
+  })
+
+  it('accepts an absolute path inside a REMOTE workspace (locator rootPath) and re-attaches the scheme', async () => {
+    // Regression: for a remote workspace the store's rootPath is a locator URI,
+    // but workspace.get gives the extension the BARE path. An absolute path the
+    // extension echoes back (/srv/proj/src/app.ts) must clear the containment
+    // check against the bare root — not be rejected as "outside workspace" — and
+    // must reach the open path re-encoded as a locator so it routes to the runtime.
+    await fire('cate.editor.openFile', { path: `${REMOTE_ROOT_BARE}/src/app.ts` }, { workspaceId: REMOTE_WS })
+    expect(h.openFileAsPanel).toHaveBeenCalledWith(
+      REMOTE_WS,
+      `${REMOTE_ROOT_LOCATOR}/src/app.ts`,
+      undefined,
+      ACTIVE_PLACEMENT,
+    )
+    expect(replies).toContainEqual({ requestId: 'req-cate.editor.openFile', ok: true, result: { panelId: 'new-editor-id' } })
   })
 
   it('rejects openFile with no path', async () => {

@@ -504,6 +504,55 @@ async function dispatchStorage(
 }
 
 // ---------------------------------------------------------------------------
+// Guest identity + per-webContents destroyed cleanup
+// ---------------------------------------------------------------------------
+
+/** Derive the AUTHORITATIVE (extensionId, workspaceId) for a calling guest from
+ *  its proxy URL routeToken (the trusted source), and reject a payload that
+ *  self-asserts a different identity. Shared by CATE_HOST_INVOKE and
+ *  CATE_HOST_SUBSCRIBE so a guest can't spoof another extension's id via the
+ *  query string its preload forwards. Returns the trusted identity, or an error
+ *  CODE the caller wraps in its own result shape (invoke also attaches `method`). */
+function authenticateGuest(
+  event: { sender: WebContents },
+  payload: { extensionId?: string; workspaceId?: string } | null | undefined,
+): { identity: { extensionId: string; workspaceId: string } } | { error: string } {
+  const identity = identityForGuestUrl(event.sender.getURL())
+  if (!identity) return { error: 'unknown-guest' }
+  if (payload?.extensionId !== identity.extensionId || payload?.workspaceId !== identity.workspaceId) {
+    return { error: 'identity-mismatch' }
+  }
+  return { identity }
+}
+
+// Per-webContents 'destroyed' cleanups. A webContents may both back server
+// panels (proxy-url path) AND hold subscriptions (subscribe path); when it goes
+// away BOTH must tear down, but under a SINGLE 'destroyed' listener — a fresh
+// listener per proxy-resolve or subscribe would stack across reuses and trip
+// Node's MaxListenersExceededWarning. First sighting of a webContents hooks the
+// listener; later ones compose their cleanup into the same set. The cleanups are
+// wc-scoped and idempotent, so they run to the same effect however many times a
+// path registered.
+const destroyCleanups = new Map<number, Set<() => void>>()
+
+function onceDestroyed(wc: WebContents, cleanup: () => void): void {
+  const existing = destroyCleanups.get(wc.id)
+  if (existing) {
+    existing.add(cleanup)
+    return
+  }
+  const cleanups = new Set<() => void>([cleanup])
+  destroyCleanups.set(wc.id, cleanups)
+  const wcId = wc.id
+  wc.once('destroyed', () => {
+    destroyCleanups.delete(wcId)
+    for (const fn of cleanups) {
+      try { fn() } catch { /* noop */ }
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -602,17 +651,6 @@ export function registerExtensionHandlers(): void {
     return extensionManager.getCatalogSources()
   })
 
-  // webContents we've hooked 'destroyed' on, so a window hosting many extension
-  // panels registers a single listener (which leaves all of its server-backed
-  // panels) rather than one per proxy-url resolve.
-  const hookedExtSenders = new Set<number>()
-
-  // Same dedup for the subscribe path: repeated subscribe/unsubscribe cycles on
-  // one webContents must not stack a fresh 'destroyed' listener each time
-  // (MaxListenersExceededWarning). One hook per webContents disposes ALL its
-  // subscriptions on teardown.
-  const hookedSubSenders = new Set<number>()
-
   ipcMain.handle(
     EXTENSION_PROXY_URL,
     async (event, args: { extensionId: string; workspaceId: string; panelId: string }) => {
@@ -621,14 +659,8 @@ export function registerExtensionHandlers(): void {
       // webContents is destroyed (window closed) leave every panel it owns so
       // the grace timer / server stop fires.
       const sender = event.sender
-      if (!hookedExtSenders.has(sender.id)) {
-        hookedExtSenders.add(sender.id)
-        const wcId = sender.id
-        sender.once('destroyed', () => {
-          hookedExtSenders.delete(wcId)
-          extensionServerManager.disposeForWebContents(wcId)
-        })
-      }
+      const wcId = sender.id
+      onceDestroyed(sender, () => extensionServerManager.disposeForWebContents(wcId))
       // getProxyUrlFor joins+spawns for server-backed extensions; it may return
       // { error } for a failed spawn, which the panel renders.
       return getProxyUrlFor({ ...args, sender })
@@ -662,13 +694,10 @@ export function registerExtensionHandlers(): void {
     // payload — a malicious guest can spoof another extension's id in the query
     // string the preload reads. Reject if the guest isn't a known proxy route or
     // the payload disagrees with its true identity.
-    const identity = identityForGuestUrl(event.sender.getURL())
-    if (!identity) return { error: 'unknown-guest', method: payload.method }
-    if (payload.extensionId !== identity.extensionId || payload.workspaceId !== identity.workspaceId) {
-      return { error: 'identity-mismatch', method: payload.method }
-    }
+    const auth = authenticateGuest(event, payload)
+    if ('error' in auth) return { error: auth.error, method: payload.method }
     try {
-      return await dispatchInvoke({ ...payload, ...identity })
+      return await dispatchInvoke({ ...payload, ...auth.identity })
     } catch (err) {
       log.warn('[extensions] invoke %s failed: %O', payload.method, err)
       return { error: 'internal', method: payload.method }
@@ -682,12 +711,9 @@ export function registerExtensionHandlers(): void {
       // Security: like CATE_HOST_INVOKE, take the authoritative identity from the
       // guest's URL (not the self-asserted payload) so a guest can't subscribe to
       // another extension's change stream.
-      const identity = identityForGuestUrl(event.sender.getURL())
-      if (!identity) return { error: 'unknown-guest' }
-      if (payload?.extensionId !== identity.extensionId || payload?.workspaceId !== identity.workspaceId) {
-        return { error: 'identity-mismatch' }
-      }
-      const { extensionId, workspaceId } = identity
+      const auth = authenticateGuest(event, payload)
+      if ('error' in auth) return { error: auth.error }
+      const { extensionId, workspaceId } = auth.identity
       if (!extensionManager.isKnown(extensionId) || !extensionManager.isEnabled(extensionId)) {
         return { error: 'not-enabled' }
       }
@@ -703,18 +729,11 @@ export function registerExtensionHandlers(): void {
       })
       const sub: Subscription = { wc, extensionId, workspaceId, panelId, topic, dispose }
       subscriptions.add(sub)
-      // Auto-clean when the guest webContents is destroyed. Hook it ONCE per
-      // webContents — a fresh listener per subscribe would stack up across
-      // subscribe/unsubscribe cycles (unsubscribe removes the Subscription, not
-      // this hook) and trip MaxListenersExceededWarning.
-      if (!hookedSubSenders.has(wc.id)) {
-        hookedSubSenders.add(wc.id)
-        const wcId = wc.id
-        wc.once('destroyed', () => {
-          hookedSubSenders.delete(wcId)
-          disposeSubscriptionsFor(wc)
-        })
-      }
+      // Auto-clean when the guest webContents is destroyed. onceDestroyed hooks
+      // the listener ONCE per webContents — a fresh listener per subscribe would
+      // stack up across subscribe/unsubscribe cycles (unsubscribe removes the
+      // Subscription, not this hook) and trip MaxListenersExceededWarning.
+      onceDestroyed(wc, () => disposeSubscriptionsFor(wc))
       return { ok: true }
     },
   )

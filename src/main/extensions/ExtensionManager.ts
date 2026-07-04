@@ -32,10 +32,15 @@ import {
 import {
   stageArtifact,
   stagedVersions,
+  isStaged,
   removeStaged,
   removeStagedVersionsExcept,
 } from './download'
-import { provisionCatalogToRuntime, provisionSideloadToRuntime } from './install'
+import {
+  provisionCatalogToRuntime,
+  provisionStagedToRuntime,
+  provisionSideloadToRuntime,
+} from './install'
 import { disposeStoresForRuntime } from './storage'
 import { runtimes } from '../runtime/runtimeManager'
 import type { Runtime } from '../runtime/types'
@@ -143,17 +148,24 @@ export class ExtensionManager {
     // --- Catalog (from the cached merged index) -----------------------------
     // Registered first so a same-id sideload folder below can override it.
     const cached = await getCachedCatalog()
-    for (const entry of cached) {
-      const id = entry.manifest.id
-      const latest = entry.manifest.version ?? '0.0.0'
-      // Any extracted version counts as installed (a catalog refresh may have
-      // bumped `latest` past what's on disk — that surfaces as updateAvailable).
-      // Prefer serving `latest` when it's present, else the highest on disk
-      // (stagedVersions is semver-sorted ascending, so [-1] is the newest).
-      const versions = await stagedVersions(id)
-      const installed = versions.length > 0
-      const served = versions.includes(latest) ? latest : versions[versions.length - 1]
-      next.set(id, {
+    // Each entry's staged-versions lookup is independent, so resolve them all
+    // concurrently before building the map (serial awaits made scan O(N) fs round
+    // trips; this collapses them to one batch).
+    const scanned = await Promise.all(
+      cached.map(async (entry) => {
+        const latest = entry.manifest.version ?? '0.0.0'
+        // Any extracted version counts as installed (a catalog refresh may have
+        // bumped `latest` past what's on disk — that surfaces as updateAvailable).
+        // Prefer serving `latest` when it's present, else the highest on disk
+        // (stagedVersions is semver-sorted ascending, so [-1] is the newest).
+        const versions = await stagedVersions(entry.manifest.id)
+        const installed = versions.length > 0
+        const served = versions.includes(latest) ? latest : versions[versions.length - 1]
+        return { entry, installed, served }
+      }),
+    )
+    for (const { entry, installed, served } of scanned) {
+      next.set(entry.manifest.id, {
         manifest: entry.manifest,
         source: 'catalog',
         // Catalog bytes live on the runtime host (per-workspace); the registry is
@@ -259,17 +271,36 @@ export class ExtensionManager {
     if (!known.catalogEntry) {
       throw new Error(`Extension ${known.manifest.id} has no catalog entry to provision`)
     }
+    const id = known.catalogEntry.manifest.id
     const latest = known.catalogEntry.manifest.version ?? '0.0.0'
     // Provision the currently-INSTALLED (pinned) version, NOT the catalog's latest.
     // Merely opening a panel after a catalog refresh must never silently download +
     // run a version the user didn't choose to update to; explicit update() re-stages
     // latest and moves installedVersion forward, so THAT path provisions the new one.
     const version = known.installedVersion ?? latest
-    const entry =
-      version === latest
-        ? known.catalogEntry
-        : { ...known.catalogEntry, manifest: { ...known.catalogEntry.manifest, version } }
-    const dest = await provisionCatalogToRuntime(runtime, entry, force)
+
+    if (version === latest) {
+      // The catalog entry's artifactUrl + sha256 ARE this version's bytes, so a
+      // force re-download here is honest (repairs a corrupt client stage).
+      const dest = await provisionCatalogToRuntime(runtime, known.catalogEntry, force)
+      known.installed = true
+      known.installedVersion = version
+      return dest
+    }
+
+    // Pinned to an OLDER version than the catalog's latest. This single-version
+    // catalog entry only points at LATEST's artifact + sha256, so re-downloading
+    // would extract latest's bytes into the pinned <id>/<version> dir (the sha256
+    // still matches — it's latest's — masking the swap). Never fetch here: serve the
+    // already-staged pinned bytes, re-extracting them host-side on `force` WITHOUT
+    // re-fetching. If they aren't staged we can't honestly reproduce them from this
+    // entry — surface a repair/update error rather than run latest mislabeled.
+    if (!isStaged(id, version)) {
+      throw new Error(
+        `extension ${id}@${version} is not staged and the catalog only offers ${latest}; reinstall or update it`,
+      )
+    }
+    const dest = await provisionStagedToRuntime(runtime, id, version, force)
     known.installed = true
     // Keep installedVersion in sync with what we actually served (never jump it to
     // latest here — that would silently clear updateAvailable without an update).
@@ -283,14 +314,20 @@ export class ExtensionManager {
   async provisionAllEnabled(runtime: Runtime): Promise<void> {
     await this.refresh()
     const enabled = new Set(getSetting('enabledExtensions'))
-    for (const id of this.known.keys()) {
-      if (!enabled.has(id)) continue
-      try {
-        await this.ensureProvisioned(id, runtime)
-      } catch (err) {
-        log.warn('[extensions] eager provision of %s to %s failed: %O', id, runtime.id, err)
-      }
-    }
+    // Each extension provisions independently, so run them concurrently — one slow
+    // artifact must not stall the rest. Failures are logged per-extension (never
+    // thrown), so allSettled is belt-and-suspenders against an unexpected throw.
+    await Promise.allSettled(
+      Array.from(this.known.keys())
+        .filter((id) => enabled.has(id))
+        .map(async (id) => {
+          try {
+            await this.ensureProvisioned(id, runtime)
+          } catch (err) {
+            log.warn('[extensions] eager provision of %s to %s failed: %O', id, runtime.id, err)
+          }
+        }),
+    )
   }
 
   /** Mark an extension's bytes as changed: bump its generation so every host's
@@ -352,11 +389,30 @@ export class ExtensionManager {
     this.invalidateProvisioned(extensionId)
   }
 
-  /** Re-download a catalog extension's current version over the installed copy
-   *  (repairs a corrupt/partial install). Leaves enable state untouched. */
+  /** Repair the CURRENTLY installed version of a catalog extension in place —
+   *  re-provision its bytes without moving installedVersion forward to the
+   *  catalog's latest (that is update()'s job). Leaves enable state untouched. */
   async reinstall(extensionId: string): Promise<{ ok: boolean; error?: string }> {
     try {
-      await this.installCatalogExtension(extensionId, true)
+      const known = this.known.get(extensionId)
+      if (!known) throw new Error(`Unknown extension: ${extensionId}`)
+      if (known.source !== 'catalog' || !known.catalogEntry) {
+        throw new Error(`Extension ${extensionId} is not a catalog extension`)
+      }
+      const latest = known.catalogEntry.manifest.version ?? '0.0.0'
+      const version = known.installedVersion ?? latest
+      // Only re-download when the installed version IS the catalog's latest — the
+      // entry's artifact + sha256 are that version's bytes. For a pinned older
+      // version the catalog only offers latest, so re-fetching would poison the
+      // pinned stage; repair it by re-extracting the already-staged bytes host-side
+      // (the generation bump below forces that on next use). installedVersion is
+      // never advanced here.
+      if (version === latest) {
+        await stageArtifact(known.catalogEntry, true)
+      }
+      // Bump the bytes generation so every host force re-extracts on next use (a
+      // same-version repair must actually repair the host copy, not just re-stage).
+      this.invalidateProvisioned(extensionId)
       // Stop the running server so the next panel open spawns the fresh bytes
       // (the old process keeps serving stale assets until it's killed).
       await this.stopServer(extensionId)

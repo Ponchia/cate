@@ -20,6 +20,7 @@ import { revealPanel } from '../lib/workspace/panelReveal'
 import { placementForActivePanel } from '../lib/workspace/canvasAccess'
 import { setPendingReveal } from '../lib/editor/editorReveal'
 import { toAbsolutePath, pathKey } from '../../shared/pathUtils'
+import { parseLocator, formatLocator } from '../../main/runtime/locator'
 import type { PanelType, Point } from '../../shared/types'
 import type { PanelPlacement } from '../stores/appStore'
 
@@ -65,13 +66,23 @@ function asRecord(value: unknown): Record<string, unknown> {
 function resolveWorkspacePath(workspaceId: string, filePath: string): string | null {
   const rootPath = useAppStore.getState().workspaces.find((w) => w.id === workspaceId)?.rootPath
   if (!rootPath) return null
+  // A REMOTE workspace stores rootPath as a locator URI
+  // (cate-runtime://<id>/<path>), but cate.workspace.get hands the extension the
+  // BARE path. So an extension that round-trips workspace.get and passes back an
+  // absolute path lands us here with a bare path to compare against a locator
+  // root — the containment check would wrongly reject it. Normalize BOTH sides to
+  // the same bare-path form (the runtime-native path) before comparing, then
+  // re-attach the locator scheme on the way out so downstream open code still
+  // routes to the correct runtime. Local roots have no scheme, so this is a no-op
+  // for them (bareRoot === rootPath, runtimeId === 'local').
+  const { runtimeId, path: bareRoot } = parseLocator(rootPath)
   // Collapse `.`/`..` segments before checking containment so a traversal like
   // `../../etc/passwd` can't slip past a naive prefix match.
-  const normalized = normalizeSegments(toAbsolutePath(filePath, rootPath))
-  const rootKey = pathKey(rootPath)
+  const normalized = normalizeSegments(toAbsolutePath(filePath, bareRoot))
+  const rootKey = pathKey(bareRoot)
   const key = pathKey(normalized)
   if (key !== rootKey && !key.startsWith(rootKey + '/')) return null
-  return normalized
+  return formatLocator({ runtimeId, path: normalized })
 }
 
 /** Resolve `.` / `..` segments in an absolute path WITHOUT touching the fs (this

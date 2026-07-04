@@ -14,6 +14,7 @@ import { flushUIStateSync } from '../uiStateStore'
 import { releaseAllProjectLocks } from '../projectLock'
 import { runtimes } from '../runtime/runtimeManager'
 import { extensionServerManager } from '../extensions/ExtensionServerManager'
+import { flushAllPendingWritesSync as flushExtensionStoragesSync } from '../extensions/storage'
 import { isUpdatePendingInstall } from '../auto-updater'
 import {
   SESSION_FLUSH_SAVE,
@@ -269,6 +270,9 @@ export function registerLifecycleHandlers(): void {
     flushWorkspaceStateSync()
     // And the ui-state.json file (minimap placement).
     flushUIStateSync()
+    // And every live extension storage: a panel/server set() within the debounce
+    // window resolved its promise but hadn't hit disk yet — persist it now.
+    flushExtensionStoragesSync()
     // Drop per-project locks so a co-running instance can take over immediately
     // (a crash skips this; the next instance reclaims the stale lock by pid).
     releaseAllProjectLocks()

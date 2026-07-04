@@ -111,13 +111,33 @@ export class ExtensionServerManager {
    *  withLock(key). */
   private async ensureServerLocked(extensionId: string, workspaceId: string): Promise<ServerEndpoint> {
     const session = this.getOrCreateSession(extensionId, workspaceId)
-    if (session.state === 'READY' && session.handle) {
-      return { runtime: session.runtime, port: session.handle.port, token: session.token }
-    }
+    // Reuse a live server — including a straggler that lands during GRACE (the
+    // 30s window after the last panel left, where the handle is still up). Without
+    // this, a GRACE-window request would fall through to startServer and spawn a
+    // SECOND child, overwriting handle/cateApi and orphaning the first process.
+    const live = this.reuseLiveServer(session)
+    if (live) return live
     await this.startServer(session)
     if (!session.handle) {
       throw new Error(session.lastError ?? 'Extension server failed to start')
     }
+    return { runtime: session.runtime, port: session.handle.port, token: session.token }
+  }
+
+  /** If the session already holds a live server (READY, or GRACE within the 30s
+   *  window), cancel any pending grace timer, transition GRACE→READY, and return
+   *  the live endpoint — reusing the server instead of spawning a second one.
+   *  Returns null when there is no live handle to reuse (IDLE / SPAWNING /
+   *  STOPPING / CRASHED / ERROR). Shared by ensureServerLocked and joinPanel. */
+  private reuseLiveServer(session: ServerSession): ServerEndpoint | null {
+    if (!session.handle || (session.state !== 'READY' && session.state !== 'GRACE')) {
+      return null
+    }
+    if (session.graceTimer) {
+      clearTimeout(session.graceTimer)
+      session.graceTimer = null
+    }
+    session.state = 'READY'
     return { runtime: session.runtime, port: session.handle.port, token: session.token }
   }
 
@@ -136,13 +156,10 @@ export class ExtensionServerManager {
     // a now-disabled extension.
     return this.withLock(key, async () => {
       const session = this.getOrCreateSession(extensionId, workspaceId)
-      if (session.graceTimer) {
-        clearTimeout(session.graceTimer)
-        session.graceTimer = null
-        if (session.state === 'GRACE') session.state = 'READY'
-      }
       session.panels.add(panelId)
       session.owners.set(panelId, sender)
+      // ensureServerLocked reuses a live server (cancelling any grace timer +
+      // GRACE→READY) or spawns one — no separate grace handling needed here.
       return this.ensureServerLocked(extensionId, workspaceId)
     })
   }
@@ -204,28 +221,64 @@ export class ExtensionServerManager {
   }
 
   /**
-   * Stop ALL servers for one extension, across every workspace. Sessions are
-   * keyed `"${extensionId} ${workspaceId}"`, so we match on the session's
-   * `extensionId` field (not the key string). Called when the extension's
-   * bytes/enable-state change (disable, uninstall, update, reinstall) so a
-   * stale or now-disabled process isn't left running. Mirrors disposeAll: take
-   * the per-key lock, clear any grace timer, stop the server, drop the session.
+   * Shared teardown loop for stopForExtension / disposeForRuntime / disposeAll:
+   * select every session matching `predicate`, then per session under the
+   * per-key lock cancel any pending grace timer, tear the server down, and drop
+   * the session from the map.
+   *
+   * `opts.stopRpc` selects HOW the server is torn down:
+   *  - true  → issue the runtime stop RPC via stopServer() (STOPPING → stop →
+   *            teardownCateApi → IDLE). For a live runtime we still own.
+   *  - false → the runtime has already DISCONNECTED, so its child processes are
+   *            gone with the transport and a stop RPC would only reject. Release
+   *            local state only: teardownCateApi (fire-and-forget, safe against a
+   *            dead runtime) + drop the stale handle + reset to IDLE.
+   *
+   * (Grace-timer handling is unified to always clear AND null the timer. The
+   * old stopForExtension/disposeAll only cleared it, but they delete the session
+   * in the same tick so the un-nulled field was unobservable — nulling matches
+   * disposeForRuntime and is strictly more complete.)
    */
-  async stopForExtension(extensionId: string): Promise<void> {
+  private async disposeSessions(
+    predicate: (session: ServerSession, key: string) => boolean,
+    opts: { stopRpc: boolean; onDisposed?: (key: string) => void },
+  ): Promise<void> {
     const keys = [...this.sessions.entries()]
-      .filter(([, session]) => session.extensionId === extensionId)
+      .filter(([key, session]) => predicate(session, key))
       .map(([key]) => key)
     await Promise.all(
       keys.map((key) =>
         this.withLock(key, async () => {
           const session = this.sessions.get(key)
           if (!session) return
-          if (session.graceTimer) clearTimeout(session.graceTimer)
-          await this.stopServer(session)
+          if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null }
+          if (opts.stopRpc) {
+            await this.stopServer(session)
+          } else {
+            // teardownCateApi's tunnel.stopListen is fire-and-forget (swallows
+            // its own rejection), so it's safe against a dead runtime — it just
+            // frees the main-side reverse endpoint + inbound duplexes.
+            this.teardownCateApi(session)
+            session.handle = null
+            session.state = 'IDLE'
+          }
           this.sessions.delete(key)
+          opts.onDisposed?.(key)
         }),
       ),
     )
+  }
+
+  /**
+   * Stop ALL servers for one extension, across every workspace. Sessions are
+   * keyed `"${extensionId} ${workspaceId}"`, so we match on the session's
+   * `extensionId` field (not the key string). Called when the extension's
+   * bytes/enable-state change (disable, uninstall, update, reinstall) so a
+   * stale or now-disabled process isn't left running. Takes the per-key lock,
+   * clears any grace timer, stops the server (RPC), and drops the session.
+   */
+  async stopForExtension(extensionId: string): Promise<void> {
+    await this.disposeSessions((session) => session.extensionId === extensionId, { stopRpc: true })
   }
 
   /**
@@ -239,46 +292,19 @@ export class ExtensionServerManager {
    * rebuilds it fresh against the reconnected runtime (instead of short-
    * circuiting on the READY+handle guard and handing back a dead port → 502).
    * Sessions are keyed `"${extensionId} ${workspaceId}"`, so we match on the
-   * session's `runtime.id`. Mirrors disposeAll's structure, minus the stop RPC.
+   * session's `runtime.id`. Same teardown as disposeAll, minus the stop RPC.
    */
   async disposeForRuntime(runtimeId: string): Promise<void> {
-    const keys = [...this.sessions.entries()]
-      .filter(([, session]) => session.runtime.id === runtimeId)
-      .map(([key]) => key)
-    await Promise.all(
-      keys.map((key) =>
-        this.withLock(key, async () => {
-          const session = this.sessions.get(key)
-          if (!session) return
-          if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null }
-          // teardownCateApi's tunnel.stopListen is fire-and-forget (swallows its
-          // own rejection), so it's safe against a dead runtime — it just frees
-          // the main-side reverse endpoint + inbound duplexes.
-          this.teardownCateApi(session)
-          session.handle = null
-          session.state = 'IDLE'
-          this.sessions.delete(key)
-          log.info('[ext-server] runtime %s disconnected, dropped %s', runtimeId, key)
-        }),
-      ),
-    )
+    await this.disposeSessions((session) => session.runtime.id === runtimeId, {
+      stopRpc: false,
+      onDisposed: (key) => log.info('[ext-server] runtime %s disconnected, dropped %s', runtimeId, key),
+    })
   }
 
   /** Stop every server (app quit). The daemon already kills its children on
    *  transport close, so this is best-effort belt-and-suspenders. */
   async disposeAll(): Promise<void> {
-    const keys = [...this.sessions.keys()]
-    await Promise.all(
-      keys.map((key) =>
-        this.withLock(key, async () => {
-          const session = this.sessions.get(key)
-          if (!session) return
-          if (session.graceTimer) clearTimeout(session.graceTimer)
-          await this.stopServer(session)
-          this.sessions.delete(key)
-        }),
-      ),
-    )
+    await this.disposeSessions(() => true, { stopRpc: true })
   }
 
   // --- Accessors for the error UI -------------------------------------------
@@ -331,7 +357,15 @@ export class ExtensionServerManager {
   /** Build ServerStartOptions from the manifest and spawn the server, blocking
    *  until the ready probe passes. Sets handle + READY, or ERROR + lastError. */
   private async startServer(session: ServerSession): Promise<void> {
-    if (session.state === 'READY' && session.handle) return
+    // Defensive: never spawn over a live handle. A caller holding a running
+    // server (READY, or a straggler during GRACE) should have reused it via
+    // reuseLiveServer; if we still got here with a live handle, reuse it rather
+    // than orphaning the process and double-listening the CATE_API listenerId.
+    if (session.handle && (session.state === 'READY' || session.state === 'GRACE')) {
+      if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null }
+      session.state = 'READY'
+      return
+    }
 
     // Re-check enable state under the lock: a disable() may have landed after this
     // panel joined (its stopForExtension serializes on the same lock). Bail before

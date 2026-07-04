@@ -24,8 +24,10 @@
 // (suppressing our own write echo by content compare).
 // =============================================================================
 
+import fs from 'fs'
+import path from 'path'
 import log from '../logger'
-import { parseLocator, type RuntimeId } from '../runtime/locator'
+import { LOCAL_RUNTIME_ID, parseLocator, type RuntimeId } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import { getWorkspaceInfo } from '../workspaceManager'
 import { hostJoin } from '../../agent/main/agentDir'
@@ -54,15 +56,25 @@ export interface ExtensionStorage {
 
 interface Store {
   handle: ExtensionStorage
-  /** Flush nothing / stop the watcher and release resources. Called when a
-   *  runtime disconnects (disposeStoresForRuntime) so we don't strand a watcher
-   *  bound to a dead runtime handle. */
+  /** Synchronously persist any pending debounced write, then cancel the timer,
+   *  stop the watcher and release resources. Called when a runtime disconnects
+   *  (disposeStoresForRuntime) so we don't strand a watcher bound to a dead
+   *  runtime handle — and don't drop a set() that was still inside the debounce. */
   dispose(): void
+  /** Synchronously persist any pending debounced write and cancel the timer,
+   *  without tearing the store down. Best-effort — only a local-runtime store can
+   *  be written synchronously (a remote host is reachable only over the async
+   *  transport, which is gone by hard-exit). Used by flushAllPendingWritesSync. */
+  flushSync(): void
 }
 
 // Cache keyed by `<runtimeId>\0<hostFilePath>`; the promise is stored so two
 // concurrent first-callers share one async load instead of racing two stores.
 const stores = new Map<string, Promise<Store>>()
+
+// Synchronous registry of the RESOLVED stores, so the quit-path flush can persist
+// every live store's pending write without awaiting the (cache) promises.
+const liveStores = new Set<Store>()
 
 /** Resolve a workspace id to its runtime + host project root, or null. */
 function locate(workspaceId: string): { runtime: Runtime; root: string } | null {
@@ -132,9 +144,41 @@ async function createStore(runtimeId: RuntimeId, file: string): Promise<Store> {
     writeTimer.unref?.()
   }
 
+  const notify = (): void => {
+    for (const cb of subscribers) {
+      try { cb() } catch { /* a subscriber throwing must not block others */ }
+    }
+  }
+
+  /** Flush the in-memory data to disk synchronously. Only viable for the local
+   *  runtime (a real fs path); mirrors the async writeFile discipline (mkdir the
+   *  parent, plain write — no temp+rename). Guarded so it can't throw on shutdown. */
+  const flushSync = (): void => {
+    const hadTimer = writeTimer != null
+    if (writeTimer) { clearTimeout(writeTimer); writeTimer = null }
+    const json = JSON.stringify(data, null, 2)
+    // Nothing pending: no debounced timer AND the latest value is already durable.
+    if (!hadTimer && json === lastWritten) return
+    if (runtimeId !== LOCAL_RUNTIME_ID) return
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, json)
+      lastWritten = json
+    } catch (err) {
+      log.warn('[extensions] storage sync flush failed %s: %O', file, err)
+    }
+  }
+
   const update = (fn: (cur: StorageShape) => StorageShape): void => {
-    data = fn(data)
+    const before = data
+    const next = fn(data)
+    data = next
     scheduleWrite()
+    // Notify same-process subscribers directly. The watcher suppresses our own
+    // write as an echo, so set()/delete()/panelSet() (incl. a server write via
+    // CATE_API) would otherwise never fire another panel's onChange. Compare
+    // before/after so a no-op write doesn't spuriously fire subscribers.
+    if (JSON.stringify(before) !== JSON.stringify(next)) notify()
   }
 
   const ensureWatching = (): void => {
@@ -149,9 +193,7 @@ async function createStore(runtimeId: RuntimeId, file: string): Promise<Store> {
         const json = JSON.stringify(fresh, null, 2)
         if (json === lastWritten) return // our own write echoed back
         data = fresh
-        for (const cb of subscribers) {
-          try { cb() } catch { /* a subscriber throwing must not block others */ }
-        }
+        notify()
       })()
     })
   }
@@ -218,14 +260,21 @@ async function createStore(runtimeId: RuntimeId, file: string): Promise<Store> {
     },
   }
 
-  return {
+  const store: Store = {
     handle,
+    flushSync,
     dispose() {
+      // Persist any pending write BEFORE dropping the timer, so a runtime
+      // disconnect (or eviction) doesn't lose a set() still inside the debounce.
+      flushSync()
       if (writeTimer) { clearTimeout(writeTimer); writeTimer = null }
       subscribers.clear()
       stopWatching()
+      liveStores.delete(store)
     },
   }
+  liveStores.add(store)
+  return store
 }
 
 /**
@@ -263,5 +312,18 @@ export function disposeStoresForRuntime(runtimeId: RuntimeId): void {
     const entry = stores.get(key)
     stores.delete(key)
     void entry?.then((s) => s.dispose()).catch(() => { /* creation failed; nothing to dispose */ })
+  }
+}
+
+/**
+ * Synchronously persist every live store's pending debounced write. Mirrors
+ * settingsFile.flushPendingWritesSync and is wired into the quit path
+ * (lifecycle/shutdown.ts) so a set() within the ~150ms debounce window survives an
+ * immediate quit. Best-effort: only local-runtime stores can be written
+ * synchronously, and each store guards its own write, so this never throws.
+ */
+export function flushAllPendingWritesSync(): void {
+  for (const store of [...liveStores]) {
+    try { store.flushSync() } catch { /* best-effort during shutdown */ }
   }
 }

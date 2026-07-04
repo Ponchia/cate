@@ -5,7 +5,10 @@
 // in-memory FileHost registered under LOCAL, so no real fs/daemon is involved.
 // =============================================================================
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/cate-userData' } }))
 vi.mock('../logger', () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
@@ -17,7 +20,7 @@ vi.mock('../workspaceManager', () => ({ getWorkspaceInfo }))
 import { runtimes } from '../runtime/runtimeManager'
 import { LOCAL_RUNTIME_ID } from '../runtime/locator'
 import type { Runtime } from '../runtime/types'
-import { getExtensionStorage, disposeStoresForRuntime } from './storage'
+import { getExtensionStorage, disposeStoresForRuntime, flushAllPendingWritesSync } from './storage'
 
 const EXT = 'cate.test'
 const ROOT = '/proj'
@@ -103,5 +106,53 @@ describe('storage — watcher teardown on last unsubscribe', () => {
     expect(a.liveWatchers()).toBe(1) // still one subscriber
     off2()
     expect(a.liveWatchers()).toBe(0) // watcher disposed, not left live
+  })
+})
+
+describe('storage — same-process onChange (BUG 1)', () => {
+  it('fires an onChange subscriber when a set() changes a key in the same store', async () => {
+    const a = makeFakeRuntime('A')
+    runtimes.registerLocalForTest(a.runtime)
+
+    const s = await getExtensionStorage(EXT, 'ws')
+    let fired = 0
+    s!.onChange(() => { fired++ })
+
+    s!.set('k', 'v')
+    expect(fired).toBe(1) // direct notification, not via the (echo-suppressed) watcher
+
+    s!.set('k', 'v') // no-op write — value unchanged, must NOT fire again
+    expect(fired).toBe(1)
+
+    s!.delete('k')
+    expect(fired).toBe(2)
+  })
+})
+
+describe('storage — synchronous flush on quit (BUG 2)', () => {
+  // A real temp project root so flushAllPendingWritesSync's writeFileSync has a
+  // native path to land on (the local runtime uses path.join / bare fs paths).
+  const realRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cate-storage-flush-')))
+  const file = path.join(realRoot, '.cate', 'extensions', EXT, 'storage.json')
+
+  afterAll(() => { fs.rmSync(realRoot, { recursive: true, force: true }) })
+
+  it('flushAllPendingWritesSync persists pending debounced data synchronously', async () => {
+    // Point the workspace at the REAL root so the store writes to disk; register a
+    // fake runtime whose async writeFile is a no-op (so only the sync flush lands).
+    getWorkspaceInfo.mockImplementation((id: string) => (id === 'ws2' ? { rootPath: realRoot } : undefined))
+    const a = makeFakeRuntime('A')
+    runtimes.registerLocalForTest(a.runtime)
+
+    const s = await getExtensionStorage(EXT, 'ws2')
+    s!.set('pending', 42) // schedules a debounced write (150ms) — not on disk yet
+    expect(fs.existsSync(file)).toBe(false)
+
+    flushAllPendingWritesSync() // simulates the quit path
+
+    expect(fs.existsSync(file)).toBe(true)
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).pending).toBe(42)
+
+    disposeStoresForRuntime(LOCAL_RUNTIME_ID)
   })
 })

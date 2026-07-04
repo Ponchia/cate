@@ -46,13 +46,16 @@ vi.mock('./catalog', () => ({
 vi.mock('./download', () => ({
   stageArtifact: vi.fn(async () => ({ id: 'cate.test', version: catalogState.version, tgzPath: '/tmp/x.tgz' })),
   stagedVersions: vi.fn(async () => stagedState.versions),
+  isStaged: vi.fn((_id: string, version: string) => stagedState.versions.includes(version)),
   removeStaged: vi.fn(),
   removeStagedVersionsExcept: vi.fn(),
 }))
 
 const provisionCatalog = vi.hoisted(() => vi.fn())
+const provisionStaged = vi.hoisted(() => vi.fn())
 vi.mock('./install', () => ({
   provisionCatalogToRuntime: provisionCatalog,
+  provisionStagedToRuntime: provisionStaged,
   provisionSideloadToRuntime: vi.fn(async () => '/host/sideload'),
 }))
 
@@ -86,8 +89,10 @@ beforeEach(() => {
   disconnectCb = null
   disposeForRuntime.mockClear()
   provisionCatalog.mockReset()
-  // Each catalog provision returns the host dir for its (id, version).
+  provisionStaged.mockReset()
+  // Each provision returns the host dir for its (id, version).
   provisionCatalog.mockImplementation(async () => '/host/cate.test/1.0.0')
+  provisionStaged.mockImplementation(async () => '/host/cate.test/1.0.0')
   extensionManager = new ExtensionManager()
 })
 
@@ -196,10 +201,16 @@ describe('ExtensionManager provisioning', () => {
     expect(before.installedVersion).toBe('1.0.0')
     expect(before.updateAvailable).toBe(true)
 
-    // Opening/provisioning a panel must serve 1.0, NOT silently pull 2.0.
+    // Opening/provisioning a panel must serve 1.0, NOT silently pull 2.0. Because
+    // the single-version catalog entry only points at 2.0's artifact, the pinned
+    // 1.0 must be served from its ALREADY-STAGED bytes (provisionStagedToRuntime),
+    // never re-fetched through provisionCatalogToRuntime (that would download 2.0's
+    // bytes into the 1.0 dir, sha256-matching 2.0, and run the wrong code).
     await extensionManager.ensureProvisioned('cate.test', fakeRuntime as never)
-    const entry = provisionCatalog.mock.calls.at(-1)![1] as { manifest: { version: string } }
-    expect(entry.manifest.version).toBe('1.0.0')
+    expect(provisionCatalog).not.toHaveBeenCalled()
+    const stagedCall = provisionStaged.mock.calls.at(-1)!
+    expect(stagedCall[1]).toBe('cate.test')
+    expect(stagedCall[2]).toBe('1.0.0')
 
     // installedVersion stays 1.0 and updateAvailable stays true (no silent update).
     const after = extensionManager.list().find((e) => e.manifest.id === 'cate.test')!
