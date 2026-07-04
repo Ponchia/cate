@@ -63,27 +63,32 @@ cate.panel.setTitle(title)
 cate.workspace.get()                           // { rootPath, branch, worktree }  (branch/worktree null for now)
 cate.theme.get()                               // { id, type, app, terminal } theme tokens
 cate.editor.openFile(path, { line?, column? }) // path is confined to the workspace root
-cate.canvas.createPanel(type, { position?, size?, props? })
+cate.canvas.createPanel(type, {                // type: 'browser' | 'editor' | 'extension'
+  position?, url?, filePath?,                  // filePath confined to the workspace root
+  extensionId?, extensionPanelId? })           // 'extension': panelId required, id defaults to caller
 cate.ui.notify(message, level?)
 cate.files.onDrop(cb)                          // files dropped on this panel: [{ name, path, text, size?, truncated? }]
 cate.storage.get(key) / set(key, value) / delete(key) / keys()   // JSON KV, extension-scoped, persisted to <project>/.cate
 cate.storage.panel.get(key) / set(key, value)  // panel-scoped slice, keyed by cate.panel.id
 cate.storage.onChange(cb)                       // fires on external edits and writes from other panels
-cate.agent.run({ prompt }) => { text }          // run ONE background turn through the bundled pi agent
-cate.agent.cancel()                             // abort this extension's in-flight run
+cate.agent.open({ resume? }) => { sessionId }   // open (or resume) an agent session
+cate.agent.send(sessionId, prompt) => { text, message }   // run one turn on an open session
+cate.agent.dispose(sessionId)                   // tear down the live session (its file stays; reopen via resume)
+cate.agent.run(prompt) => { text, message }     // one-shot sugar: open -> send -> dispose
+cate.agent.cancel()                             // abort this extension's in-flight turn
 ```
 
 `cateApi` scopes in the manifest declare which namespaces an extension uses; the host enforces them (default-deny) and Cate surfaces them as the extension's permissions in Settings → Extensions.
 
 ### Agent (`agent` scope)
 
-`cate.agent.run` lets an extension run a single agent turn through Cate's bundled pi agent, using the user's configured default model and credentials, and resolves with the final assistant text. The run is a real, visible Agent-panel-style session bound to the active window — the user can watch and interrupt it. Guardrails are deliberately minimal in v1:
+`cate.agent` lets an extension drive Cate's bundled pi agent, using the user's configured default model and credentials. It is turn-based and session-oriented: `open` starts (or, with `resume`, reopens) a session and returns its handle, `send` runs one turn and resolves with the final assistant text plus the raw final message, `dispose` tears the live session down (pi's session file stays, so a conversation can be resumed later with nothing persisted on Cate's side), and `run` is one-shot sugar over open/send/dispose. The run is a real, visible Agent-panel-style session bound to the active window — the user can watch and interrupt it. Guardrails are deliberately minimal in v1:
 
 - A dedicated **`agent` scope** (default-deny, shown at install) — never folded into another namespace.
-- **First-use consent**: the first `cate.agent.run` per extension prompts the user; the grant lasts the app session.
-- **One run at a time per extension**: a concurrent `run` returns `{ error: 'agent-busy' }`. This is the whole anti-runaway-loop guard for v1; token/cost budgets and rate limits are intentionally deferred.
+- **First-use consent**: the first agent call per extension prompts the user; the grant lasts the app session.
+- **One live session per extension, one turn in flight**: a concurrent turn returns `{ error: 'agent-busy' }`. This is the whole anti-runaway-loop guard for v1; token/cost budgets and rate limits are intentionally deferred.
 
-`cate.agent.run` is long-lived (a turn takes minutes); it resolves on the agent's terminal `agent_end`, so callers must not impose a short timeout.
+Turns are long-lived (minutes); `send`/`run` resolve on the agent's terminal `agent_end`, so callers must not impose a short timeout.
 
 ### File drops (`files.drop` scope)
 
