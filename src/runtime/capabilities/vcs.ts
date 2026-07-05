@@ -22,6 +22,34 @@ import type { VcsHost } from '../../main/runtime/types'
 
 const execFileP = promisify(execFile)
 
+/** Best-effort symlink of workspace-root-relative paths (e.g. node_modules,
+ *  build output) from the source checkout into a freshly created worktree, so
+ *  heavy artifacts don't need reinstalling per worktree. Each entry is resolved
+ *  relative to the source root; absolute or parent-escaping entries and missing
+ *  sources are skipped. Existing files in the worktree are never clobbered, and
+ *  a single failure never aborts worktree creation. */
+async function linkWorktreePaths(
+  sourceRoot: string,
+  worktreePath: string,
+  relPaths: string[] | undefined,
+): Promise<void> {
+  for (const raw of relPaths ?? []) {
+    const rel = raw.trim().replace(/^[/\\]+/, '')
+    if (!rel || rel.split(/[/\\]/).includes('..')) continue
+    const src = path.join(sourceRoot, rel)
+    const dest = path.join(worktreePath, rel)
+    try {
+      const stat = await fsp.stat(src) // follows links; source must exist
+      const occupied = await fsp.lstat(dest).then(() => true, () => false)
+      if (occupied) continue
+      await fsp.mkdir(path.dirname(dest), { recursive: true })
+      await fsp.symlink(src, dest, stat.isDirectory() ? 'junction' : 'file')
+    } catch {
+      // Source missing or link failed — skip this entry silently.
+    }
+  }
+}
+
 export interface VcsCapabilityDeps {
   /** Environment for `git`/`gh` subprocesses (login-shell PATH locally). */
   env: () => NodeJS.ProcessEnv
@@ -45,6 +73,37 @@ export function createVcsCapability(deps: VcsCapabilityDeps): VcsHost {
       return true
     } catch {
       return false
+    }
+  }
+
+  // Directory names we never descend into while scanning for sub-repos: heavy
+  // build/vendor output that can't itself be a workspace repo we'd surface.
+  // (Repos we DO find are never descended into either — see findReposFrom.)
+  const SCAN_SKIP_DIRS = new Set([
+    'node_modules', 'dist', 'build', 'out', 'target', 'vendor',
+    '.git', '.cache', '.next', '.turbo', '.venv', 'venv', '__pycache__',
+  ])
+
+  /** Recursively collect git-repo directories at or below `dir`, descending at
+   *  most `maxDepth` levels and stopping at each repo (so we never walk into a
+   *  found repo's own tree, node_modules, or dot-directories). `depth` is how
+   *  many levels below the original root `dir` sits. */
+  async function findReposFrom(dir: string, depth: number, maxDepth: number, out: string[]): Promise<void> {
+    if (await isGitRepo(dir)) {
+      out.push(dir)
+      return // a repo is a leaf for discovery — don't descend into it
+    }
+    if (depth >= maxDepth) return
+    let entries: import('fs').Dirent[]
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true })
+    } catch {
+      return // unreadable dir — skip silently
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (entry.name.startsWith('.') || SCAN_SKIP_DIRS.has(entry.name)) continue
+      await findReposFrom(path.join(dir, entry.name), depth + 1, maxDepth, out)
     }
   }
 
@@ -77,6 +136,11 @@ export function createVcsCapability(deps: VcsCapabilityDeps): VcsHost {
   return {
     async isRepo(dir) {
       return isGitRepo(validateCwd(dir))
+    },
+    async findRepos(dir, maxDepth) {
+      const out: string[] = []
+      await findReposFrom(validateCwd(dir), 0, Math.max(1, maxDepth ?? 1), out)
+      return out
     },
     async init(dir) {
       await simpleGit(validateCwd(dir)).init()
@@ -233,9 +297,10 @@ export function createVcsCapability(deps: VcsCapabilityDeps): VcsHost {
       await git.raw(args)
       // TODO(scope): pass requesting workspace scope once threaded.
       addAllowedRoot(targetPath)
+      await linkWorktreePaths(validateCwd(repoCwd), targetPath, options?.symlinkPaths)
       return { path: targetPath, branch }
     },
-    async worktreeAddFromPr(repoCwd, prNumber, targetPath) {
+    async worktreeAddFromPr(repoCwd, prNumber, targetPath, options) {
       const validRepo = validateCwd(repoCwd)
       const git = simpleGit(validRepo)
       if (!(await ghAvailable(validRepo))) throw new Error('GitHub CLI (gh) is required to check out pull requests.')
@@ -252,6 +317,7 @@ export function createVcsCapability(deps: VcsCapabilityDeps): VcsHost {
         throw new Error(`Could not check out PR #${prNumber}: ${error instanceof Error ? error.message : String(error)}`)
       }
       const branch = (await simpleGit(targetPath).raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+      await linkWorktreePaths(validRepo, targetPath, options?.symlinkPaths)
       return { path: targetPath, branch }
     },
     async worktreeRemove(repoCwd, worktreePath, options) {

@@ -23,7 +23,7 @@ import {
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react'
 import { CateLogo } from '../ui/CateLogo'
-import type { PanelType, Point } from '../../shared/types'
+import type { PanelType, Point, BrowserTab } from '../../shared/types'
 import type { PanelPlacement } from '../stores/appStore'
 import { useAppStore } from '../stores/appStore'
 import { PANEL_DEFINITIONS, type SharedPanelDefinition } from '../../shared/panels'
@@ -164,7 +164,7 @@ export function getPanelDef(type: PanelType | string): RendererPanelDefinition {
  *  the panel state itself, so callers don't need to know which extras any
  *  given type expects. Caller wraps in <Suspense> at the boundary it wants. */
 export function renderPanelComponent(
-  panel: { type: PanelType; id: string; filePath?: string; url?: string; proxyUrl?: string; extensionId?: string; extensionPanelId?: string },
+  panel: { type: PanelType; id: string; filePath?: string; url?: string; proxyUrl?: string; tabs?: BrowserTab[]; activeTabId?: string; extensionId?: string; extensionPanelId?: string },
   ctx: { workspaceId: string; nodeId: string; zoomLevel?: number },
 ): React.ReactElement | null {
   const def = PANEL_REGISTRY[panel.type]
@@ -177,6 +177,8 @@ export function renderPanelComponent(
   if (panel.type === 'browser') {
     extras.url = panel.url
     extras.proxyUrl = panel.proxyUrl
+    extras.tabs = panel.tabs
+    extras.activeTabId = panel.activeTabId
     extras.zoomLevel = ctx.zoomLevel ?? 1
   }
   if (panel.type === 'extension') {

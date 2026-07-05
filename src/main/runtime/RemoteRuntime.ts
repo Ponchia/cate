@@ -272,6 +272,7 @@ export class RemoteRuntime implements Runtime {
 
     this.vcs = {
       isRepo: (dir) => call<boolean>(Methods.vcsIsRepo, [dir]),
+      findRepos: (dir, maxDepth) => call<string[]>(Methods.vcsFindRepos, [dir, maxDepth]),
       init: (dir) => call<void>(Methods.vcsInit, [dir]),
       lsFiles: (dir) => call<string[]>(Methods.vcsLsFiles, [dir]),
       status: (cwd) => call<GitStatusResult>(Methods.vcsStatus, [cwd]),
@@ -295,8 +296,8 @@ export class RemoteRuntime implements Runtime {
       worktreeList: (cwd) => call<Worktree[]>(Methods.vcsWorktreeList, [cwd]),
       worktreeAdd: (repoCwd, branch, target, options) =>
         call<{ path: string; branch: string }>(Methods.vcsWorktreeAdd, [repoCwd, branch, target, options]),
-      worktreeAddFromPr: (repoCwd, pr, target) =>
-        longCall<{ path: string; branch: string }>(Methods.vcsWorktreeAddFromPr, [repoCwd, pr, target]),
+      worktreeAddFromPr: (repoCwd, pr, target, options) =>
+        longCall<{ path: string; branch: string }>(Methods.vcsWorktreeAddFromPr, [repoCwd, pr, target, options]),
       worktreeRemove: (repoCwd, worktreePath, options) =>
         call<void>(Methods.vcsWorktreeRemove, [repoCwd, worktreePath, options]),
       worktreePrune: (repoCwd) => call<{ output: string }>(Methods.vcsWorktreePrune, [repoCwd]),

@@ -18,7 +18,7 @@ import { useDragStore, useDragSourceVisibility } from '../drag'
 import { useNodeResize } from '../hooks/useNodeResize'
 import { useCanvasNodeStyle } from './useCanvasNodeStyle'
 import { useCanvasNodeDrag } from './useCanvasNodeDrag'
-import { useGroupNodeDrag } from './useGroupNodeDrag'
+import { isSelected as isNodeSelected, isGroupDragMember } from '../stores/canvas/selectionModel'
 import { useNodeResizeCursor } from './useNodeResizeCursor'
 import { NodeResizeOverlay } from './NodeResizeOverlay'
 import type { DockStore } from '../stores/dockStore'
@@ -177,7 +177,7 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
   const focusNode = useCanvasStoreContext((s) => s.focusNode)
   const removeNode = useCanvasStoreContext((s) => s.removeNode)
   const toggleMaximize = useCanvasStoreContext((s) => s.toggleMaximize)
-  const isSelected = useCanvasStoreContext((s) => s.selectedNodeIds.has(nodeId))
+  const isSelected = useCanvasStoreContext((s) => isNodeSelected(s, nodeId))
   const isDockDragging = useDragStore((s) => s.isDragging)
   const { hidden: isWholeNodeDragSource } = useDragSourceVisibility(nodeId)
 
@@ -191,17 +191,18 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
     wasDragged,
   } = useCanvasNodeDrag(nodeId, dockStoreApi, canvasApi)
 
-  // Group move: when this node is part of a multi-selection, dragging it moves
-  // the whole selection together instead of running the single-node dock drag.
-  const { startGroupDrag } = useGroupNodeDrag(nodeId, canvasApi, wasDragged)
-
   // Wrap node-drag with the tab-vs-window routing. The tab bar uses this for
   // both empty-area mousedown (panelId undefined → whole node drag) and
   // individual tab mousedown (panelId set → detach that tab when the mini-dock
-  // has multiple panels, else whole-node drag).
+  // has multiple panels, else whole-node drag). When this node is part of a
+  // multi-selection, `handleDragStart` carries the group so the whole selection
+  // moves together — so grabbing a grouped tab moves the group, never detaches.
   const handleHeaderMouseDown = useCallback((e: React.MouseEvent, panelId?: string) => {
     if (handToolPanShouldWin(e)) return
-    if (startGroupDrag(e)) return
+    if (isGroupDragMember(canvasApi.getState().selection, nodeId)) {
+      handleDragStart(e)
+      return
+    }
     if (panelId) {
       const total = collectPanelIds(dockStoreApi.getState().zones.center.layout).length
       if (total > 1) {
@@ -210,7 +211,7 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
       }
     }
     handleDragStart(e)
-  }, [handleDragStart, handleTabDetachStart, dockStoreApi, startGroupDrag])
+  }, [handleDragStart, handleTabDetachStart, dockStoreApi, canvasApi, nodeId])
 
   const maximized = node ? checkMaximized(node) : false
 
@@ -525,7 +526,13 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
         canvasApi.getState().toggleNodeSelection(nodeId)
         return
       }
-      canvasApi.getState().selectNodes([nodeId])
+      // A plain click collapses any multi-selection to just this node and
+      // activates it. focusThisNode() → focusNode() does both (selection =
+      // [nodeId], selectionActive = true). Don't precede it with selectNodes():
+      // that sets selectionActive = false, and on an already-focused node we'd
+      // skip focusThisNode() and leave the node selected-but-inactive — the
+      // blue ring + lost mouse focus on the second click. An already-active
+      // node is already the sole selection, so it needs no change.
       if (!isFocused) {
         focusThisNode()
       }
@@ -545,10 +552,9 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
         handleToggleMaximize()
         return
       }
-      if (startGroupDrag(e)) return
       handleDragStart(e)
     },
-    [handleDragStart, handleToggleMaximize, startGroupDrag],
+    [handleDragStart, handleToggleMaximize],
   )
 
   const handleGrabStripContextMenu = useCallback(
@@ -681,6 +687,10 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
             if (isFocused || e.button !== 0) return
             if (handToolPanShouldWin(e)) return
             e.stopPropagation()
+            // In a multi-selection no node is active, so the press lands on this
+            // dim overlay rather than the title bar. handleDragStart carries the
+            // group when this node is part of a multi-selection, so grabbing any
+            // selected panel moves the whole group instead of collapsing to one.
             handleDragStart(e)
           }}
           onClick={(e) => {
@@ -723,6 +733,14 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
             style={{ position: 'relative', zIndex: 0, width: '100%', height: '100%' }}
             onMouseDownCapture={(e) => {
               if (e.button !== 0 || isFocused) return
+              // When this node is part of a live multi-selection, a press on it
+              // starts a GROUP drag (the bubble-phase handlers call handleDragStart,
+              // which carries the selection). Focusing here would run first
+              // (capture beats bubble) and collapse the selection to just this
+              // node — so the drag would then read a single-node selection and
+              // move only this one. Bail and leave it to the drag path; a no-drag
+              // click still focuses via handleClick.
+              if (isGroupDragMember(canvasApi.getState().selection, nodeId)) return
               focusThisNode()
             }}
           >

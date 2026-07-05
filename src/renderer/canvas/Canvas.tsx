@@ -16,6 +16,7 @@ import CanvasGrid from './CanvasGrid'
 import CanvasBackgroundImage from './CanvasBackgroundImage'
 import SnapGuides from './SnapGuides'
 import GhostPlacementLayer from './GhostPlacementLayer'
+import PlacementVizOverlay from './placementViz/PlacementVizOverlay'
 import { WorktreeTerritoryLayer } from './worktree'
 import type { Point, PanelType } from '../../shared/types'
 import { openFileAsPanel } from '../lib/fs/fileRouting'
@@ -342,10 +343,12 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
   const handleWorldClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement
-      // A click that misses every ghost cancels a pending ghost placement.
-      // (Ghosts stopPropagation on their own clicks, so this only fires on a miss.)
+      // During a pending placement: clicking a ghost commits (handled by the ghost
+      // itself), clicking another panel re-targets the recommendations to it (the
+      // node's focus change drives refreshPlacement), and a click on genuinely
+      // empty canvas — neither ghost nor node — cancels.
       if (canvasApi.getState().pendingPlacement) {
-        if (!target.closest('[data-ghost-candidate]')) {
+        if (!target.closest('[data-ghost-candidate]') && !target.closest('[data-node-id]')) {
           canvasApi.getState().cancelPlacement()
         }
         return
@@ -624,6 +627,7 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
         )}
         {children}
         <GhostPlacementLayer />
+        {(import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV && <PlacementVizOverlay />}
       </div>
 
       <PlacementHint canvasRef={canvasRef} />

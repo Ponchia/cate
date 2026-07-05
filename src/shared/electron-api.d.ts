@@ -15,6 +15,11 @@ export interface UpdateStatus {
   version: string | null
   /** Download progress 0-100 (present while state === 'downloading'). */
   percent?: number
+  /** Transient flag on a re-broadcast of an already-staged 'downloaded' update,
+   *  set when the user explicitly asked ("Check for Updates…"). Tells the in-app
+   *  modal to re-open even for a version it was already dismissed for. Never
+   *  cached into lastStatus — it's a one-off, not part of the steady state. */
+  forceShow?: boolean
 }
 
 export interface NativeContextMenuItem {
@@ -81,6 +86,8 @@ export interface ElectronAPI {
    *  idle-suspend logic to SIGSTOP terminals that are offscreen and silent. */
   terminalSetVisibility(terminalId: string, visible: boolean): Promise<void>
 
+  terminalClipboardWrite(text: string): Promise<void>
+
   // ---------------------------------------------------------------------------
   // Filesystem
   // ---------------------------------------------------------------------------
@@ -140,6 +147,11 @@ export interface ElectronAPI {
   /** Check if a path is inside a git repository. */
   gitIsRepo(dirPath: string): Promise<boolean>
 
+  /** Discover git repos at or below `dirPath`, scanning at most `maxDepth`
+   *  levels (default 1) and stopping at each repo found. Returns locators (one
+   *  per repo) ready to hand back to the other git APIs as their cwd. */
+  gitFindRepos(dirPath: string, maxDepth?: number): Promise<string[]>
+
   /** Initialize a new git repository at the given directory. */
   gitInit(dirPath: string): Promise<void>
 
@@ -182,7 +194,7 @@ export interface ElectronAPI {
     repoCwd: string,
     branch: string,
     targetPath: string,
-    options?: { createBranch?: boolean; baseRef?: string },
+    options?: { createBranch?: boolean; baseRef?: string; symlinkPaths?: string[] },
   ): Promise<{ path: string; branch: string }>
 
   /** Remove a git worktree registration and delete its directory from disk. */
@@ -224,6 +236,7 @@ export interface ElectronAPI {
     repoCwd: string,
     prNumber: number,
     targetPath: string,
+    options?: { symlinkPaths?: string[] },
   ): Promise<{ path: string; branch: string }>
 
   /** List open pull requests for the branch picker. Returns [] without `gh`. */
@@ -482,6 +495,43 @@ export interface ElectronAPI {
 
   /** Remove a project path from the recent projects list (issue #220 — forget on close). */
   recentProjectsRemove(projectPath: string): Promise<void>
+
+  // ---------------------------------------------------------------------------
+  // Browser history + bookmarks (global, shared across all workspaces/windows)
+  // ---------------------------------------------------------------------------
+
+  /** Record a page visit in the global browsing history (deduped by URL). */
+  browserHistoryRecord(url: string, title: string): Promise<void>
+
+  /** Get the full browsing history, most-recent first. */
+  browserHistoryGet(): Promise<import('./types').BrowserHistoryEntry[]>
+
+  /** Query history by URL/title substring for URL-bar autocomplete. */
+  browserHistoryQuery(query: string, limit: number): Promise<import('./types').BrowserHistoryEntry[]>
+
+  /** Remove a single history entry by URL. */
+  browserHistoryRemove(url: string): Promise<void>
+
+  /** Clear all browsing history. */
+  browserHistoryClear(): Promise<void>
+
+  /** Get all bookmarks/favorites, most-recently-added first. */
+  browserBookmarksGet(): Promise<import('./types').BrowserBookmark[]>
+
+  /** Add a bookmark (idempotent by URL). */
+  browserBookmarksAdd(url: string, title: string): Promise<void>
+
+  /** Remove a bookmark by URL. */
+  browserBookmarksRemove(url: string): Promise<void>
+
+  /** Clear the shared browser session's cookies/cache/storage + history. */
+  browserClearData(): Promise<void>
+
+  /** Subscribe to history changes (any window's mutation, or an external edit). */
+  onBrowserHistoryChanged(callback: () => void): () => void
+
+  /** Subscribe to bookmark changes (any window's mutation, or an external edit). */
+  onBrowserBookmarksChanged(callback: () => void): () => void
 
   /** Get the persisted sidebar arrangement (workspace order + active workspace). */
   sidebarSessionGet(): Promise<SidebarSession | null>

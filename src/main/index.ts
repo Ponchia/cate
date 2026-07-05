@@ -214,6 +214,20 @@ log.info('Cate v%s starting (electron %s, node %s, platform %s)', app.getVersion
 // them before the async electron-store finishes initializing.
 loadSettingsSyncFromDisk()
 
+// Optional GPU-rasterization workaround (off by default). Under this app's GPU
+// load — many live xterm WebGL contexts + the worktree-territory WebGL2 renderer
+// + the canvas's `will-change: transform` compositing churn — Chromium's shared
+// GPU glyph atlas can intermittently corrupt, repainting text with random
+// missing glyphs (most visible in the file tree). Moving rasterization to the
+// CPU removes the glyph atlas from the path; WebGL still renders and composites
+// on the GPU, so terminals/territory stay accelerated. Command-line switches
+// must be set before app-ready (this runs at module load), so the toggle only
+// takes effect after a restart.
+if (getSettingSync('disableGpuRasterization')) {
+  app.commandLine.appendSwitch('disable-gpu-rasterization')
+  log.info('[gpu] GPU rasterization disabled via setting (text rendered on CPU)')
+}
+
 // Scope the onboarding tour to genuine first installs. Anyone who has launched
 // Cate before is marked past it, so an update never replays the tour. The
 // telemetry notice (WelcomeDialog) intentionally has NO such clause — every
@@ -341,14 +355,19 @@ app.whenReady().then(async () => {
   }
 
   // Check for a crash report from the previous session — shows an opt-in
-  // dialog if one exists. Deferred until after the window is ready so the
-  // dialog has a parent window and doesn't block startup.
-  mainWin.once('ready-to-show', () => {
+  // dialog if one exists. Deferred until the window is usable so the dialog has
+  // a parent window and doesn't block startup. did-finish-load is a fallback
+  // for hidden-window startup paths where ready-to-show never arrives.
+  let mainWindowReadyHandled = false
+  const markMainWindowReady = (reason: string): void => {
+    if (mainWindowReadyHandled || mainWin.isDestroyed()) return
+    mainWindowReadyHandled = true
+    log.info('Main window ready via %s', reason)
     setMainWindowReady(true)
     flushPendingOpenPaths()
     // Register deferred IPC handlers and start the auto-updater now that the
-    // first paint has landed. Anything not on the cold-launch critical path
-    // belongs here.
+    // first usable renderer load has landed. Anything not on the cold-launch
+    // critical path belongs here.
     registerDeferredHandlers()
     log.info('Deferred IPC handlers registered')
     initAutoUpdater()
@@ -363,7 +382,9 @@ app.whenReady().then(async () => {
           app.exit(1)
         })
     }
-  })
+  }
+  mainWin.once('ready-to-show', () => markMainWindowReady('ready-to-show'))
+  mainWin.webContents.once('did-finish-load', () => markMainWindowReady('did-finish-load'))
 })
 
 // Window lifecycle: window-all-closed, activate, and the before-quit / will-quit

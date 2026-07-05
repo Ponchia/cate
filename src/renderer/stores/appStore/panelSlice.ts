@@ -5,6 +5,7 @@
 import log from '../../lib/logger'
 import { disambiguateTitle } from '../../lib/panelTitle'
 import type { PanelState, PanelType } from '../../../shared/types'
+import { BROWSER_NEW_TAB_URL } from '../../../shared/types'
 import { resolvePanelSize } from '../../../shared/panels'
 import { useSettingsStore } from '../settingsStore'
 import { generateId } from '../canvas/helpers'
@@ -43,6 +44,7 @@ type PanelSliceActions = Pick<
   | 'updatePanelTitleFromAgent'
   | 'renamePanelByUser'
   | 'updatePanelUrl'
+  | 'updatePanelTabs'
   | 'updatePanelProxy'
   | 'updatePanelFilePath'
   | 'setPanelDirty'
@@ -55,10 +57,10 @@ type PanelSliceActions = Pick<
   | 'bumpReloadEpoch'
 >
 
-// Carry the user's "Default panel width/height" setting onto a canvas-bound
-// create so the new node opens at the configured size (falling back to the panel
-// type's own default when the setting is unset). Dock/none placements ignore
-// size, and a placement that already pins a size (layout restore) is left as-is.
+// Stamp a canvas-bound create with the panel type's fixed default size (from
+// resolvePanelSize) so the new node opens at that size — there is no user
+// setting involved. Dock/none placements ignore size, and a placement that
+// already pins a size (layout restore) is left as-is.
 function withDefaultSize(type: PanelType, placement: PanelPlacement | undefined): PanelPlacement {
   if (placement?.target === 'dock' || placement?.target === 'none') return placement
   if (placement?.target === 'canvas' && placement.size) return placement
@@ -98,7 +100,9 @@ export function createPanelSlice(set: AppSet, get: AppGet): PanelSliceActions {
         type: 'browser',
         title: url ?? 'Browser',
         isDirty: false,
-        url: url ?? 'about:blank',
+        // No URL → open the start page (not a blank page). BrowserPanel routes
+        // the sentinel / about:blank / empty to <StartPage> via isStartPageUrl.
+        url: url ?? BROWSER_NEW_TAB_URL,
         ...(proxyUrl ? { proxyUrl } : {}),
       }
       return addAndPlacePanel(set, get, workspaceId, panel, withDefaultSize('browser', placement), position)
@@ -270,6 +274,18 @@ export function createPanelSlice(set: AppSet, get: AppGet): PanelSliceActions {
 
     updatePanelUrl(workspaceId, panelId, url) {
       setPanelField(set, workspaceId, panelId, (panel) => ({ ...panel, url }))
+    },
+
+    updatePanelTabs(workspaceId, panelId, tabs, activeTabId) {
+      // Mirror the active tab's url into `url` so restore/transfer (which read
+      // `url`) reopen on the right page even if they ignore the tabs array.
+      const activeUrl = tabs.find((t) => t.id === activeTabId)?.url
+      setPanelField(set, workspaceId, panelId, (panel) => ({
+        ...panel,
+        tabs,
+        activeTabId,
+        ...(activeUrl !== undefined ? { url: activeUrl } : {}),
+      }))
     },
 
     updatePanelProxy(workspaceId, panelId, proxyUrl) {

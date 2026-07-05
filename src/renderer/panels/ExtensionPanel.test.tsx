@@ -97,7 +97,7 @@ describe('ExtensionPanel', () => {
 
     const webview = container.querySelector('webview') as HTMLElement & { insertCSS?: unknown }
     expect(webview).toBeTruthy()
-    const insertCSS = vi.fn(async () => 'css-key')
+    const insertCSS = vi.fn(async (_css: string) => 'css-key')
     webview.insertCSS = insertCSS
     act(() => { webview.dispatchEvent(new Event('dom-ready')) })
 

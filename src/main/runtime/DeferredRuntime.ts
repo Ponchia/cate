@@ -127,6 +127,7 @@ export class DeferredRuntime implements Runtime {
 
     this.vcs = {
       isRepo: (dir) => d((c) => c.vcs.isRepo(dir)),
+      findRepos: (dir, maxDepth) => d((c) => c.vcs.findRepos(dir, maxDepth)),
       init: (dir) => d((c) => c.vcs.init(dir)),
       lsFiles: (dir) => d((c) => c.vcs.lsFiles(dir)),
       status: (cwd) => d((c) => c.vcs.status(cwd)),
@@ -149,7 +150,7 @@ export class DeferredRuntime implements Runtime {
       discardFile: (cwd, filePath) => d((c) => c.vcs.discardFile(cwd, filePath)),
       worktreeList: (cwd) => d((c) => c.vcs.worktreeList(cwd)),
       worktreeAdd: (repoCwd, branch, target, options) => d((c) => c.vcs.worktreeAdd(repoCwd, branch, target, options)),
-      worktreeAddFromPr: (repoCwd, pr, target) => d((c) => c.vcs.worktreeAddFromPr(repoCwd, pr, target)),
+      worktreeAddFromPr: (repoCwd, pr, target, options) => d((c) => c.vcs.worktreeAddFromPr(repoCwd, pr, target, options)),
       worktreeRemove: (repoCwd, worktreePath, options) => d((c) => c.vcs.worktreeRemove(repoCwd, worktreePath, options)),
       worktreePrune: (repoCwd) => d((c) => c.vcs.worktreePrune(repoCwd)),
       worktreeStatus: (worktreePath) => d((c) => c.vcs.worktreeStatus(worktreePath)),

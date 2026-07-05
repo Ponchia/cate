@@ -10,6 +10,7 @@ import { getSetting } from '../settingsFile'
 import { saveProjectStateSync } from '../projectWorkspaceStore'
 import { flushPendingWritesSync as flushSettingsPendingWritesSync } from '../settingsFile'
 import { flushWorkspaceStateSync } from '../workspaceStateStore'
+import { flushBrowserStateSync } from '../browserStateStore'
 import { flushUIStateSync } from '../uiStateStore'
 import { releaseAllProjectLocks } from '../projectLock'
 import { runtimes } from '../runtime/runtimeManager'
@@ -136,10 +137,16 @@ export function registerLifecycleHandlers(): void {
     if (BrowserWindow.getAllWindows().length === 0) {
       setMainWindowReady(false)
       const win = createWindow({ type: 'main' })
-      win.once('ready-to-show', () => {
+      let readyHandled = false
+      const markReady = (reason: string): void => {
+        if (readyHandled || win.isDestroyed()) return
+        readyHandled = true
+        log.info('Activated main window ready via %s', reason)
         setMainWindowReady(true)
         flushPendingOpenPaths()
-      })
+      }
+      win.once('ready-to-show', () => markReady('ready-to-show'))
+      win.webContents.once('did-finish-load', () => markReady('did-finish-load'))
     }
   })
 
@@ -268,6 +275,8 @@ export function registerLifecycleHandlers(): void {
     // Same for the workspace-state files (recent projects, sidebar, remote
     // workspaces, layouts) — flush their debounced writes before the process exits.
     flushWorkspaceStateSync()
+    // Same for the global browser history/bookmarks files.
+    flushBrowserStateSync()
     // And the ui-state.json file (minimap placement).
     flushUIStateSync()
     // And every live extension storage: a panel/server set() within the debounce

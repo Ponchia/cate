@@ -14,6 +14,7 @@ import {
   TERMINAL_LOG_READ,
   TERMINAL_SCROLLBACK_SAVE,
   TERMINAL_SET_VISIBILITY,
+  TERMINAL_CLIPBOARD_WRITE,
   FS_READ_FILE,
   FS_READ_BINARY,
   FS_WRITE_FILE,
@@ -23,6 +24,7 @@ import {
   FS_WATCH_EVENT,
   FS_STAT,
   GIT_IS_REPO,
+  GIT_FIND_REPOS,
   GIT_INIT,
   GIT_LS_FILES,
   GIT_BRANCH_UPDATE,
@@ -107,6 +109,17 @@ import {
   LAYOUT_LIST,
   LAYOUT_LOAD,
   LAYOUT_DELETE,
+  BROWSER_HISTORY_RECORD,
+  BROWSER_HISTORY_GET,
+  BROWSER_HISTORY_QUERY,
+  BROWSER_HISTORY_REMOVE,
+  BROWSER_HISTORY_CLEAR,
+  BROWSER_HISTORY_CHANGED,
+  BROWSER_BOOKMARKS_GET,
+  BROWSER_BOOKMARKS_ADD,
+  BROWSER_BOOKMARKS_REMOVE,
+  BROWSER_BOOKMARKS_CHANGED,
+  BROWSER_CLEAR_DATA,
   FS_DELETE,
   FS_RENAME,
   FS_MKDIR,
@@ -329,6 +342,7 @@ const invokeForwarders = {
   terminalLogRead: makeInvoker<'terminalLogRead'>(TERMINAL_LOG_READ),
   terminalScrollbackSave: makeInvoker<'terminalScrollbackSave'>(TERMINAL_SCROLLBACK_SAVE),
   terminalSetVisibility: makeInvoker<'terminalSetVisibility'>(TERMINAL_SET_VISIBILITY),
+  terminalClipboardWrite: makeInvoker<'terminalClipboardWrite'>(TERMINAL_CLIPBOARD_WRITE),
 
   // Filesystem
   fsReadFile: makeInvoker<'fsReadFile'>(FS_READ_FILE),
@@ -351,6 +365,7 @@ const invokeForwarders = {
 
   // Git
   gitIsRepo: makeInvoker<'gitIsRepo'>(GIT_IS_REPO),
+  gitFindRepos: makeInvoker<'gitFindRepos'>(GIT_FIND_REPOS),
   gitInit: makeInvoker<'gitInit'>(GIT_INIT),
   gitLsFiles: makeInvoker<'gitLsFiles'>(GIT_LS_FILES),
   gitStatus: makeInvoker<'gitStatus'>(GIT_STATUS),
@@ -413,6 +428,18 @@ const invokeForwarders = {
   recentProjectsGet: makeInvoker<'recentProjectsGet'>(RECENT_PROJECTS_GET),
   recentProjectsAdd: makeInvoker<'recentProjectsAdd'>(RECENT_PROJECTS_ADD),
   recentProjectsRemove: makeInvoker<'recentProjectsRemove'>(RECENT_PROJECTS_REMOVE),
+
+  // Browser history + bookmarks (global)
+  browserHistoryRecord: makeInvoker<'browserHistoryRecord'>(BROWSER_HISTORY_RECORD),
+  browserHistoryGet: makeInvoker<'browserHistoryGet'>(BROWSER_HISTORY_GET),
+  browserHistoryQuery: makeInvoker<'browserHistoryQuery'>(BROWSER_HISTORY_QUERY),
+  browserHistoryRemove: makeInvoker<'browserHistoryRemove'>(BROWSER_HISTORY_REMOVE),
+  browserHistoryClear: makeInvoker<'browserHistoryClear'>(BROWSER_HISTORY_CLEAR),
+  browserBookmarksGet: makeInvoker<'browserBookmarksGet'>(BROWSER_BOOKMARKS_GET),
+  browserBookmarksAdd: makeInvoker<'browserBookmarksAdd'>(BROWSER_BOOKMARKS_ADD),
+  browserBookmarksRemove: makeInvoker<'browserBookmarksRemove'>(BROWSER_BOOKMARKS_REMOVE),
+  browserClearData: makeInvoker<'browserClearData'>(BROWSER_CLEAR_DATA),
+
   sidebarSessionGet: makeInvoker<'sidebarSessionGet'>(SIDEBAR_SESSION_GET),
   sidebarSessionSet: makeInvoker<'sidebarSessionSet'>(SIDEBAR_SESSION_SET),
   remoteProjectsGet: makeInvoker<'remoteProjectsGet'>(REMOTE_PROJECTS_GET),
@@ -878,6 +905,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   onBrowserShortcut(callback: (action: string) => void): () => void {
     return createIpcListener(BROWSER_SHORTCUT, callback)
+  },
+
+  onBrowserHistoryChanged(callback: () => void): () => void {
+    return createIpcListener(BROWSER_HISTORY_CHANGED, callback)
+  },
+
+  onBrowserBookmarksChanged(callback: () => void): () => void {
+    return createIpcListener(BROWSER_BOOKMARKS_CHANGED, callback)
   },
 
   // ---------------------------------------------------------------------------
