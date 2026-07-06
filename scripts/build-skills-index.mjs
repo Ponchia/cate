@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 // =============================================================================
-// build-skills-index.mjs — crawl registry/sources.json and emit the curated
+// build-skills-index.mjs - crawl registry/sources.json and emit the curated
 // skills-index.json that the Cate app fetches. Run by the skills-index GitHub
 // Action (with GITHUB_TOKEN for a 5000/hr rate limit). Mirrors the discovery
 // logic in src/skills/main/githubCrawl.ts (kept standalone so it runs as plain
@@ -145,7 +144,7 @@ async function crawlSource(src) {
 }
 
 // First-party skills live in THIS repo. GitHub's recursive tree API truncates
-// large repos (Cate is one), so a remote crawl can silently miss them — read
+// large repos (Cate is one), so a remote crawl can silently miss them - read
 // them straight off disk instead, so Cate's own skills are always indexed.
 async function walkSkillMds(dir) {
   const out = []
@@ -203,7 +202,7 @@ export function curateSkills(skills, firstPartyIds) {
   const isFirstParty = (s) => firstPartyIds.has(s.sourceId)
   // The same skill can appear at two paths in a repo (e.g. a second copy whose
   // SKILL.md has empty frontmatter), and since the id is repo+name it collides.
-  // Keep one entry per id — prefer the one that actually carries a description —
+  // Keep one entry per id - prefer the one that actually carries a description -
   // so the catalog has no duplicate ids (which otherwise break list rendering).
   const byId = new Map()
   for (const s of skills) {
@@ -216,7 +215,7 @@ export function curateSkills(skills, firstPartyIds) {
   }
   // Quality floor: drop entries with no frontmatter description (no search
   // signal, render as broken rows) and from repos under MIN_STARS. Keeps the
-  // catalog selective — only well-adopted, documented skills ship. First-party
+  // catalog selective - only well-adopted, documented skills ship. First-party
   // sources (Cate's own) skip the star floor, but NOT the description floor: a
   // descriptionless skill renders as a broken row no matter who authored it.
   const described = deduped.filter((s) => s.description && s.description.trim())
@@ -228,7 +227,7 @@ export function curateSkills(skills, firstPartyIds) {
     console.log(`Dropped ${described.length - curated.length} entr(ies) under ${MIN_STARS} stars`)
   }
   // Stamp first-party entries so the UI can pin them without hardcoding a
-  // source id — the `firstParty` flag on the source flows through to the entry.
+  // source id - the `firstParty` flag on the source flows through to the entry.
   const stamped = curated.map((s) => (isFirstParty(s) ? { ...s, firstParty: true } : s))
   // Stable order so the committed index has minimal diffs.
   stamped.sort((a, b) => a.id.localeCompare(b.id))
