@@ -754,6 +754,48 @@
       "sourceId": "career-ops"
     },
     {
+      "id": "cate/cate-cli",
+      "name": "cate-cli",
+      "description": "Drive the Cate IDE from inside a Cate terminal with the `cate` CLI — control the built-in browser panel (open URLs, navigate, screenshot, read an accessibility snapshot, click and type by ref) and call any cate.* host method. Use when an agent or user working in a Cate terminal needs to see or steer a web page, capture a screenshot, or reach Cate's host API from the shell.",
+      "tags": [],
+      "format": "skill-md",
+      "source": {
+        "repo": "0-AI-UG/cate",
+        "ref": "main",
+        "path": "skills/cate-cli"
+      },
+      "provenance": "curated",
+      "sourceId": "cate"
+    },
+    {
+      "id": "cate/cate-extension",
+      "name": "cate-extension",
+      "description": "Build, test, and publish a Cate extension, a web panel (optionally backed by a local server) that runs on Cate's canvas. Use when the user wants to create or scaffold a Cate extension, add a panel to Cate, work with the extension manifest, cateApi scopes, or the window.cate host API, or submit an extension to the cate-extensions catalog.",
+      "tags": [],
+      "format": "skill-md",
+      "source": {
+        "repo": "0-AI-UG/cate",
+        "ref": "main",
+        "path": "skills/cate-extension"
+      },
+      "provenance": "curated",
+      "sourceId": "cate"
+    },
+    {
+      "id": "cate/cate-theme",
+      "name": "cate-theme",
+      "description": "Author or edit a Cate IDE theme — one data-driven theme covering app chrome colors, the terminal ANSI palette, and Monaco editor syntax tokens. Use when the user asks to create, customize, recolor, or generate a Cate theme, mentions a color scheme (Dracula, Nord, \"make Cate look like X\"), or wants a new light/dark theme.",
+      "tags": [],
+      "format": "skill-md",
+      "source": {
+        "repo": "0-AI-UG/cate",
+        "ref": "main",
+        "path": "skills/cate-theme"
+      },
+      "provenance": "curated",
+      "sourceId": "cate"
+    },
+    {
       "id": "coreyhaines-marketing-skills/ab-testing",
       "name": "ab-testing",
       "description": "When the user wants to plan, design, or implement an A/B test or experiment, or build a growth experimentation program. Also use when the user mentions \"A/B test,\" \"split test,\" \"experiment,\" \"test this change,\" \"variant copy,\" \"multivariate test,\" \"hypothesis,\" \"should I test this,\" \"which version is better,\" \"test two versions,\" \"statistical significance,\" \"how long should I run this test,\" \"growth experiments,\" \"experiment velocity,\" \"experiment backlog,\" \"ICE score,\" \"experimentation program,\" or \"experiment playbook.\" Use this whenever someone is comparing two approaches and wants to measure which performs better, or when they want to build a systematic experimentation practice. For tracking implementation, see analytics. For page-level conversion optimization, see cro.",

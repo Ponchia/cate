@@ -9,6 +9,7 @@
 //     click away in any workspace, even offline.
 //
 // Sections, all filtered together by the search box:
+//   • Cate      — Cate's own first-party skills, pinned to the top.
 //   • Installed — what's in this workspace now.
 //   • Saved     — your library, ready to re-add here.
 //   • Browse    — the catalog (curated index ∪ user repos), shown by default.
@@ -51,6 +52,10 @@ const api = () => window.electronAPI
 // anyone can PR a missing skill's source repo in (the CI crawler turns this into
 // skills-index.json).
 const SKILL_SOURCES_URL = 'https://github.com/0-AI-UG/cate/blob/main/registry/sources.json'
+
+// The `sourceId` of Cate's own first-party skills — surfaced in their own
+// section at the top of the list (see registry/sources.json `firstParty`).
+const CATE_SOURCE_ID = 'cate'
 
 function matches(entry: SkillEntry, terms: string[]): boolean {
   if (terms.length === 0) return true
@@ -194,17 +199,38 @@ export function SkillsDialog() {
         .sort((a, b) => a.name.localeCompare(b.name)),
     [saved, installedIds, byId, terms],
   )
+  // Cate's own skills, pinned to the top; excluded from Browse so they show once.
+  const cateRows = useMemo(
+    () =>
+      index
+        .filter(
+          (e) =>
+            e.sourceId === CATE_SOURCE_ID &&
+            !savedIds.has(e.id) &&
+            !installedIds.has(e.id) &&
+            matches(e, terms),
+        )
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [index, savedIds, installedIds, terms],
+  )
   const browseRows = useMemo(
     () =>
       index
-        .filter((e) => !savedIds.has(e.id) && !installedIds.has(e.id) && matches(e, terms))
+        .filter(
+          (e) =>
+            e.sourceId !== CATE_SOURCE_ID &&
+            !savedIds.has(e.id) &&
+            !installedIds.has(e.id) &&
+            matches(e, terms),
+        )
         .sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0) || a.name.localeCompare(b.name)),
     [index, savedIds, installedIds, terms],
   )
 
   if (!show) return null
 
-  const empty = installedRows.length === 0 && savedRows.length === 0 && browseRows.length === 0
+  const empty =
+    cateRows.length === 0 && installedRows.length === 0 && savedRows.length === 0 && browseRows.length === 0
 
   // Key on id + path, not id alone: a repo can expose the same skill name at two
   // paths, which collide to one id. Duplicate React keys break list diffing, so
@@ -265,6 +291,13 @@ export function SkillsDialog() {
 
         {/* Lists */}
         <div className="flex-1 overflow-y-auto pb-2">
+          {cateRows.length > 0 && (
+            <>
+              <GroupLabel>Cate · {cateRows.length}</GroupLabel>
+              {cateRows.map((e) => renderRow(e, false))}
+            </>
+          )}
+
           {installedRows.length > 0 && (
             <>
               <GroupLabel>Installed · {installedRows.length}</GroupLabel>

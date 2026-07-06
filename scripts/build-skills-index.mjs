@@ -7,7 +7,7 @@
 // node with no build step).
 // =============================================================================
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, readdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -144,13 +144,64 @@ async function crawlSource(src) {
   return out
 }
 
+// First-party skills live in THIS repo. GitHub's recursive tree API truncates
+// large repos (Cate is one), so a remote crawl can silently miss them — read
+// them straight off disk instead, so Cate's own skills are always indexed.
+async function walkSkillMds(dir) {
+  const out = []
+  let dirents
+  try {
+    dirents = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const d of dirents) {
+    const full = path.join(dir, d.name)
+    if (d.isDirectory()) out.push(...(await walkSkillMds(full)))
+    else if (d.name === 'SKILL.md') out.push(full)
+  }
+  return out
+}
+
+async function localSkills(src) {
+  const { owner, name } = parseRepo(src.repo)
+  const base = (src.path ?? '').replace(/^\/+|\/+$/g, '')
+  const root = base ? path.join(REPO_ROOT, base) : REPO_ROOT
+  const out = []
+  for (const full of await walkSkillMds(root)) {
+    const dir = path.relative(REPO_ROOT, path.dirname(full)).split(path.sep).join('/')
+    let skillName = dir.split('/').pop() || name
+    let description = ''
+    let tags = []
+    try {
+      const { fm, tags: tg } = parseFrontmatter(await readFile(full, 'utf-8'))
+      if (fm.name) skillName = fm.name
+      if (fm.description) description = fm.description.replace(/\s+/g, ' ').trim()
+      tags = tg
+    } catch {
+      /* keep dir-derived name */
+    }
+    out.push({
+      id: `${src.id}/${slugify(skillName)}`,
+      name: skillName,
+      description,
+      tags,
+      format: 'skill-md',
+      source: { repo: `${owner}/${name}`, ref: src.ref || 'main', path: dir },
+      provenance: 'curated',
+      sourceId: src.id,
+    })
+  }
+  return out
+}
+
 async function main() {
   const { sources } = JSON.parse(await readFile(SOURCES_PATH, 'utf-8'))
   const skills = []
   for (const src of sources) {
     try {
-      const found = await crawlSource(src)
-      console.log(`${src.repo}: ${found.length} skill(s)`)
+      const found = src.firstParty ? await localSkills(src) : await crawlSource(src)
+      console.log(`${src.repo}: ${found.length} skill(s)${src.firstParty ? ' (local)' : ''}`)
       skills.push(...found)
     } catch (err) {
       console.error(`${src.repo}: ${err.message}`)
@@ -171,16 +222,16 @@ async function main() {
   }
   // Quality floor: drop entries with no frontmatter description (no search
   // signal, render as broken rows) and from repos under MIN_STARS. Keeps the
-  // catalog selective — only well-adopted, documented skills ship. Sources
-  // marked firstParty (Cate's own repos) skip the star floor, not the
-  // description floor.
+  // catalog selective — only well-adopted, documented skills ship. First-party
+  // sources (Cate's own, read locally above) are always kept — never filtered.
   const MIN_STARS = 10_000
   const firstPartyIds = new Set(sources.filter((s) => s.firstParty).map((s) => s.id))
-  const described = deduped.filter((s) => s.description && s.description.trim())
+  const isFirstParty = (s) => firstPartyIds.has(s.sourceId)
+  const described = deduped.filter((s) => isFirstParty(s) || (s.description && s.description.trim()))
   if (described.length !== deduped.length) {
     console.log(`Dropped ${deduped.length - described.length} entr(ies) with no description`)
   }
-  const curated = described.filter((s) => firstPartyIds.has(s.sourceId) || (s.stars ?? 0) >= MIN_STARS)
+  const curated = described.filter((s) => isFirstParty(s) || (s.stars ?? 0) >= MIN_STARS)
   if (curated.length !== described.length) {
     console.log(`Dropped ${described.length - curated.length} entr(ies) under ${MIN_STARS} stars`)
   }
