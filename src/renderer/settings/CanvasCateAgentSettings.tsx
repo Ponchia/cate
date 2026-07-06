@@ -20,18 +20,67 @@ import { AGENTS } from '../../shared/agents'
 import type { AgentModelRef } from '../../shared/types'
 import { useAppStore } from '../stores/appStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useUIStore } from '../stores/uiStore'
+import { useCateAgentReady } from '../stores/providerReadinessStore'
 import { useCateAgentWs } from '../cateAgent/cateAgentStore'
 import { cateAgentController } from '../cateAgent/cateAgentController'
 import { SettingRow, Toggle, Select, NumberInput, SearchableBlock } from './SettingsComponents'
 import log from '../lib/logger'
 
 export function CanvasCateAgentSettings() {
+  const gate = useCateAgentReady()
+  const ready = gate === 'ok'
   return (
     <div className="flex flex-col gap-1">
+      {gate === 'noProvider' && <NoProviderNotice />}
+      {gate === 'needsReauth' && <ReauthNotice />}
       <CateAgentObservations />
-      <CateAgentModels />
-      <CateAgentJobs />
+      {/* Model/job controls resolve nothing without a usable provider — dim them. */}
+      <Gated disabled={!ready}>
+        <CateAgentModels />
+        <CateAgentJobs />
+      </Gated>
     </div>
+  )
+}
+
+// The Cate Agent hides from the canvas whenever it has no usable provider (see
+// providerReadinessStore / CanvasToolbar). These notices are the one place that
+// explains why and links to the fix.
+function ProviderNotice({ text, action }: { text: string; action: string }) {
+  return (
+    <SearchableBlock keywords="cate agent provider connect reconnect sign in required expired">
+      <div className="my-2 px-3 py-2.5 rounded-md bg-agent/10 border border-agent/30 flex items-center gap-3">
+        <p className="flex-1 text-xs text-primary">{text}</p>
+        <button
+          type="button"
+          onClick={() => useUIStore.getState().openSettings('providers')}
+          className="px-2 py-1 rounded-md bg-agent hover:bg-agent-light text-white text-[11px] font-medium shrink-0"
+        >
+          {action}
+        </button>
+      </div>
+    </SearchableBlock>
+  )
+}
+
+// No provider connected at all.
+function NoProviderNotice() {
+  return (
+    <ProviderNotice
+      text="No AI provider is connected. The Cate Agent needs one to observe your workspace and run tasks, and stays hidden until you connect one."
+      action="Open Providers"
+    />
+  )
+}
+
+// A provider is configured but its sign-in has expired (OAuth token can't refresh).
+function ReauthNotice() {
+  return (
+    <ProviderNotice
+      text="Your AI provider sign-in has expired. The Cate Agent is hidden until you reconnect it."
+      action="Reconnect"
+    />
   )
 }
 

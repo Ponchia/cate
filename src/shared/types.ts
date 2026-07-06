@@ -1107,75 +1107,14 @@ export interface ProjectSessionPanel {
 }
 
 // -----------------------------------------------------------------------------
-// Cate Agent — per-workspace todos (.cate/todos.json)
+// Cate Agent — the iterate/verify loop layer (shared by a chat's `run`)
 //
-// The shared task list both the user and (later) the Cate Agent read/write. Phase 1
-// only exercises the `user` origin and the `pending`/`done` statuses via the
-// Tasks sidebar; the richer fields (plan, worktree, terminals) are defined now
-// so the orchestrator/observer phases slot in without a file-format migration.
+// A code task runs as a loop: the chat agent sets a goal + check, then spawns
+// parallel ITERATIONS (each its own fresh worktree + coding agents). When an
+// iteration's agents park, an independent verifier driver runs the check in its
+// worktree and writes a verdict; the chat agent picks a winner or runs another round.
+// This state lives on the chat's `run` (see ChatRun above).
 // -----------------------------------------------------------------------------
-
-/** Who created the todo. `cateAgent` todos are proposed by the observer; `user` todos
- *  are typed into the Tasks sidebar. */
-export type TodoOrigin = 'user' | 'cateAgent'
-
-/** Todo lifecycle. `suggested` awaits the approve gate; `review` awaits the
- *  land gate. Manual todos start at `pending` and toggle to `done`. `discarded`
- *  is a reviewed todo the user threw away — kept (not deleted) so it can be rerun. */
-export type TodoStatus = 'suggested' | 'pending' | 'in_progress' | 'review' | 'done' | 'failed' | 'discarded'
-
-export interface Todo {
-  id: string
-  title: string
-  origin: TodoOrigin
-  status: TodoStatus
-  /** Unix ms when the todo was created. */
-  createdAt: number
-  /** Unix ms when the todo last changed status (e.g. completed). */
-  updatedAt?: number
-  /** The winning iteration's worktree, copied onto the todo when it moves to
-   *  review (the branch the user lands). See recommendedIterationId. */
-  worktreeId?: string
-  /** The winning iteration's branch, copied onto the todo at review. */
-  branch?: string
-  /** Canvas node ids of every terminal spawned across this todo's iterations. */
-  terminalNodeIds?: string[]
-  /** Free-form note — observer rationale for a suggestion, or a failure reason. */
-  note?: string
-  /** User-facing text result the orchestrator produced via the `answer` tool — e.g.
-   *  the answer to a question or a summary of findings. Rendered on the job card
-   *  and kept (the job settles to `done`) until the user dismisses it. */
-  output?: string
-  /** Short 2–5 word title the orchestrator derives for this job (UI card title). Falls
-   *  back to `title` (the original prompt) when absent. */
-  topic?: string
-  /** Set when a run was cut short by an app restart (reconcileOrphans) rather than
-   *  finishing. The job card offers Continue (resume the orchestrator where it left
-   *  off) instead of presenting the work as finished. Cleared when it resumes. */
-  interrupted?: boolean
-
-  // --- loop-based jobs (orchestrator + iterate) -----------------------------
-  // A code job runs as a loop: the orchestrator sets a goal + check, then spawns
-  // parallel ITERATIONS (each its own fresh worktree + coding agents). When an
-  // iteration's agents park, a checker coding agent runs in its worktree and
-  // writes a verdict; the orchestrator picks a winner or runs another round.
-  // Read-only / question jobs skip all of this and settle via `answer`.
-
-  /** The goal the orchestrator is iterating toward. Set by set_goal. */
-  goal?: string
-  /** Plain-words instruction the checker coding agent follows to decide whether an
-   *  iteration met the goal (e.g. "run the suite and confirm X passes"). Set by
-   *  set_goal alongside the goal. */
-  check?: string
-  /** Parallel attempts across rounds. The current round's iterations are live;
-   *  a new round discards the previous round's worktrees (fresh every round). */
-  iterations?: Iteration[]
-  /** Current round number (1-based). Bumped each time the orchestrator iterates. */
-  round?: number
-  /** The iteration the orchestrator recommends landing (compare result). The
-   *  winner's worktreeId/branch are copied onto the todo when it moves to review. */
-  recommendedIterationId?: string
-}
 
 /** A single verification verdict for one iteration — produced by a checker coding
  *  agent that ran the check in the iteration's worktree and wrote {met, reason}. */
@@ -1213,6 +1152,7 @@ export interface IterationAgent {
 
 export interface Iteration {
   id: string
+  /** Back-reference to the owning chat id (the chat whose `run` holds this iteration). */
   todoId: string
   /** Which round spawned it (1-based). */
   round: number
@@ -1227,9 +1167,131 @@ export interface Iteration {
   createdAt: number
 }
 
-export interface ProjectTodosFile {
+// -----------------------------------------------------------------------------
+// Cate Agent — per-workspace CHATS (.cate/chats.json)
+//
+// The chat is the Cate Agent's front door: a persistent thread you type into. Its
+// agent (the former orchestrator, now one persistent session per chat that keeps
+// its conversation history) answers a question inline, or runs a code task as the
+// iterate/verify LOOP, or delegates a canvas task. Each agent action renders as a
+// purpose-built typed block in the transcript — not a text bubble — so the thread
+// still means something after a reload. The loop machinery (iterations, drivers,
+// verifiers, worktrees) is unchanged; its state now lives on the chat's `run`
+// instead of a global todo.
+// -----------------------------------------------------------------------------
+
+export type ChatMessageRole = 'user' | 'agent'
+
+/** A plain markdown message — the user's prompt, or the agent's inline answer. */
+export interface ChatTextMessage {
+  id: string
+  role: ChatMessageRole
+  ts: number
+  kind: 'text'
+  text: string
+}
+
+/** The agent's plan for a code task: the goal + how it will be checked (set_goal). */
+export interface ChatPlanMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'plan'
+  goal: string
+  check: string
+}
+
+/** The parallel-attempts grid for a code task (iterate). While the run is live the
+ *  UI reads iterations off `chat.run`; the fields here are the frozen snapshot
+ *  written when the run settles so the transcript survives a reload. */
+export interface ChatAttemptsMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'attempts'
+  iterations?: Iteration[]
+  round?: number
+  recommendedIterationId?: string
+}
+
+/** The outcome of a code task (select_winner / fail): the winning verdict + the
+ *  land actions. `outcome` records the user's land decision once they act. */
+export interface ChatResultMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'result'
+  iterationId?: string
+  met: boolean
+  reason: string
+  worktreeId?: string
+  branch?: string
+  outcome?: 'merged' | 'pr' | 'discarded'
+  note?: string
+}
+
+/** A delegated canvas task (canvas): a working indicator while the canvas subagent
+ *  runs, then the panels it left on the canvas + a jump-to-canvas target. */
+export interface ChatCanvasMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'canvas'
+  request: string
+  working: boolean
+  panels?: Array<{ id: string; type: string; title: string }>
+  canvasPanelId?: string
+}
+
+export type ChatMessage =
+  | ChatTextMessage
+  | ChatPlanMessage
+  | ChatAttemptsMessage
+  | ChatResultMessage
+  | ChatCanvasMessage
+
+/** The live (or last) run state for one chat's active code/canvas task — the
+ *  iterate/verify loop layer that used to live on a Todo. Absent when the chat has
+ *  only ever answered questions. */
+export interface ChatRun {
+  status: 'running' | 'review' | 'done' | 'failed'
+  /** The goal the loop iterates toward (set_goal). */
+  goal?: string
+  /** How an iteration is verified (set_goal). */
+  check?: string
+  /** Parallel attempts across rounds (the current round's are live). */
+  iterations?: Iteration[]
+  /** Current round number (1-based); bumped each time the agent iterates. */
+  round?: number
+  /** The iteration selected to land (select_winner). */
+  recommendedIterationId?: string
+  /** The winning iteration's worktree/branch, copied on at review (what lands). */
+  worktreeId?: string
+  branch?: string
+  /** Canvas node ids of every terminal spawned across this run's iterations. */
+  terminalNodeIds?: string[]
+  /** The canvas this run is pinned to (captured when the chat's session starts). */
+  canvasPanelId?: string
+  /** Failure reason / land note. */
+  note?: string
+  /** Set when a run was cut off by an app restart; the block offers Continue. */
+  interrupted?: boolean
+  /** The attempts message this run's live iteration grid binds to. */
+  attemptsMessageId?: string
+}
+
+export interface Chat {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  messages: ChatMessage[]
+  run?: ChatRun
+}
+
+export interface ProjectChatsFile {
   version: 1
-  todos: Todo[]
+  chats: Chat[]
 }
 
 /** Which headless brain a Cate Agent session drives. Passed to the cate-agent-tools
@@ -1242,7 +1304,7 @@ export interface ProjectTodosFile {
  *    terminals, launches coding-agent CLIs, answers startup/permission prompts, and
  *    submits the task; a backgrounded send_keys re-prompts it as each terminal
  *    finishes. create_terminal + read_terminal + send_keys. */
-export type CateAgentRole = 'observer' | 'orchestrator' | 'driver'
+export type CateAgentRole = 'observer' | 'orchestrator' | 'driver' | 'canvas'
 
 /** The Cate Agent's coarse runtime state, surfaced in the toolbar button + feedback panel. */
 export type CateAgentActivity =
@@ -1710,6 +1772,20 @@ export interface AuthProviderStatus {
   connectedAt?: string
   /** Where the credential lives. */
   source?: 'oauth' | 'safeStorage' | 'env' | 'config'
+}
+
+/** Result of actively verifying that a provider's credential works.
+ *  - `ok`         — the credential authenticated (OAuth token minted/refreshed, or a
+ *                   live model request succeeded).
+ *  - `needsReauth`— an OAuth token could not be refreshed; the user must sign in again.
+ *  - `error`      — a live request failed (bad/expired API key, endpoint unreachable, …). */
+export type ProviderHealth = 'ok' | 'needsReauth' | 'error'
+
+export interface ProviderVerification {
+  id: string
+  health: ProviderHealth
+  /** Human-readable failure detail for `needsReauth` / `error`. */
+  error?: string
 }
 
 /** A user-defined OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, a

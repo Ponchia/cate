@@ -32,9 +32,12 @@ export interface CateAgentWsState {
   activity: CateAgentActivity
   /** Short status-bubble text, e.g. "Running tests…" or "Proposing: update docs". */
   status: string
-  /** Whether the toolbar is showing the prompt input bar (and the feedback panel
-   *  is forced visible). */
+  /** Whether the toolbar is showing the prompt input bar (and the chat panel is
+   *  forced visible). */
   inputOpen: boolean
+  /** The chat the input composes into and the transcript shows. Empty string means
+   *  "compose a new chat" (one is minted on the first send). */
+  activeChatId: string
   /** Persistent-per-session feedback log shown above the toolbar, newest last. */
   feed: CateAgentFeedItem[]
   /** Terminals the orchestrator is actively driving → their pulsing glow color, keyed
@@ -57,6 +60,7 @@ export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
   activity: 'off',
   status: '',
   inputOpen: false,
+  activeChatId: '',
   feed: [],
   controlledTerminals: {},
   runAnchors: {},
@@ -69,6 +73,8 @@ interface CateAgentStore {
   patch: (wsId: string, patch: Partial<CateAgentWsState>) => void
   reset: (wsId: string) => void
   setInputOpen: (wsId: string, open: boolean) => void
+  /** Select the active chat (empty string = compose a new one). */
+  setActiveChat: (wsId: string, chatId: string) => void
   appendFeed: (wsId: string, kind: CateAgentFeedKind, text: string) => void
   /** Remove a single feed line by id (the per-remark dismiss button). */
   dismissFeedItem: (wsId: string, id: number) => void
@@ -101,6 +107,13 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
       // Opening the panel means the user has now seen any pending activity.
       return { byWs: { ...s.byWs, [wsId]: { ...prev, inputOpen: open, unseen: open ? false : prev.unseen } } }
+    })
+  },
+
+  setActiveChat(wsId, chatId) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, activeChatId: chatId } } }
     })
   },
 

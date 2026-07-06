@@ -30,14 +30,12 @@ import { useAppStore } from '../stores/appStore'
 import { Tooltip } from '../ui/Tooltip'
 import { CateAgentToolbarButton } from '../cateAgent/CateAgentToolbarButton'
 import { CateAgentInputBar } from '../cateAgent/CateAgentInputBar'
-import { CateAgentFeedback } from '../cateAgent/CateAgentFeedback'
+import { CateAgentChat } from '../cateAgent/CateAgentChat'
 import { useCateAgentWs, useCateAgentStore } from '../cateAgent/cateAgentStore'
 import { cateAgentController } from '../cateAgent/cateAgentController'
-import { useTodosStore } from '../stores/todosStore'
-
-// Todo statuses that need a user decision — while any exist the toolbar keeps
-// its notification dot lit (even after the panel has been opened once).
-const ATTENTION_STATUSES = ['suggested', 'review', 'pending', 'failed']
+import { deriveTopic } from '../cateAgent/cateAgentTools'
+import { useCateAgentReady } from '../stores/providerReadinessStore'
+import { useChatsStore } from '../stores/chatsStore'
 
 // Collapsed toolbar row height = the w-9/h-9 buttons. Used as the input's one-line
 // height and the close-collapse target, so it can't drift with measurement.
@@ -224,16 +222,31 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const zoomText = `${Math.round(zoom * 100)}%`
 
   const cateAgent = useCateAgentWs(workspaceId)
+  // The Cate Agent is unusable without a working provider — hide its entry points
+  // entirely (see App.tsx, which also pauses its loops). A connected-but-expired
+  // OAuth sign-in ('needsReauth') hides it too; the reconnect prompt lives in
+  // Settings → Cate Agent. Returns when a usable provider connects.
+  const hasProvider = useCateAgentReady() === 'ok'
   const inputOpen = cateAgent.inputOpen
   const toggleAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, !inputOpen)
   const closeAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, false)
-  const sendAgentPrompt = (text: string) => void cateAgentController.prompt(workspaceId, rootPath, text)
-  // Attention persists while any todo still needs a decision; transient remarks
-  // (the `unseen` flag) flash it until the panel is opened. Either way, an open
+  // Compose into the active chat, minting one (titled from the prompt) on the first
+  // send. The chat's persistent agent decides how to respond.
+  const sendAgentPrompt = (text: string) => {
+    const store = useChatsStore.getState()
+    let chatId = cateAgent.activeChatId
+    if (!chatId || !store.getChat(rootPath, chatId)) {
+      chatId = store.createChat(rootPath, deriveTopic(text)).id
+      useCateAgentStore.getState().setActiveChat(workspaceId, chatId)
+    }
+    void cateAgentController.sendMessage(workspaceId, rootPath, chatId, text)
+  }
+  // Attention persists while any chat still needs a decision (review / interrupted);
+  // transient remarks (the `unseen` flag) flash it until the panel is opened. An open
   // panel means the user is already looking, so no indicator then.
-  const todosForRoot = useTodosStore((s) => s.todosByRoot[rootPath])
-  const hasActionableTodos = (todosForRoot ?? []).some((t) => ATTENTION_STATUSES.includes(t.status))
-  const agentAttention = !inputOpen && (hasActionableTodos || cateAgent.unseen)
+  const chatsForRoot = useChatsStore((s) => s.chatsByRoot[rootPath])
+  const hasActionableChats = (chatsForRoot ?? []).some((c) => c.run?.status === 'review' || c.run?.interrupted)
+  const agentAttention = !inputOpen && (hasActionableChats || cateAgent.unseen)
   // The content zone is sized explicitly so opening (wider for the input), typing
   // (taller as text wraps), and closing all animate via the width/height
   // transition. The tools define the closed size; we measure it while closed and
@@ -341,16 +354,19 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     <>
     <div className="absolute inset-x-0 bottom-4 z-50 flex justify-center pointer-events-none">
       <div data-onboarding="toolbar" className="relative pointer-events-auto">
-        <CateAgentFeedback workspaceId={workspaceId} rootPath={rootPath} />
+        {hasProvider && <CateAgentChat workspaceId={workspaceId} rootPath={rootPath} />}
         <div className="border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]" style={{ borderRadius: agentPillRadius }}>
           <div className={`flex ${agentAlign} gap-0.5 px-1 py-1`}>
-            {/* Cate Agent — always leftmost; toggles the prompt input. */}
-            <CateAgentToolbarButton
-              activity={cateAgent.activity}
-              active={inputOpen}
-              attention={agentAttention}
-              onClick={toggleAgentInput}
-            />
+            {/* Cate Agent — always leftmost; toggles the prompt input. Hidden when
+                no provider is connected (the agent can't run). */}
+            {hasProvider && (
+              <CateAgentToolbarButton
+                activity={cateAgent.activity}
+                active={inputOpen}
+                attention={agentAttention}
+                onClick={toggleAgentInput}
+              />
+            )}
             {/* Content zone: the tools define the closed size (measured via
                 agentToolsRef); opening grows it wider for the input and taller as
                 text wraps. Width + height are explicit so every change animates. */}
@@ -429,7 +445,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
               <Plus size={16} />
             </ToolbarButton>
               </div>
-              {inputOpen && (
+              {hasProvider && inputOpen && (
                 <div className={`flex-1 min-w-0 flex ${agentAlign}`}>
                   <CateAgentInputBar
                     workspaceId={workspaceId}

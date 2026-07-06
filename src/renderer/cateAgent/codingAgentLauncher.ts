@@ -42,7 +42,7 @@ import {
 } from './cateAgentRunWaiters'
 import { ptyFor, agentStateFor, activityRunning, readTerminalState, openTerminal, shortId } from './cateAgentTerminals'
 import type { AgentTerminalSlot } from './cateAgentPlacement'
-import { useTodosStore } from '../stores/todosStore'
+import { useChatsStore } from '../stores/chatsStore'
 import { useStatusStore } from '../stores/statusStore'
 import type { AgentState } from '../../shared/types'
 import type { CateAgentContext } from './cateAgentTypes'
@@ -234,14 +234,12 @@ async function deliverWake(driverPanelId: string, wsId: string, terminalId: stri
  *  iteration (work + verify, so a verifier's terminal stacks below the work
  *  ones). Iteration not found → fall back to this driver's own terminal count. */
 function driverSlot(ctx: CateAgentContext): AgentTerminalSlot {
-  const todo = ctx.todoId
-    ? useTodosStore.getState().getTodos(ctx.rootPath).find((t) => t.id === ctx.todoId)
-    : undefined
-  const iters = todo?.iterations ?? []
+  const run = ctx.chatId ? useChatsStore.getState().getRun(ctx.rootPath, ctx.chatId) : undefined
+  const iters = run?.iterations ?? []
   const it = iters.find((i) => i.id === ctx.iterationId)
   const column = it ? iters.filter((i) => i.round === it.round).findIndex((i) => i.id === it.id) : 0
   const row = it ? it.agents.length : terminalsOwnedBy(ctx.panelId).length
-  return { runKey: ctx.todoId ?? ctx.panelId, column, row }
+  return { runKey: ctx.chatId ?? ctx.panelId, column, row }
 }
 
 /** Open a BARE shell terminal for a driver in its iteration's worktree, record the
@@ -250,7 +248,7 @@ function driverSlot(ctx: CateAgentContext): AgentTerminalSlot {
 export async function openDriverTerminal(ctx: CateAgentContext): Promise<string> {
   const cwd = ctx.cwd ?? ctx.rootPath
   const glow = ctx.glow ?? 'rgb(var(--agent-rgb))'
-  const terminalId = await openTerminal(ctx.workspaceId, cwd, glow, driverSlot(ctx), ctx.worktreeId)
+  const terminalId = await openTerminal(ctx.workspaceId, cwd, glow, driverSlot(ctx), ctx.worktreeId, ctx.canvasPanelId)
   setTerminalOwner(terminalId, ctx.panelId)
   return terminalId
 }
@@ -266,12 +264,14 @@ export interface RunDriverOpts {
   glow: string
   /** Worktree the driver's terminals belong to (for the panel's worktree tag). */
   worktreeId?: string
-  todoId: string
+  chatId: string
   iterationId: string
   /** Work driver (drive the iteration) vs verifier (grade it). */
   driverKind: 'work' | 'verify'
   /** The overview the work driver decomposes, or the verify prompt. */
   overview: string
+  /** The canvas the job is pinned to — the driver's terminals open on it. */
+  canvasPanelId?: string
 }
 
 /** The driver's seed: the task + cwd + the configured default CLI to launch.
@@ -302,12 +302,13 @@ export async function runDriverToCompletion(opts: RunDriverOpts): Promise<boolea
     workspaceId: opts.wsId,
     rootPath: opts.rootPath,
     role: 'driver',
-    todoId: opts.todoId,
+    chatId: opts.chatId,
     iterationId: opts.iterationId,
     driverKind: opts.driverKind,
     cwd: opts.cwd,
     glow: opts.glow,
     worktreeId: opts.worktreeId,
+    canvasPanelId: opts.canvasPanelId,
   }
   setContext(panelId, ctx)
   const ok = await createCateAgentSession({ panelId, rootPath: opts.rootPath, workspaceId: opts.wsId, role: 'driver', cwd: opts.cwd })

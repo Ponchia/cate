@@ -226,6 +226,18 @@ export function getWorkspaceCanvasStore(workspaceId: string): StoreApi<CanvasSto
   return null
 }
 
+/** The canvas store the Cate Agent should act on for a pinned run: the pinned
+ *  `canvasPanelId` if it's still a live canvas panel of the workspace, else the
+ *  workspace's primary canvas. Pinning lets a running job keep acting on the canvas
+ *  it started on even if the primary changes or the user navigates away. */
+export function getAgentCanvasStore(workspaceId: string, canvasPanelId?: string): StoreApi<CanvasStore> | null {
+  if (canvasPanelId) {
+    const ws = useAppStore.getState().workspaces.find((w) => w.id === workspaceId)
+    if (ws?.panels[canvasPanelId]?.type === 'canvas') return ensureCanvasOpsForPanel(canvasPanelId).storeApi
+  }
+  return getWorkspaceCanvasStore(workspaceId)
+}
+
 /** CanvasOperations for a workspace's center canvas, or null if it has none yet. */
 export function getWorkspaceCanvasOps(workspaceId: string): CanvasOperations | null {
   const canvasPanelId = getWorkspaceCanvasPanelId(workspaceId)

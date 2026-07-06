@@ -30,12 +30,19 @@ export function driverPanelId(key: string): string {
   return `cate-agent-driver:${key}`
 }
 
+/** panelId for an ephemeral canvas subagent session (one per orchestrator `canvas`
+ *  call), keyed by an arbitrary unique string. */
+export function canvasPanelId(key: string): string {
+  return `cate-agent-canvas:${key}`
+}
+
 /** True for any Cate Agent session panelId (used to route agent events to the bridge). */
 export function isCateAgentPanelId(panelId: string): boolean {
   return (
     panelId.startsWith('cate-agent-observer:') ||
     panelId.startsWith('cate-agent-orchestrator:') ||
-    panelId.startsWith('cate-agent-driver:')
+    panelId.startsWith('cate-agent-driver:') ||
+    panelId.startsWith('cate-agent-canvas:')
   )
 }
 

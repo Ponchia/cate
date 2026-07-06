@@ -4,22 +4,22 @@
 // the calling session's CateAgentContext, and is carried out against the live
 // renderer stores + IPC APIs.
 //
-// The job model is loop-based:
-//   - The ORCHESTRATOR (orchestrator role, read-only — no write/edit tools) sets a
-//     goal + how to check it, then spawns parallel ITERATIONS. Each iterate creates
-//     a fresh worktree and spawns ONE per-iteration DRIVER (via codingAgentLauncher)
-//     seeded with the overview; that driver decides the agent decomposition, launches
-//     the coding-agent CLIs, and drives them to completion. The orchestrator never
-//     chooses agents and never edits files itself.
+// The chat agent's job model is loop-based:
+//   - The CHAT AGENT (orchestrator role, read-only — no write/edit tools) answers a
+//     question inline, or for a code change sets a goal + how to check it, then spawns
+//     parallel ITERATIONS. Each iterate creates a fresh worktree and spawns ONE
+//     per-iteration DRIVER (via codingAgentLauncher) seeded with the overview; that
+//     driver decides the agent decomposition, launches the coding-agent CLIs, and
+//     drives them to completion. The chat agent never chooses agents or edits files.
 //   - Each iteration is CHECKED through a single-agent VERIFIER driver
 //     (runIterationCheck): it runs the check in the worktree and writes a verdict to
-//     `.cate/verdict.json`, which the controller reads back. The work driver never
-//     grades its own output.
+//     `.cate/verdict.json`, which the controller reads back.
 //
-// Tool handlers only mutate todo/iteration state + drive terminals; all session
-// lifecycle (running the checks, waking the orchestrator) lives in the controller,
-// which observes this state on each yield. Every handler returns a model-readable
-// string (JSON or prose) surfaced verbatim as the tool result.
+// Tool handlers mutate the chat's run/messages + drive terminals; all session
+// lifecycle (running the checks, waking the agent) lives in the controller, which
+// observes this state on each yield. Every handler returns a model-readable string
+// (JSON or prose) surfaced verbatim as the tool result. Each agent action appends or
+// patches a typed transcript block (plan / attempts / result / canvas).
 //
 // Terminal primitives live in cateAgentTerminals; the "run a driver to completion"
 // primitive lives in codingAgentLauncher — both shared with this module.
@@ -27,16 +27,11 @@
 
 import { useAppStore, pickWorktreeColor } from '../stores/appStore'
 import { useSettingsStore } from '../stores/settingsStore'
-import { useTodosStore } from '../stores/todosStore'
+import { useChatsStore } from '../stores/chatsStore'
 import { gitStatusStore } from '../stores/gitStatusStore'
 import { useCateAgentStore } from './cateAgentStore'
 import { generateId } from '../stores/canvas/helpers'
-import type {
-  Todo,
-  TodoStatus,
-  WorktreeMeta,
-  Iteration,
-} from '../../shared/types'
+import type { Chat, ChatRun, WorktreeMeta, Iteration } from '../../shared/types'
 import type { CateAgentContext } from './cateAgentTypes'
 import {
   ptyFor,
@@ -46,7 +41,11 @@ import {
   shortId,
 } from './cateAgentTerminals'
 import { runDriverToCompletion, openDriverTerminal, armBackgroundSend } from './codingAgentLauncher'
+import { runCanvasAgentToCompletion } from './canvasAgentLauncher'
+import { teardownRunWork } from './cateAgentReviewActions'
 import { worktreeMetaFor, teardownWorktree } from './cateAgentWorktrees'
+import { getAgentCanvasStore } from '../lib/workspace/canvasAccess'
+import type { PanelType, Point } from '../../shared/types'
 import log from '../lib/logger'
 
 const json = (v: unknown): string => JSON.stringify(v)
@@ -56,11 +55,25 @@ const json = (v: unknown): string => JSON.stringify(v)
  *  rather than a pasted newline. */
 const SUBMIT_ENTER_DELAY_MS = 150
 
-// --- helpers ----------------------------------------------------------------
+// --- store shorthands --------------------------------------------------------
 
-function todoById(rootPath: string, id: string): Todo | undefined {
-  return useTodosStore.getState().getTodos(rootPath).find((t) => t.id === id)
+function getChat(rootPath: string, chatId: string): Chat | undefined {
+  return useChatsStore.getState().getChat(rootPath, chatId)
 }
+
+function runFor(rootPath: string, chatId: string): ChatRun | undefined {
+  return useChatsStore.getState().getRun(rootPath, chatId)
+}
+
+function patchRun(rootPath: string, chatId: string, patch: Partial<ChatRun>): void {
+  useChatsStore.getState().patchRun(rootPath, chatId, patch)
+}
+
+function msgId(): string {
+  return `msg-${generateId()}`
+}
+
+// --- helpers ----------------------------------------------------------------
 
 /** The agent is handed `shortId(...)` prefixes; recover the real id by prefix-
  *  matching the live candidate set. Falls through to the supplied string (so a
@@ -72,9 +85,54 @@ function resolveTerminalId(wsId: string, supplied: string): string {
   return hit ? hit.id : supplied
 }
 
-function resolveIterationId(rootPath: string, todoId: string, supplied: string): string {
+/** Canvas variant of resolveTerminalId: the canvas subagent is handed `shortId(...)`
+ *  panel prefixes for panels of ANY type; recover the real id by prefix-match. */
+function resolvePanelId(wsId: string, supplied: string): string {
   if (!supplied) return supplied
-  const hit = todoById(rootPath, todoId)?.iterations?.find((i) => i.id.startsWith(supplied))
+  const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
+  const hit = ws && Object.values(ws.panels).find((p) => p.id.startsWith(supplied))
+  return hit ? hit.id : supplied
+}
+
+/** A snapshot of every panel currently on the workspace canvas — id (shortened),
+ *  type, title, and canvas-space position/size — with a short screen preview for
+ *  terminals so the canvas subagent can lay panels out by their contents. Returns a
+ *  JSON string ({panels:[...]}) ready to hand back as a tool result. */
+async function buildCanvasSnapshot(wsId: string, canvasPanelId?: string): Promise<string> {
+  const store = getAgentCanvasStore(wsId, canvasPanelId)
+  if (!store) return json({ panels: [], note: 'no canvas in this workspace' })
+  const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
+  const nodes = Object.values(store.getState().nodes)
+  const panels = await Promise.all(
+    nodes.map(async (node) => {
+      const panel = ws?.panels[node.panelId]
+      const base = {
+        id: shortId(node.panelId),
+        type: panel?.type ?? 'unknown',
+        title: panel?.title ?? '',
+        x: Math.round(node.origin.x),
+        y: Math.round(node.origin.y),
+        w: Math.round(node.size.width),
+        h: Math.round(node.size.height),
+      }
+      if (panel?.type === 'terminal') {
+        try {
+          const state = await readTerminalState(wsId, node.panelId)
+          const preview = state.output.trim().slice(-400)
+          return { ...base, preview }
+        } catch {
+          /* preview is best-effort */
+        }
+      }
+      return base
+    }),
+  )
+  return json({ panels })
+}
+
+function resolveIterationId(rootPath: string, chatId: string, supplied: string): string {
+  if (!supplied) return supplied
+  const hit = runFor(rootPath, chatId)?.iterations?.find((i) => i.id.startsWith(supplied))
   return hit ? hit.id : supplied
 }
 
@@ -96,8 +154,8 @@ function toBranchName(input: string): string {
   )
 }
 
-/** Derive a short job topic from a prompt, deterministically (no model call).
- *  Used to title job cards and name worktree branches. */
+/** Derive a short chat title from a prompt, deterministically (no model call). Used
+ *  to title chats and name worktree branches. */
 export function deriveTopic(prompt: string): string {
   const oneLine = prompt.trim().replace(/\s+/g, ' ')
   const words = oneLine.split(' ')
@@ -151,13 +209,13 @@ export async function createWorktree(
   return { worktreeId: meta.id, branch, cwd: targetPath }
 }
 
-/** Surface a short FYI from the Cate Agent into the persistent feedback log. */
+/** Surface a short FYI from the observer into the persistent feedback log. */
 function setRemark(wsId: string, text: string): void {
   useCateAgentStore.getState().appendFeed(wsId, 'agent', text)
 }
 
 /** Flag unseen activity for the toolbar attention dot when the panel is closed. */
-function flagUnseen(wsId: string): void {
+export function flagUnseen(wsId: string): void {
   if (!useCateAgentStore.getState().get(wsId).inputOpen) useCateAgentStore.getState().setUnseen(wsId, true)
 }
 
@@ -183,26 +241,25 @@ export async function buildObserveContext(wsId: string, rootPath: string): Promi
   } catch {
     /* not a git repo / unavailable */
   }
-  const todoList = useTodosStore.getState().getTodos(rootPath).map((t) => ({ id: t.id, title: t.title, status: t.status }))
-  return json({ branch, changedFiles, openPanels, terminals, todos: todoList })
+  return json({ branch, changedFiles, openPanels, terminals })
 }
 
 // --- iteration state --------------------------------------------------------
 
-function iterationById(rootPath: string, iterationId: string): { todo: Todo; iteration: Iteration } | undefined {
-  for (const t of useTodosStore.getState().getTodos(rootPath)) {
-    const it = t.iterations?.find((i) => i.id === iterationId)
-    if (it) return { todo: t, iteration: it }
+function iterationById(rootPath: string, iterationId: string): { chatId: string; iteration: Iteration } | undefined {
+  for (const c of useChatsStore.getState().getChats(rootPath)) {
+    const it = c.run?.iterations?.find((i) => i.id === iterationId)
+    if (it) return { chatId: c.id, iteration: it }
   }
   return undefined
 }
 
-/** Patch one iteration on its todo, persisting the whole iterations array. */
-export function patchIteration(rootPath: string, todoId: string, iterationId: string, patch: Partial<Iteration>): void {
-  const todo = todoById(rootPath, todoId)
-  if (!todo) return
-  const iterations = (todo.iterations ?? []).map((i) => (i.id === iterationId ? { ...i, ...patch } : i))
-  useTodosStore.getState().patchTodo(rootPath, todoId, { iterations })
+/** Patch one iteration on its chat's run, persisting the whole iterations array. */
+export function patchIteration(rootPath: string, chatId: string, iterationId: string, patch: Partial<Iteration>): void {
+  const run = runFor(rootPath, chatId)
+  if (!run) return
+  const iterations = (run.iterations ?? []).map((i) => (i.id === iterationId ? { ...i, ...patch } : i))
+  patchRun(rootPath, chatId, { iterations })
 }
 
 function iterationTerminalIds(iteration: Iteration): string[] {
@@ -215,7 +272,7 @@ const SETTLE_WAIT_TIMEOUT_MS = 35 * 60_000
 
 /** Resolve once none of the given iterations is still `running` — i.e. their work
  *  drivers have settled (each flips its iteration to `finished`/`error` on settle).
- *  Lets the orchestrator yield while several iterations run in parallel. */
+ *  Lets the chat agent yield while several iterations run in parallel. */
 export function waitForIterationsSettled(rootPath: string, iterationIds: string[]): Promise<void> {
   const stillRunning = (): boolean => iterationIds.some((id) => iterationById(rootPath, id)?.iteration.status === 'running')
   return new Promise((resolve) => {
@@ -231,21 +288,21 @@ export function waitForIterationsSettled(rootPath: string, iterationIds: string[
       clearTimeout(timer)
       resolve()
     }
-    const unsub = useTodosStore.subscribe(() => {
+    const unsub = useChatsStore.subscribe(() => {
       if (!stillRunning()) finish()
     })
     const timer = setTimeout(finish, SETTLE_WAIT_TIMEOUT_MS)
   })
 }
 
-/** Compact snapshot of a todo's loop state — goal, check, and every iteration's
- *  status/verdict/terminals/worktree path — injected into the orchestrator's wake
+/** Compact snapshot of a run's loop state — goal, check, and every iteration's
+ *  status/verdict/terminals/worktree path — injected into the chat agent's wake
  *  prompt so it sees what finished without rediscovering it. The worktree path lets
- *  the orchestrator inspect an iteration's diff (`git -C <worktreePath> diff`). */
-export function buildOrchestratorContext(wsId: string, rootPath: string, todoId: string): string {
-  const todo = todoById(rootPath, todoId)
-  if (!todo) return json({ error: 'todo gone' })
-  const iterations = (todo.iterations ?? []).map((it) => ({
+ *  it inspect an iteration's diff (`git -C <worktreePath> diff`). */
+export function buildRunContext(wsId: string, rootPath: string, chatId: string): string {
+  const run = runFor(rootPath, chatId)
+  if (!run) return json({ error: 'run gone' })
+  const iterations = (run.iterations ?? []).map((it) => ({
     iterationId: shortId(it.id),
     round: it.round,
     status: it.status,
@@ -258,32 +315,32 @@ export function buildOrchestratorContext(wsId: string, rootPath: string, todoId:
     verdict: it.verify ? { met: it.verify.met, reason: it.verify.reason } : null,
   }))
   return json({
-    goal: todo.goal ?? null,
-    check: todo.check ?? null,
-    round: todo.round ?? 0,
+    goal: run.goal ?? null,
+    check: run.check ?? null,
+    round: run.round ?? 0,
     iterations,
   })
 }
 
-// --- iteration check (Option B — an independent VERIFIER driver) -------------
+// --- iteration check (an independent VERIFIER driver) ------------------------
 
 /** Run the goal check for one finished iteration through a single-agent VERIFIER
  *  driver (the same driver mechanism as the work, but independent of it). The
  *  verifier driver launches a coding-agent CLI in the iteration's worktree, submits
  *  the verify prompt (background:true), and is woken on completion; the coding agent
  *  writes {met, reason} to `.cate/verdict.json`. Once the driver settles we read that
- *  verdict back. Strict: any missing/garbled verdict counts as NOT met. The verifier
- *  driver's throwaway terminal is closed on settle (by runDriverToCompletion). */
+ *  verdict back. Strict: any missing/garbled verdict counts as NOT met. */
 export async function runIterationCheck(
   wsId: string,
   rootPath: string,
-  todo: Todo,
+  chatId: string,
   iteration: Iteration,
 ): Promise<{ met: boolean; reason: string }> {
+  const run = runFor(rootPath, chatId)
   const meta = iteration.worktreeId ? worktreeMetaFor(wsId, iteration.worktreeId) : undefined
   const cwd = meta?.path ?? rootPath
-  const goal = todo.goal ?? todo.title
-  const check = todo.check?.trim() || `Confirm this is done: ${goal}`
+  const goal = run?.goal ?? chatTitleFor(rootPath, chatId)
+  const check = run?.check?.trim() || `Confirm this is done: ${goal}`
   const glow = meta?.color ?? 'rgb(var(--agent-rgb))'
   const prompt = [
     `Verify this goal in this worktree: "${goal}". How: ${check}.`,
@@ -297,12 +354,17 @@ export async function runIterationCheck(
     cwd,
     glow,
     worktreeId: iteration.worktreeId,
-    todoId: todo.id,
+    chatId,
     iterationId: iteration.id,
     driverKind: 'verify',
     overview: prompt,
+    canvasPanelId: run?.canvasPanelId,
   })
   return readVerdict(cwd)
+}
+
+function chatTitleFor(rootPath: string, chatId: string): string {
+  return getChat(rootPath, chatId)?.title ?? 'the task'
 }
 
 /** Read + parse `.cate/verdict.json` from a worktree. Anything unreadable or
@@ -323,7 +385,6 @@ async function readVerdict(cwd: string): Promise<{ met: boolean; reason: string 
 
 export async function runCateAgentTool(ctx: CateAgentContext, tool: string, params: Record<string, unknown>): Promise<string> {
   const { rootPath, workspaceId: wsId } = ctx
-  const todos = useTodosStore.getState()
 
   switch (tool) {
     // --- shared ---
@@ -338,25 +399,21 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       // command param is ignored. Driver-only (it needs the iteration's worktree cwd).
       if (ctx.role !== 'driver') return json({ ok: false, error: 'create_terminal is a driver-only tool' })
       const terminalId = await openDriverTerminal(ctx)
-      // Optional driver-chosen title — names the terminal for its tab + job-card chip.
-      // renamePanelByUser marks it overridden so the detected CLI name ("Claude Code")
-      // doesn't clobber it.
+      // Optional driver-chosen title — names the terminal for its tab + block chip.
       const title = typeof params.title === 'string' ? params.title.trim() : ''
       if (title) useAppStore.getState().renamePanelByUser(wsId, terminalId, title.slice(0, 60))
-      // Track the terminal on the todo so stop() can Ctrl-C it.
-      if (ctx.todoId) {
-        const cur = todoById(rootPath, ctx.todoId)
-        todos.patchTodo(rootPath, ctx.todoId, { terminalNodeIds: [...(cur?.terminalNodeIds ?? []), terminalId] })
+      // Track the terminal on the run so stop() can Ctrl-C it.
+      if (ctx.chatId) {
+        const cur = runFor(rootPath, ctx.chatId)
+        patchRun(rootPath, ctx.chatId, { terminalNodeIds: [...(cur?.terminalNodeIds ?? []), terminalId] })
       }
       // Record on the iteration (work AND verify drivers) so every terminal gets a
-      // job-card chip and is closed with the iteration by select_winner / round-
-      // discard. `kind` keeps the verifier's terminals distinct so the orchestrator
-      // context and winner note stay scoped to the WORK agents.
+      // block chip and is closed with the iteration by select_winner / round-discard.
       if (ctx.iterationId && (ctx.driverKind === 'work' || ctx.driverKind === 'verify')) {
         const found = iterationById(rootPath, ctx.iterationId)
         if (found) {
           const kind = ctx.driverKind === 'verify' ? 'verify' : 'work'
-          patchIteration(rootPath, found.todo.id, ctx.iterationId, {
+          patchIteration(rootPath, found.chatId, ctx.iterationId, {
             agents: [...found.iteration.agents, { agent: kind === 'verify' ? 'verifier' : 'coding agent', kind, terminalId }],
           })
         }
@@ -373,9 +430,8 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       try {
         // The submit Enter MUST be a separate write, after a beat. A TUI like Claude
         // Code uses bracketed-paste/burst detection: a `\r` arriving in the same chunk
-        // as a text blob is treated as a pasted newline (composed into the input), not
-        // a submit — so the task gets typed but never sent. Writing the text, pausing,
-        // then writing a lone `\r` makes the Enter a discrete keypress that submits.
+        // as a text blob is treated as a pasted newline, not a submit. Writing the
+        // text, pausing, then a lone `\r` makes the Enter a discrete keypress.
         if (keys) await window.electronAPI.terminalWrite(ptyId, keys)
         if (enter) {
           if (keys) await new Promise((r) => setTimeout(r, SUBMIT_ENTER_DELAY_MS))
@@ -385,8 +441,7 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
         return json({ ok: false, error: String(err) })
       }
       // background:true arms a one-shot wake — when this terminal's coding-agent turn
-      // finishes (running -> finished), the owning driver is re-prompted. The driver
-      // submits the task this way and then ends its turn.
+      // finishes, the owning driver is re-prompted.
       if (params.background === true) armBackgroundSend(wsId, terminalId)
       return json({ ok: true })
     }
@@ -398,64 +453,60 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
       return json({ ok: true })
     }
 
-    // --- observer ---
-    case 'propose_todo': {
-      const title = String(params.title ?? '').trim()
-      const rationale = String(params.rationale ?? '').trim()
-      if (!title) return json({ ok: false, error: 'title is required' })
-      const now = Date.now()
-      const todo: Todo = {
-        id: generateId(),
-        title,
-        origin: 'cateAgent',
-        status: 'suggested',
-        createdAt: now,
-        updatedAt: now,
-        note: rationale || undefined,
-      }
-      todos.upsertTodo(rootPath, todo)
-      if (!useCateAgentStore.getState().get(wsId).inputOpen) useCateAgentStore.getState().setUnseen(wsId, true)
-      return json({ ok: true, id: todo.id })
-    }
-
-    // --- orchestrator ---
+    // --- chat agent: define → iterate → select ---
     case 'set_goal': {
-      const todoId = String(ctx.todoId ?? '')
+      const chatId = String(ctx.chatId ?? '')
       const goal = String(params.goal ?? '').trim()
       const check = String(params.check ?? '').trim() || `Confirm this is done: ${goal}`
-      const todo = todoById(rootPath, todoId)
-      if (!todo) return json({ ok: false, error: `no todo ${todoId}` })
+      if (!getChat(rootPath, chatId)) return json({ ok: false, error: `no chat ${chatId}` })
       if (!goal) return json({ ok: false, error: 'goal is required' })
-      todos.patchTodo(rootPath, todoId, {
+      // A fresh code task supersedes any prior run in this chat — tear down its
+      // worktrees/terminals first so a lingering unlanded review doesn't leak, then
+      // reset the run loop layer (a new attempts grid is minted on the first iterate).
+      const prior = runFor(rootPath, chatId)
+      if (prior) await teardownRunWork(wsId, rootPath, prior, { deleteBranch: true })
+      patchRun(rootPath, chatId, {
+        status: 'running',
         goal,
         check,
         round: 0,
-        iterations: todo.iterations ?? [],
+        iterations: [],
+        recommendedIterationId: undefined,
+        worktreeId: undefined,
+        branch: undefined,
+        terminalNodeIds: undefined,
+        attemptsMessageId: undefined,
+        note: undefined,
       })
-      return json({
-        ok: true,
-        note: 'Goal recorded. iterate to spawn attempts; each is verified automatically.',
-      })
+      useChatsStore.getState().appendMessage(rootPath, chatId, { id: msgId(), role: 'agent', ts: Date.now(), kind: 'plan', goal, check })
+      return json({ ok: true, note: 'Goal recorded. iterate to spawn attempts; each is verified automatically.' })
     }
 
     case 'iterate': {
-      const todoId = String(ctx.todoId ?? '')
+      const chatId = String(ctx.chatId ?? '')
       const overview = String(params.overview ?? '').trim()
-      const todo = todoById(rootPath, todoId)
-      if (!todo) return json({ ok: false, error: `no todo ${todoId}` })
-      if (!todo.goal) return json({ ok: false, error: 'set_goal first.' })
+      let run = runFor(rootPath, chatId)
+      const chat = getChat(rootPath, chatId)
+      if (!chat) return json({ ok: false, error: `no chat ${chatId}` })
+      if (!run?.goal) return json({ ok: false, error: 'set_goal first.' })
       if (!overview) return json({ ok: false, error: 'overview is required' })
 
-      // Round inference: a new round begins when every iteration in the current
-      // round has settled to a non-winning verdict (failed/error/cancelled). Then
-      // the previous round's worktrees are discarded (fresh every round). Otherwise
-      // this is another parallel attempt in the SAME round.
-      const curRound = todo.round ?? 0
-      const curIters = (todo.iterations ?? []).filter((i) => i.round === curRound)
+      // Mint the live attempts grid block on the first iterate of this task.
+      if (!run.attemptsMessageId) {
+        const mid = msgId()
+        useChatsStore.getState().appendMessage(rootPath, chatId, { id: mid, role: 'agent', ts: Date.now(), kind: 'attempts' })
+        patchRun(rootPath, chatId, { attemptsMessageId: mid })
+        run = runFor(rootPath, chatId)!
+      }
+
+      // Round inference: a new round begins when every iteration in the current round
+      // has settled to a non-winning verdict. Then the previous round's worktrees are
+      // discarded. Otherwise this is another parallel attempt in the SAME round.
+      const curRound = run.round ?? 0
+      const curIters = (run.iterations ?? []).filter((i) => i.round === curRound)
       const roundDone = curRound === 0 || (curIters.length > 0 && curIters.every((i) => i.status === 'failed' || i.status === 'error' || i.status === 'cancelled'))
-      // Cap on simultaneous attempts (Settings → Cate Agent) — each one is a fresh
-      // worktree running its own coding agents. Only applies when adding to a live
-      // round; a new round always starts from zero.
+      // Cap on simultaneous attempts (Settings → Cate Agent). Only applies when adding
+      // to a live round; a new round always starts from zero.
       if (!roundDone) {
         const cap = Math.max(1, Math.round(Number(useSettingsStore.getState().cateAgentMaxParallelIterations) || 3))
         const active = curIters.filter((i) => i.status === 'running' || i.status === 'finished' || i.status === 'verifying').length
@@ -474,23 +525,22 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
           for (const tid of iterationTerminalIds(old)) closeCanvasPanel(wsId, tid)
           await teardownWorktree(wsId, rootPath, old.worktreeId)
         }
-        const kept = (todo.iterations ?? []).map((i) => (i.round === curRound ? { ...i, status: 'cancelled' as const } : i))
-        todos.patchTodo(rootPath, todoId, { iterations: kept, round })
+        const kept = (run.iterations ?? []).map((i) => (i.round === curRound ? { ...i, status: 'cancelled' as const } : i))
+        patchRun(rootPath, chatId, { iterations: kept, round })
       }
 
       // Fresh worktree for this iteration, branched off HEAD.
-      const indexInRound = (todoById(rootPath, todoId)?.iterations ?? []).filter((i) => i.round === round).length + 1
-      const nameSource = `${todo.topic || todo.title} r${round}-${indexInRound}`
+      const indexInRound = (runFor(rootPath, chatId)?.iterations ?? []).filter((i) => i.round === round).length + 1
+      const nameSource = `${chat.title} r${round}-${indexInRound}`
       const wt = await createWorktree(wsId, rootPath, nameSource)
       const cwd = wt?.cwd ?? rootPath
       const glow = wt ? worktreeMetaFor(wsId, wt.worktreeId)?.color ?? 'rgb(var(--agent-rgb))' : 'rgb(var(--agent-rgb))'
 
-      // Record the iteration with NO pre-seeded agents — the driver discovers them
-      // as it creates terminals.
+      // Record the iteration with NO pre-seeded agents — the driver discovers them.
       const iterationId = `it-${generateId()}`
       const iteration: Iteration = {
         id: iterationId,
-        todoId,
+        todoId: chatId,
         round,
         worktreeId: wt?.worktreeId,
         branch: wt?.branch,
@@ -498,18 +548,17 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
         status: 'running',
         createdAt: Date.now(),
       }
-      const cur = todoById(rootPath, todoId)
-      todos.patchTodo(rootPath, todoId, { iterations: [...(cur?.iterations ?? []), iteration] })
+      const cur = runFor(rootPath, chatId)
+      patchRun(rootPath, chatId, { iterations: [...(cur?.iterations ?? []), iteration] })
 
-      // Spawn ONE per-iteration driver, seeded with the overview + worktree cwd. It
-      // runs in the background; on settle (no outstanding background send_keys) we
-      // flip the iteration to `finished`, which the controller observes to run the
-      // check. The driver's messages never reach the orchestrator.
+      // Spawn ONE per-iteration driver, seeded with the overview + worktree cwd. On
+      // settle we flip the iteration to `finished`, which the controller observes to
+      // run the check. The driver's messages never reach the chat agent.
       const markSettled = (status: 'finished' | 'error'): void => {
         const found = iterationById(rootPath, iterationId)
-        if (found && found.iteration.status === 'running') patchIteration(rootPath, todoId, iterationId, { status })
+        if (found && found.iteration.status === 'running') patchIteration(rootPath, chatId, iterationId, { status })
       }
-      void runDriverToCompletion({ wsId, rootPath, cwd, glow, worktreeId: wt?.worktreeId, todoId, iterationId, driverKind: 'work', overview })
+      void runDriverToCompletion({ wsId, rootPath, cwd, glow, worktreeId: wt?.worktreeId, chatId, iterationId, driverKind: 'work', overview, canvasPanelId: ctx.canvasPanelId })
         .then((ok) => markSettled(ok ? 'finished' : 'error'))
         .catch((err) => {
           log.warn('[cateAgentTools] iteration %s driver failed: %O', iterationId, err)
@@ -519,56 +568,141 @@ export async function runCateAgentTool(ctx: CateAgentContext, tool: string, para
     }
 
     case 'select_winner': {
-      const todoId = String(ctx.todoId ?? '')
-      const iterationId = resolveIterationId(rootPath, todoId, String(params.iterationId ?? ''))
+      const chatId = String(ctx.chatId ?? '')
+      const iterationId = resolveIterationId(rootPath, chatId, String(params.iterationId ?? ''))
       const reason = String(params.reason ?? '').trim()
-      const todo = todoById(rootPath, todoId)
-      const winner = todo?.iterations?.find((i) => i.id === iterationId)
-      if (!todo || !winner) return json({ ok: false, error: 'todo or iteration not found' })
+      const run = runFor(rootPath, chatId)
+      const winner = run?.iterations?.find((i) => i.id === iterationId)
+      if (!run || !winner) return json({ ok: false, error: 'run or iteration not found' })
       if (!winner.worktreeId || !winner.branch) {
-        return json({ ok: false, error: 'winning iteration has no worktree to land (non-git?) — use update_todo instead.' })
+        return json({ ok: false, error: 'winning iteration has no worktree to land (non-git?) — use fail instead.' })
       }
-      // Discard every OTHER iteration's worktree; the winner's branch is what the
-      // user lands.
-      for (const it of todo.iterations ?? []) {
+      // Discard every OTHER iteration's worktree; the winner's branch is what lands.
+      for (const it of run.iterations ?? []) {
         if (it.id === iterationId) continue
         for (const tid of iterationTerminalIds(it)) closeCanvasPanel(wsId, tid)
         await teardownWorktree(wsId, rootPath, it.worktreeId)
       }
-      const iterations = (todo.iterations ?? []).map((i) =>
+      const iterations = (run.iterations ?? []).map((i) =>
         i.id === iterationId ? { ...i, status: 'passed' as const } : { ...i, status: 'cancelled' as const },
       )
-      todos.patchTodo(rootPath, todoId, {
+      const note = reason || `Winner: ${winner.agents.filter((a) => a.kind !== 'verify').map((a) => a.agent).join(' + ')}`
+      patchRun(rootPath, chatId, {
         iterations,
         recommendedIterationId: iterationId,
         worktreeId: winner.worktreeId,
         branch: winner.branch,
         status: 'review',
-        note: reason || `Winner: ${winner.agents.filter((a) => a.kind !== 'verify').map((a) => a.agent).join(' + ')}`,
+        note,
+      })
+      useChatsStore.getState().appendMessage(rootPath, chatId, {
+        id: msgId(),
+        role: 'agent',
+        ts: Date.now(),
+        kind: 'result',
+        iterationId,
+        met: winner.verify?.met ?? true,
+        reason: winner.verify?.reason || note,
+        worktreeId: winner.worktreeId,
+        branch: winner.branch,
+        note,
       })
       flagUnseen(wsId)
       return json({ ok: true })
     }
 
-    case 'answer': {
-      const text = String(params.text ?? '').trim()
-      const todoId = String(ctx.todoId ?? '')
-      if (!todoId || !text) return json({ ok: false, error: 'todoId and text are required' })
-      todos.patchTodo(rootPath, todoId, { output: text, status: 'done' })
+    case 'fail': {
+      const chatId = String(ctx.chatId ?? '')
+      const reason = String(params.reason ?? '').trim() || 'Could not complete the task.'
+      if (!getChat(rootPath, chatId)) return json({ ok: false, error: `no chat ${chatId}` })
+      patchRun(rootPath, chatId, { status: 'failed', note: reason })
+      useChatsStore.getState().appendMessage(rootPath, chatId, { id: msgId(), role: 'agent', ts: Date.now(), kind: 'result', met: false, reason })
       flagUnseen(wsId)
       return json({ ok: true })
     }
 
-    case 'update_todo': {
-      const todoId = String(ctx.todoId ?? '')
-      const patch: Partial<Todo> = {}
-      const topic = typeof params.topic === 'string' ? params.topic.trim() : ''
-      if (topic) patch.topic = topic.slice(0, 60)
-      if (params.status === 'failed' || params.status === 'in_progress') patch.status = params.status as TodoStatus
-      if (typeof params.note === 'string') patch.note = params.note
-      if (Object.keys(patch).length === 0) return json({ ok: false, error: 'nothing to update' })
-      todos.patchTodo(rootPath, todoId, patch)
-      if (patch.status === 'failed') flagUnseen(wsId)
+    // --- chat agent: delegate a canvas layout task to the canvas subagent ---
+    case 'canvas': {
+      const chatId = String(ctx.chatId ?? '')
+      const request = String(params.request ?? '').trim()
+      if (!request) return json({ ok: false, error: 'request is required' })
+      const mid = msgId()
+      if (chatId) {
+        useChatsStore.getState().appendMessage(rootPath, chatId, { id: mid, role: 'agent', ts: Date.now(), kind: 'canvas', request, working: true, canvasPanelId: ctx.canvasPanelId })
+      }
+      const ok = await runCanvasAgentToCompletion({ wsId, rootPath, request, canvasPanelId: ctx.canvasPanelId })
+      const snapshot = JSON.parse(await buildCanvasSnapshot(wsId, ctx.canvasPanelId)) as { panels: Array<{ id: string; type: string; title: string }> }
+      if (chatId) {
+        useChatsStore.getState().patchMessage(rootPath, chatId, mid, {
+          working: false,
+          panels: (snapshot.panels ?? []).map((p) => ({ id: p.id, type: p.type, title: p.title })),
+        })
+        flagUnseen(wsId)
+      }
+      if (!ok) return json({ ok: false, error: 'canvas subagent failed to start' })
+      return json({ ok: true, canvas: snapshot })
+    }
+
+    // --- canvas subagent ---
+    case 'list_canvas':
+      return buildCanvasSnapshot(wsId, ctx.canvasPanelId)
+
+    case 'create_panel': {
+      const type = String(params.type ?? '') as PanelType
+      const pos: Point | undefined =
+        typeof params.x === 'number' && typeof params.y === 'number' ? { x: params.x, y: params.y } : undefined
+      const placement = { target: 'canvas' as const, focus: false, canvasPanelId: ctx.canvasPanelId }
+      const app = useAppStore.getState()
+      let panelId: string
+      switch (type) {
+        case 'terminal':
+          panelId = app.createTerminal(wsId, undefined, pos, placement, typeof params.cwd === 'string' ? params.cwd : rootPath)
+          break
+        case 'browser':
+          panelId = app.createBrowser(wsId, typeof params.url === 'string' ? params.url : undefined, pos, placement)
+          break
+        case 'editor':
+          panelId = app.createEditor(wsId, typeof params.filePath === 'string' ? params.filePath : undefined, pos, placement)
+          break
+        case 'document':
+          panelId = app.createDocument(wsId, typeof params.filePath === 'string' ? params.filePath : undefined, undefined, pos, placement)
+          break
+        case 'canvas':
+          panelId = app.createCanvas(wsId, pos, placement)
+          break
+        case 'agent':
+          panelId = app.createAgent(wsId, pos, placement)
+          break
+        default:
+          return json({ ok: false, error: `unknown panel type ${type}` })
+      }
+      return json({ ok: true, id: shortId(panelId) })
+    }
+
+    case 'close_panel': {
+      const panelId = resolvePanelId(wsId, String(params.id ?? ''))
+      if (!panelId) return json({ ok: false, error: 'id is required' })
+      closeCanvasPanel(wsId, panelId)
+      return json({ ok: true })
+    }
+
+    case 'move_panel': {
+      const panelId = resolvePanelId(wsId, String(params.id ?? ''))
+      const store = getAgentCanvasStore(wsId, ctx.canvasPanelId)
+      if (!store) return json({ ok: false, error: 'no canvas in this workspace' })
+      const nodeId = store.getState().nodeForPanel(panelId)
+      if (!nodeId) return json({ ok: false, error: `no panel ${String(params.id ?? '')}` })
+      store.getState().moveNode(nodeId, { x: Number(params.x) || 0, y: Number(params.y) || 0 })
+      return json({ ok: true })
+    }
+
+    case 'resize_panel': {
+      const panelId = resolvePanelId(wsId, String(params.id ?? ''))
+      const store = getAgentCanvasStore(wsId, ctx.canvasPanelId)
+      if (!store) return json({ ok: false, error: 'no canvas in this workspace' })
+      const nodeId = store.getState().nodeForPanel(panelId)
+      if (!nodeId) return json({ ok: false, error: `no panel ${String(params.id ?? '')}` })
+      store.getState().resizeNode(nodeId, { width: Number(params.w) || 0, height: Number(params.h) || 0 })
       return json({ ok: true })
     }
 

@@ -12,12 +12,18 @@ export interface CateAgentContext {
   /** Workspace locator / root path (the agent cwd). */
   rootPath: string
   role: CateAgentRole
-  /** The todo this orchestrator/driver session is working on. */
-  todoId?: string
-  /** Monotonic run token (orchestrator only). A todo can be stopped and restarted
-   *  (editJob) reusing the same todoId/panelId; the epoch distinguishes the new
-   *  run from the old, so an in-flight wake/continuation from the old run bails
-   *  instead of driving the new one. */
+  /** The chat this orchestrator/driver session is working on. */
+  chatId?: string
+  /** The canvas panel this run is pinned to — captured when the chat's session starts
+   *  and threaded through drivers + the canvas subagent, so every canvas op (placing
+   *  terminals, moving/creating/closing panels) targets the canvas the run began on,
+   *  regardless of what the user later navigates to. Falls back to the workspace's
+   *  primary canvas when unset or gone (see getAgentCanvasStore). */
+  canvasPanelId?: string
+  /** Monotonic run token (orchestrator only). A run can be stopped and continued
+   *  reusing the same chatId/panelId; the epoch distinguishes the new run from the
+   *  old, so an in-flight wake/continuation from the old run bails instead of driving
+   *  the new one. Refreshed on each user turn to reset the wake budget. */
   epoch?: number
   // --- driver-only fields (one driver per iteration; see codingAgentLauncher) ---
   /** The iteration this driver is executing (work driver) or checking (verifier). */
@@ -45,7 +51,9 @@ export interface CateAgentBridgeHost {
   contextFor(panelId: string): CateAgentContext | null
   /** A run started (agent_start) — also fired on each turn_start for liveness. */
   onRunStart(ctx: CateAgentContext): void
-  /** The whole run finished (agent_end) — the real completion signal. */
-  onRunEnd(ctx: CateAgentContext): void
+  /** The whole run finished (agent_end) — the real completion signal. `finalText`
+   *  is the run's last assistant message (the answer/summary), used to complete a
+   *  simple todo whose turn-end IS its completion. */
+  onRunEnd(ctx: CateAgentContext, finalText?: string): void
   onError(ctx: CateAgentContext, message: string): void
 }

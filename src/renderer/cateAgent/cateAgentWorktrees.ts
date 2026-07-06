@@ -3,7 +3,7 @@
 // tools layer (round-discard / select_winner) and the review actions (merge /
 // discard / dismiss). Resolving a worktree record by id and dropping it from
 // disk + store (checkout, additional root, territory) used to be reimplemented
-// three ways (removeWorktreeById, cleanupWorktree, the teardownTodoWork loop);
+// three ways (removeWorktreeById, cleanupWorktree, the teardownRunWork loop);
 // they all funnel through here now so the cleanup stays identical everywhere.
 //
 // Leaf module: depends only on the app/git stores, so both cateAgentTools and

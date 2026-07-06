@@ -4,7 +4,7 @@
 //
 // Tiny machine-local file recording whether automatic observations are on for
 // this workspace (the Cate Agent itself is always on), so the choice survives a
-// restart. Mirrors projectTodosStore's load/save contract. Gitignored like the
+// restart. Mirrors projectChatsStore's load/save contract. Gitignored like the
 // rest of .cate/ (only workspace.json is shared).
 // =============================================================================
 

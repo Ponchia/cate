@@ -46,15 +46,15 @@ function envelope(tool: string, params: Json): string {
 //     role's framing is injected here, appended to pi's default prompt). ---------
 
 const OBSERVER_PROMPT = [
-  "Observer for a coding workspace. You never act.",
-  "Each turn: remark with a short update; propose_todo only for clearly worthwhile, non-duplicate work.",
+  "Observer for a coding workspace. You never act and never start work.",
+  "Each turn: read a terminal or two if worthwhile, then remark with one short update. That's all.",
 ].join(" ")
 
 const ORCHESTRATOR_PROMPT = [
-  "You orchestrate a coding task, read-only — no edit tools; all changes happen inside iterations.",
-  "Questions and read-only tasks: investigate and answer.",
-  "Otherwise: set_goal (goal + how to check it), then iterate one or more times to race attempts — each spawns a fresh worktree from an overview whose driver picks the agents. End your turn; each attempt is verified automatically and you're woken with its {met, reason}.",
-  "Loop until the goal is fully met: select_winner among passers, iterate again folding in the failures, or update_todo 'failed'.",
+  "You are a chat agent for a coding workspace, read-only — no edit tools; all changes happen inside iterations. The user is talking to you in a persistent thread; keep it conversational.",
+  "Questions, read-only tasks, and canvas/layout work (use `canvas`): just do the work and end your turn — your final message is shown to the user as your reply. No separate finish step.",
+  "Code changes: set_goal (goal + how to check it), then iterate one or more times to race attempts — each spawns a fresh worktree from an overview whose driver picks the agents. End your turn; each attempt is verified automatically and you're woken with its {met, reason}.",
+  "Once you've set a goal you're in the loop until it's met: select_winner among passers, iterate again folding in the failures, or fail with a reason. Here a bare turn-end does NOT finish the job — decide.",
 ].join(" ")
 
 const DRIVER_PROMPT = [
@@ -64,21 +64,32 @@ const DRIVER_PROMPT = [
   "background:true wakes you when that terminal finishes — nudge it again if it stalled. A turn ending with no outstanding background send_keys completes the iteration.",
 ].join(" ")
 
+const CANVAS_PROMPT = [
+  "You manage the workspace canvas. You lay panels out yourself — there is no auto-arrange.",
+  "list_canvas shows every panel with its id, type, title, position (x,y) and size (w,h).",
+  "You can create_panel (any type), close_panel, move_panel and resize_panel. read_terminal lets you read a terminal's screen so you can lay panels out by what they contain.",
+  "Do the requested change to the layout with as few operations as needed, then end your turn.",
+].join(" ")
+
 const ROLE_PROMPTS: Record<string, string> = {
   observer: OBSERVER_PROMPT,
   orchestrator: ORCHESTRATOR_PROMPT,
   driver: DRIVER_PROMPT,
+  canvas: CANVAS_PROMPT,
 }
 
-/** Built-in file-mutation tools removed from every non-driver role (read-only). */
+/** Built-in file-mutation tools removed from every read-only role (observer,
+ *  orchestrator, canvas). The driver is gated to its own narrow set instead. */
 const MUTATING_TOOLS = new Set(["write", "edit"])
 /** The only tools the per-iteration driver keeps — it opens terminals and types
  *  into them. */
 const DRIVER_TOOLS = new Set(["create_terminal", "read_terminal", "send_keys"])
+/** The canvas subagent's tools — it reshapes the canvas but never edits files. */
+const CANVAS_TOOLS = new Set(["list_canvas", "create_panel", "close_panel", "move_panel", "resize_panel", "read_terminal"])
 
 export default function (pi: ExtensionAPI) {
   const role = process.env.CATE_AGENT_ROLE
-  if (role !== "observer" && role !== "orchestrator" && role !== "driver") return // inert for normal sessions
+  if (role !== "observer" && role !== "orchestrator" && role !== "driver" && role !== "canvas") return // inert for normal sessions
 
   // One round-trip helper shared by every tool. Returns the bridge's reply text
   // (already a model-readable string: JSON for structured tools, prose for
@@ -98,7 +109,12 @@ export default function (pi: ExtensionAPI) {
   // across wakes). Built-ins are all registered by the time this fires.
   pi.on("before_agent_start", async (event) => {
     const all = pi.getAllTools().map((t) => t.name)
-    const active = role === "driver" ? all.filter((n) => DRIVER_TOOLS.has(n)) : all.filter((n) => !MUTATING_TOOLS.has(n))
+    const active =
+      role === "driver"
+        ? all.filter((n) => DRIVER_TOOLS.has(n))
+        : role === "canvas"
+          ? all.filter((n) => CANVAS_TOOLS.has(n))
+          : all.filter((n) => !MUTATING_TOOLS.has(n))
     pi.setActiveTools(active)
     return { systemPrompt: `${event.systemPrompt}\n\n${ROLE_PROMPTS[role]}` }
   })
@@ -119,20 +135,6 @@ export default function (pi: ExtensionAPI) {
   })
 
   if (role === "observer") {
-    pi.registerTool({
-      name: "propose_todo",
-      label: "Propose todo",
-      description:
-        "Propose a task for the user to approve. Concrete, non-duplicate.",
-      parameters: Type.Object({
-        title: Type.String({ description: "Short imperative task title." }),
-        rationale: Type.String({ description: "Why it's worth doing now." }),
-      }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "propose_todo", { title: params.title, rationale: params.rationale })
-      },
-    })
-
     pi.registerTool({
       name: "remark",
       label: "Remark",
@@ -182,10 +184,10 @@ export default function (pi: ExtensionAPI) {
       name: "select_winner",
       label: "Select winner",
       description:
-        "Keep one verified iteration's work: moves the todo to review on its worktree and discards the rest.",
+        "Keep one verified iteration's work: moves the task to review on its worktree (Merge/PR/Discard shown to the user) and discards the rest.",
       parameters: Type.Object({
         iterationId: Type.String(),
-        reason: Type.Optional(Type.String({ description: "Why this attempt won (shown on the card)." })),
+        reason: Type.Optional(Type.String({ description: "Why this attempt won (shown in the result block)." })),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         return call(ctx, "select_winner", { iterationId: params.iterationId, reason: params.reason })
@@ -193,40 +195,28 @@ export default function (pi: ExtensionAPI) {
     })
 
     pi.registerTool({
-      name: "remark",
-      label: "Remark",
-      description: "A short status update for the user, between rounds.",
-      parameters: Type.Object({ text: Type.String() }),
+      name: "canvas",
+      label: "Canvas",
+      description:
+        "Delegate a canvas layout task to the canvas subagent: create, move, resize or close panels of any type, or lay the canvas out. It carries out the request and returns the resulting canvas snapshot. Blocks until done.",
+      parameters: Type.Object({
+        request: Type.String({ description: "What to do to the canvas, in plain language." }),
+      }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "remark", { text: params.text })
+        return call(ctx, "canvas", { request: params.request })
       },
     })
 
     pi.registerTool({
-      name: "answer",
-      label: "Answer",
+      name: "fail",
+      label: "Fail task",
       description:
-        "Deliver a text result and complete the job — for questions and read-only tasks.",
+        "Give up on a code task that can't be met — no attempt passed and iterating further won't help. Records the reason for the user. To land a passing attempt use select_winner instead.",
       parameters: Type.Object({
-        text: Type.String({ description: "The user-facing answer. Markdown ok." }),
+        reason: Type.String({ description: "Why the task couldn't be completed." }),
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "answer", { text: params.text })
-      },
-    })
-
-    pi.registerTool({
-      name: "update_todo",
-      label: "Update todo",
-      description:
-        "Set a todo's topic/note, or fail it ('failed' + note). To land work use select_winner instead.",
-      parameters: Type.Object({
-        topic: Type.Optional(Type.String({ description: "Clean 2–5 word title for the job card." })),
-        status: Type.Optional(Type.Literal("failed")),
-        note: Type.Optional(Type.String()),
-      }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
-        return call(ctx, "update_todo", { topic: params.topic, status: params.status, note: params.note })
+        return call(ctx, "fail", { reason: params.reason })
       },
     })
   }
@@ -262,6 +252,98 @@ export default function (pi: ExtensionAPI) {
       }),
       async execute(_id, params, _signal, _onUpdate, ctx) {
         return call(ctx, "send_keys", { terminalId: params.terminalId, keys: params.keys, enter: params.enter, background: params.background })
+      },
+    })
+  }
+
+  if (role === "canvas") {
+    // --- Canvas subagent: reshape the workspace canvas. Works on ALL panel types
+    //     (terminal, browser, editor, canvas, agent, document); it positions panels
+    //     itself — there is deliberately no auto-arrange. ---
+
+    pi.registerTool({
+      name: "list_canvas",
+      label: "List canvas",
+      description:
+        "Every panel on the canvas: [{id, type, title, x, y, w, h}]. Terminal entries include a short screen preview. Positions and sizes are in canvas coordinates.",
+      parameters: Type.Object({}),
+      async execute(_id, _params, _signal, _onUpdate, ctx) {
+        return call(ctx, "list_canvas", {})
+      },
+    })
+
+    pi.registerTool({
+      name: "create_panel",
+      label: "Create panel",
+      description:
+        "Open a new panel of `type` on the canvas. Optional position {x,y} (else auto-placed). type-specific: cwd (terminal), url (browser), filePath (editor/document). Returns {id}.",
+      parameters: Type.Object({
+        type: Type.Union(
+          [
+            Type.Literal("terminal"),
+            Type.Literal("browser"),
+            Type.Literal("editor"),
+            Type.Literal("canvas"),
+            Type.Literal("agent"),
+            Type.Literal("document"),
+          ],
+          { description: "Panel type to create." },
+        ),
+        x: Type.Optional(Type.Number({ description: "Canvas-space left, with y." })),
+        y: Type.Optional(Type.Number({ description: "Canvas-space top, with x." })),
+        cwd: Type.Optional(Type.String({ description: "Working directory (terminal)." })),
+        url: Type.Optional(Type.String({ description: "Initial URL (browser)." })),
+        filePath: Type.Optional(Type.String({ description: "File to open (editor/document)." })),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "create_panel", {
+          type: params.type,
+          x: params.x,
+          y: params.y,
+          cwd: params.cwd,
+          url: params.url,
+          filePath: params.filePath,
+        })
+      },
+    })
+
+    pi.registerTool({
+      name: "close_panel",
+      label: "Close panel",
+      description: "Close (destroy) a panel by id. Returns {ok}.",
+      parameters: Type.Object({
+        id: Type.String({ description: "Panel id from list_canvas." }),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "close_panel", { id: params.id })
+      },
+    })
+
+    pi.registerTool({
+      name: "move_panel",
+      label: "Move panel",
+      description: "Move a panel to canvas-space position {x, y}. Returns {ok}.",
+      parameters: Type.Object({
+        id: Type.String({ description: "Panel id from list_canvas." }),
+        x: Type.Number(),
+        y: Type.Number(),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "move_panel", { id: params.id, x: params.x, y: params.y })
+      },
+    })
+
+    pi.registerTool({
+      name: "resize_panel",
+      label: "Resize panel",
+      description: "Resize a panel to width w and height h (canvas units). Returns {ok}.",
+      parameters: Type.Object({
+        id: Type.String({ description: "Panel id from list_canvas." }),
+        w: Type.Number(),
+        h: Type.Number(),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        return call(ctx, "resize_panel", { id: params.id, w: params.w, h: params.h })
       },
     })
   }

@@ -2,7 +2,7 @@
 // Type declaration for window.electronAPI exposed via contextBridge
 // =============================================================================
 
-import type { AgentCreateOptions, AgentEventEnvelope, AgentExtensionUIResponse, AgentImageAttachment, AgentModelRef, AgentModelDescriptor, AgentRpcState, AgentSessionListEntry, AgentSessionStats, AgentSlashCommand, AgentThinkingLevel, AppSettings, AgentState, AuthProviderDescriptor, AuthProviderStatus, CanvasLayoutSnapshot, CateWindowParams, CustomOpenAIProvider, DockWindowInitPayload, DockWindowSyncState, DetachedDockWindowSnapshot, WindowPanelInfo, WindowPanelReport, DockStateSnapshot, FileSearchOptions, FileSearchResult, FileTreeNode, GitInfo, SearchOptions, SearchResultBatch, SearchDoneEvent, NotificationAction, OAuthFlowEvent, PanelState, PanelTransferSnapshot, PerfSnapshot, Point, SessionSnapshot, SidebarSession, TerminalActivity, WorkspaceInfo, WorkspaceMutationResult, RemoteConnectSpec, RuntimeConnectResult, RuntimeStatusEvent, RuntimeConnection, RuntimePhase, RemoteProjectEntry, SshHostEntry, UIState } from './types'
+import type { AgentCreateOptions, AgentEventEnvelope, AgentExtensionUIResponse, AgentImageAttachment, AgentModelRef, AgentModelDescriptor, AgentRpcState, AgentSessionListEntry, AgentSessionStats, AgentSlashCommand, AgentThinkingLevel, AppSettings, AgentState, AuthProviderDescriptor, AuthProviderStatus, CanvasLayoutSnapshot, CateWindowParams, CustomOpenAIProvider, DockWindowInitPayload, DockWindowSyncState, DetachedDockWindowSnapshot, WindowPanelInfo, WindowPanelReport, DockStateSnapshot, FileSearchOptions, FileSearchResult, FileTreeNode, GitInfo, SearchOptions, SearchResultBatch, SearchDoneEvent, NotificationAction, OAuthFlowEvent, PanelState, PanelTransferSnapshot, PerfSnapshot, Point, ProviderVerification, SessionSnapshot, SidebarSession, TerminalActivity, WorkspaceInfo, WorkspaceMutationResult, RemoteConnectSpec, RuntimeConnectResult, RuntimeStatusEvent, RuntimeConnection, RuntimePhase, RemoteProjectEntry, SshHostEntry, UIState } from './types'
 import type { SavedSkill, InstalledSkill, SkillEntry, SkillSource, SkillTargetId } from './skills'
 import type { ExtensionListEntry, ExtensionManifest } from './extensions'
 
@@ -420,17 +420,17 @@ export interface ElectronAPI {
     session: import('./types').ProjectSessionFile | null
   } | null>
 
-  /** Load the per-workspace todo list from .cate/todos.json (empty if absent). */
-  projectTodosLoad(rootPath: string): Promise<import('./types').Todo[]>
-
-  /** Persist the whole per-workspace todo list to .cate/todos.json. */
-  projectTodosSave(rootPath: string, todos: import('./types').Todo[]): Promise<void>
-
   /** Load per-workspace Cate Agent enablement from .cate/cateAgent.json. */
   projectCateAgentLoad(rootPath: string): Promise<import('./types').ProjectCateAgentFile>
 
   /** Persist per-workspace Cate Agent enablement to .cate/cateAgent.json. */
   projectCateAgentSave(rootPath: string, state: import('./types').ProjectCateAgentFile): Promise<void>
+
+  /** Load the per-workspace Cate Agent chats from .cate/chats.json (empty if absent). */
+  projectChatsLoad(rootPath: string): Promise<import('./types').Chat[]>
+
+  /** Persist the whole per-workspace Cate Agent chat list to .cate/chats.json. */
+  projectChatsSave(rootPath: string, chats: import('./types').Chat[]): Promise<void>
 
   // ---------------------------------------------------------------------------
   // App
@@ -1038,8 +1038,14 @@ export interface ElectronAPI {
   /** List all known providers (built-in + custom). */
   authListProviders(): Promise<AuthProviderDescriptor[]>
 
-  /** Get current connection status for each provider. */
+  /** Get current connection status for each provider (presence-only, cheap). */
   authStatus(): Promise<AuthProviderStatus[]>
+
+  /** Verify a provider's credential is usable: refreshes an OAuth token (→
+   *  `needsReauth` if it can't), or reports presence for API-key / env / custom
+   *  providers (→ `error` if no credential). Does not make model requests — that
+   *  runs through the runtime session, not the desktop process. */
+  authVerify(providerId: string): Promise<ProviderVerification>
 
   /** Begin an OAuth login flow for the given provider. Returns when done or errored. */
   authOAuthStart(providerId: string): Promise<{ ok: true } | { ok: false; error: string }>

@@ -120,13 +120,13 @@ export const WORKSPACE_EXTERNAL_EDIT = 'project:externalEdit' // main -> rendere
 // the current in-app layout overwrites the external edit.
 export const WORKSPACE_EXTERNAL_EDIT_DISMISS = 'project:externalEditDismiss' // renderer -> main
 
-// Per-workspace todo list (.cate/todos.json) — the Cate Agent's shared task store.
-export const PROJECT_TODOS_LOAD = 'project:todosLoad' // renderer -> main
-export const PROJECT_TODOS_SAVE = 'project:todosSave' // renderer -> main
-
 // Per-workspace Cate Agent enablement (.cate/cateAgent.json).
 export const PROJECT_CATE_AGENT_LOAD = 'project:cateAgentLoad' // renderer -> main
 export const PROJECT_CATE_AGENT_SAVE = 'project:cateAgentSave' // renderer -> main
+
+// Per-workspace Cate Agent chats (.cate/chats.json) — the agent's front door.
+export const PROJECT_CHATS_LOAD = 'project:chatsLoad' // renderer -> main
+export const PROJECT_CHATS_SAVE = 'project:chatsSave' // renderer -> main
 
 // Boot snapshot — a tiny JSON file (geometry, theme, last workspace id, native
 // tabs flag) written by the renderer whenever the relevant settings change.
@@ -379,6 +379,7 @@ export const SKILLS_SET_TOKEN = 'skills:setToken'             // renderer -> mai
 // Pi auth / providers
 export const AUTH_LIST_PROVIDERS = 'auth:listProviders'
 export const AUTH_STATUS = 'auth:status'
+export const AUTH_VERIFY = 'auth:verify'
 export const AUTH_OAUTH_START = 'auth:oauthStart'
 export const AUTH_OAUTH_PROMPT_REPLY = 'auth:oauthPromptReply' // renderer -> main
 export const AUTH_OAUTH_EVENT = 'auth:oauthEvent'              // main -> renderer

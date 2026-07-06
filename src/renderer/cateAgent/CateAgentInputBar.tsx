@@ -103,7 +103,7 @@ export const CateAgentInputBar: React.FC<{
             onClose()
           }
         }}
-        placeholder="Create a todo…"
+        placeholder="Message Cate…"
         className="flex-1 min-w-0 resize-none bg-transparent text-sm leading-snug text-primary px-2 py-1.5 outline-none placeholder:text-muted"
         style={{ maxHeight: MAX_HEIGHT }}
       />

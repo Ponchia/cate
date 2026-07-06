@@ -77,10 +77,10 @@ import {
   SESSION_FLUSH_SAVE_DONE,
   PROJECT_STATE_SAVE,
   PROJECT_STATE_LOAD,
-  PROJECT_TODOS_LOAD,
-  PROJECT_TODOS_SAVE,
   PROJECT_CATE_AGENT_LOAD,
   PROJECT_CATE_AGENT_SAVE,
+  PROJECT_CHATS_LOAD,
+  PROJECT_CHATS_SAVE,
   WORKSPACE_EXTERNAL_EDIT,
   WORKSPACE_EXTERNAL_EDIT_DISMISS,
   BOOT_SNAPSHOT_WRITE,
@@ -243,6 +243,7 @@ import {
   SKILLS_SET_TOKEN,
   AUTH_LIST_PROVIDERS,
   AUTH_STATUS,
+  AUTH_VERIFY,
   AUTH_OAUTH_START,
   AUTH_OAUTH_PROMPT_REPLY,
   AUTH_OAUTH_EVENT,
@@ -419,10 +420,10 @@ const invokeForwarders = {
   // Session
   projectStateSave: makeInvoker<'projectStateSave'>(PROJECT_STATE_SAVE),
   projectStateLoad: makeInvoker<'projectStateLoad'>(PROJECT_STATE_LOAD),
-  projectTodosLoad: makeInvoker<'projectTodosLoad'>(PROJECT_TODOS_LOAD),
-  projectTodosSave: makeInvoker<'projectTodosSave'>(PROJECT_TODOS_SAVE),
   projectCateAgentLoad: makeInvoker<'projectCateAgentLoad'>(PROJECT_CATE_AGENT_LOAD),
   projectCateAgentSave: makeInvoker<'projectCateAgentSave'>(PROJECT_CATE_AGENT_SAVE),
+  projectChatsLoad: makeInvoker<'projectChatsLoad'>(PROJECT_CHATS_LOAD),
+  projectChatsSave: makeInvoker<'projectChatsSave'>(PROJECT_CHATS_SAVE),
 
   // Dialog
   openFolderDialog: makeInvoker<'openFolderDialog'>(DIALOG_OPEN_FOLDER),
@@ -602,6 +603,7 @@ const invokeForwarders = {
   // Pi auth / providers
   authListProviders: makeInvoker<'authListProviders'>(AUTH_LIST_PROVIDERS),
   authStatus: makeInvoker<'authStatus'>(AUTH_STATUS),
+  authVerify: makeInvoker<'authVerify'>(AUTH_VERIFY),
   authOAuthStart: makeInvoker<'authOAuthStart'>(AUTH_OAUTH_START),
   authOAuthPromptReply: makeInvoker<'authOAuthPromptReply'>(AUTH_OAUTH_PROMPT_REPLY),
   authSaveApiKey: makeInvoker<'authSaveApiKey'>(AUTH_SAVE_API_KEY),
