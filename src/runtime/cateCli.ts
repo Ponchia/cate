@@ -8,14 +8,7 @@
 
 import path from 'path'
 import { existsSync } from 'fs'
-
-/** The runtime install dir — two levels up from the bundled node runtime
- *  (process.execPath == <installDir>/runtime/bin/node[.exe]). Mirrors
- *  ensurePi.ts's installRoot(); the unified runtime/bin/ layout keeps this depth
- *  identical across platforms (node.exe on win32). */
-function installRoot(): string {
-  return path.resolve(path.dirname(process.execPath), '..', '..')
-}
+import { installRoot } from './installRoot'
 
 /** Directory holding the `cate` / `cate.cmd` launcher shims. Prepend this to a
  *  shell's PATH to make `cate` callable. */
@@ -38,8 +31,20 @@ export function cateCliPath(): string {
  *  Finds the PATH key case-insensitively (Windows uses `Path`). */
 export function catePathEnv(env: Record<string, string>): Record<string, string> {
   if (!env.CATE_API) return env
-  const binDir = cateBinDir()
-  if (!existsSync(binDir)) return env
+  const binDir = presentBinDir()
+  if (!binDir) return env
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
   return { ...env, [key]: binDir + path.delimiter + (env[key] ?? '') }
+}
+
+/** cateBinDir() is invariant for the daemon's lifetime (installRoot never
+ *  moves), so stat it once and cache the result — spawns are a hot path and
+ *  shouldn't re-hit the filesystem. Returns the dir when present, else null. */
+let cachedBinDir: string | null | undefined
+function presentBinDir(): string | null {
+  if (cachedBinDir === undefined) {
+    const binDir = cateBinDir()
+    cachedBinDir = existsSync(binDir) ? binDir : null
+  }
+  return cachedBinDir
 }

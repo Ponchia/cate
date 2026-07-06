@@ -17,8 +17,8 @@
 // scope has its own group; `api` stays as the raw passthrough for anything a
 // group verb doesn't cover:
 //   cate <group> <verb> [args]       resolved via the GROUPS registry
-//     browser | workspace | theme | ui | editor | canvas | panel | agent |
-//     storage — see USAGE (bottom of file) for each group's verbs
+//     browser | workspace | theme | ui | editor | canvas | panel — see USAGE
+//     (bottom of file) for each group's verbs
 //   cate api <method> [jsonArgs]     generic passthrough to ANY cate.* method
 //
 // Flags: --panel <id> --json --timeout <ms> --help/-h --version.
@@ -28,7 +28,7 @@
 // =============================================================================
 
 import { parseArgs } from 'node:util'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readSync, openSync, closeSync, fstatSync, constants } from 'node:fs'
 
 /** Version of the CLI tool itself (printed by --version). The API's own version
  *  is reachable via `cate api version`. */
@@ -70,6 +70,9 @@ export interface Flags {
 export interface Request {
   method: string
   args: Record<string, unknown>
+  /** Set when `args.panelId` came from a `--panel` flag on a panel-addressed
+   *  method, so the dispatcher expands a short prefix to a full panelId. */
+  resolvePanel?: boolean
 }
 
 type VerbBuilder = (args: string[], flags: Flags) => Request
@@ -85,17 +88,6 @@ function need(value: string | undefined, name: string): string {
  *  quoting). Empty → usage error. */
 function needRest(rest: string[], name: string): string {
   return need(rest.join(' ') || undefined, name)
-}
-
-/** Parse a storage value: JSON when it parses (numbers, objects, booleans),
- *  otherwise the raw string. So `set n 5` stores 5 and `set who alice` stores
- *  "alice". */
-function parseValue(raw: string): unknown {
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return raw
-  }
 }
 
 export const GROUPS: Record<string, Group> = {
@@ -133,25 +125,11 @@ export const GROUPS: Record<string, Group> = {
   panel: {
     'set-title': (a) => ({ method: 'cate.panel.setTitle', args: { title: needRest(a, 'title') } }),
   },
-  agent: {
-    run: (a) => ({ method: 'cate.agent.run', args: { prompt: needRest(a, 'prompt') } }),
-    open: (a) => ({ method: 'cate.agent.open', args: a[0] ? { resume: a[0] } : {} }),
-    send: (a) => ({
-      method: 'cate.agent.send',
-      args: { sessionId: need(a[0], 'sessionId'), prompt: needRest(a.slice(1), 'prompt') },
-    }),
-    dispose: (a) => ({ method: 'cate.agent.dispose', args: { sessionId: need(a[0], 'sessionId') } }),
-    cancel: () => ({ method: 'cate.agent.cancel', args: {} }),
-  },
-  storage: {
-    get: (a) => ({ method: 'cate.storage.get', args: { key: need(a[0], 'key') } }),
-    set: (a) => ({
-      method: 'cate.storage.set',
-      args: { key: need(a[0], 'key'), value: parseValue(need(a[1], 'value')) },
-    }),
-    delete: (a) => ({ method: 'cate.storage.delete', args: { key: need(a[0], 'key') } }),
-    keys: () => ({ method: 'cate.storage.keys', args: {} }),
-  },
+  // NOTE: no `agent` or `storage` group. Those scopes are never granted to the
+  // first-party terminal endpoint this CLI talks to (see workspaceCateApi
+  // GRANTED_SCOPES), so a dedicated group would always fail with scope-denied.
+  // They remain reachable — and honestly so — only via `cate api <method>`, which
+  // surfaces the real error if the endpoint ever lacks the scope.
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +219,20 @@ export function buildRequest(
   }
 
   // --panel addresses a specific target panel (args.panelId). Explicit args win.
-  if (flags.panel && req.args.panelId === undefined) req.args.panelId = flags.panel
+  // When the id comes from the flag on a panel-addressed method, flag it so the
+  // dispatcher can expand a short prefix to a full panelId.
+  if (flags.panel !== undefined && req.args.panelId === undefined) {
+    req.args.panelId = flags.panel
+    if (resolvesPanelId(req.method)) req.resolvePanel = true
+  }
   return req
+}
+
+/** Browser panels are the only targets addressable by a short `--panel` prefix
+ *  (resolved against `browser list`); `list` itself takes no target. Keeping
+ *  this predicate here leaves the dispatcher in run() fully method-agnostic. */
+function resolvesPanelId(method: string): boolean {
+  return method.startsWith('cate.browser.') && method !== 'cate.browser.list'
 }
 
 // ---------------------------------------------------------------------------
@@ -367,21 +357,13 @@ function formatSnapshot(v: unknown): string {
   if (url) lines.push(`url: ${url}`)
   if (o && typeof o.title === 'string') lines.push(`title: ${o.title}`)
 
-  const nodes = o
-    ? (o.nodes ?? o.elements ?? o.refs)
-    : Array.isArray(v)
-      ? v
-      : undefined
-  const list = Array.isArray(nodes) ? nodes : Array.isArray(v) ? v : []
-  for (const n of list) {
+  const refs = Array.isArray(o?.refs) ? o.refs : []
+  for (const n of refs) {
     const e = asObj(n)
     if (!e) continue
-    const ref = e.ref ?? e.id ?? '?'
-    const role = e.role ?? e.type ?? ''
-    const name = e.name ?? e.label ?? e.text ?? ''
-    const parts = [`[${ref}]`]
-    if (role) parts.push(String(role))
-    parts.push(JSON.stringify(String(name)))
+    const parts = [`[${e.ref ?? '?'}]`]
+    if (e.role) parts.push(String(e.role))
+    parts.push(JSON.stringify(String(e.name ?? '')))
     lines.push(parts.join(' '))
   }
   return lines.join('\n') || '(empty snapshot)'
@@ -429,8 +411,8 @@ export function formatHuman(method: string, value: unknown): string {
     case 'cate.browser.reload':
     case 'cate.browser.click':
     case 'cate.browser.type':
-      // These resolve to { ok: true }; surface a resulting url if one is present.
-      return pickUrl(value) ?? 'ok'
+      // These resolve to { ok: true } — nothing to print.
+      return 'ok'
     case 'cate.agent.run':
     case 'cate.agent.send':
       // AgentTurnResult { text, message } — the flattened text is what a human wants.
@@ -464,9 +446,6 @@ Groups:
   editor     open <path>
   canvas     create <type>
   panel      set-title <title...>
-  agent      run <prompt...> | open [resume] | send <sessionId> <prompt...>
-             | dispose <sessionId> | cancel
-  storage    get <key> | set <key> <value> | delete <key> | keys
 
 Flags:
   --panel <id>     target a specific panel (sets args.panelId)
@@ -528,16 +507,10 @@ export async function run(argv: string[], deps: RunDeps): Promise<number> {
   const sendDeps: SendDeps = { fetch: deps.fetch, env: deps.env, timeout }
   let value: unknown
   try {
-    // A `--panel` value may be the short 8-char id shown by `list`. Resolve it to
-    // the full panelId before dispatching any targeted browser command. `list`
-    // itself takes no target, so skip it.
-    if (
-      parsed.flags.panel &&
-      req.method.startsWith('cate.browser.') &&
-      req.method !== 'cate.browser.list' &&
-      req.args.panelId === parsed.flags.panel
-    ) {
-      req.args.panelId = await resolvePanel(parsed.flags.panel, sendDeps)
+    // A `--panel` value may be the short 8-char id shown by `list`; buildRequest
+    // marks the requests whose panelId needs expanding to a full id.
+    if (req.resolvePanel) {
+      req.args.panelId = await resolvePanel(String(req.args.panelId), sendDeps)
     }
     value = await send(req.method, req.args, sendDeps)
   } catch (err) {
@@ -567,12 +540,56 @@ export async function run(argv: string[], deps: RunDeps): Promise<number> {
 // bundle `require.main === module` is true and this runs.
 // ---------------------------------------------------------------------------
 
+/** Read the piped args for `api` WITHOUT ever blocking indefinitely.
+ *
+ *  The naive `readFileSync(0)` blocks until EOF, which never comes when stdin is
+ *  an inherited, still-open pipe (a common agent-shell fd) — so `cate api foo`
+ *  with no positional JSON hangs forever. We only consume input we can finish
+ *  reading:
+ *   - a redirected regular file always has an EOF, so read it whole;
+ *   - a pipe/socket may be an idle, EOF-less fd, so read only what is already
+ *     buffered via a non-blocking reopen — an idle pipe yields EAGAIN → null;
+ *   - anything else (/dev/null, a char device) carries no piped args → null. */
 function defaultReadStdin(): string | null {
   if (process.stdin.isTTY) return null
   try {
-    return readFileSync(0, 'utf8')
+    const stat = fstatSync(0)
+    if (stat.isFile()) return readFileSync(0, 'utf8')
+    if (stat.isFIFO() || stat.isSocket()) return readAvailable()
+    return null
   } catch {
     return null
+  }
+}
+
+/** Drain whatever is already buffered on fd 0 without blocking. Reopens the fd
+ *  with O_NONBLOCK so an idle pipe returns EAGAIN instead of hanging. */
+function readAvailable(): string | null {
+  let fd: number
+  try {
+    fd = openSync('/dev/fd/0', constants.O_RDONLY | constants.O_NONBLOCK)
+  } catch {
+    // No /dev/fd (e.g. Windows): fall back to a blocking read. A genuine
+    // `echo | cate` pipe reaches EOF; only an inherited-open fd could block here.
+    return readFileSync(0, 'utf8')
+  }
+  try {
+    const chunks: Buffer[] = []
+    const buf = Buffer.alloc(65536)
+    for (;;) {
+      let n: number
+      try {
+        n = readSync(fd, buf, 0, buf.length, null)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EAGAIN') break // nothing buffered
+        throw err
+      }
+      if (n === 0) break // EOF
+      chunks.push(Buffer.from(buf.subarray(0, n)))
+    }
+    return chunks.length > 0 ? Buffer.concat(chunks).toString('utf8') : null
+  } finally {
+    closeSync(fd)
   }
 }
 

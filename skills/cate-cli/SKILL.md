@@ -7,15 +7,17 @@ user-invocable: true
 # Driving Cate from the terminal with `cate`
 
 `cate` is a small CLI, preinstalled on PATH **inside Cate terminals and Cate
-agent shells**. It lets you control Cate — its browser panels, plus each `cate.*`
-host scope through a matching command group (`workspace`, `theme`, `ui`,
-`editor`, `canvas`, `panel`, `agent`, `storage`) — and reach any host method
-directly via `cate api`. It talks to a per-workspace loopback endpoint Cate
-injects as `CATE_API` + `CATE_TOKEN`.
+agent shells**. It lets you control Cate — its browser panels, plus each granted
+`cate.*` host scope through a matching command group (`workspace`, `theme`, `ui`,
+`editor`, `canvas`, `panel`) — and reach any host method directly via `cate api`.
+It talks to a per-workspace loopback endpoint Cate injects as `CATE_API` +
+`CATE_TOKEN`.
 
-**It only works inside a Cate terminal.** Outside one those env vars are unset
-and every command exits `3` with `not running inside a Cate terminal`. There is
-nothing to install or configure.
+**It only works inside a Cate terminal, and only when command-line control is
+enabled.** It is off by default; the user turns it on in Settings → Terminal
+("Command-line control"). Until then, and outside a Cate terminal, the env vars
+are unset and every command exits `3` with `not running inside a Cate terminal`.
+There is nothing to install.
 
 ## Browser control
 
@@ -82,22 +84,14 @@ cate ui notify build finished     # OS notification; trailing words are the mess
 cate editor open src/app.ts       # open a file in an editor panel
 cate canvas create terminal       # open a new panel of the given type
 cate panel set-title My Panel     # rename the calling panel
-
-cate storage get <key>            # read this extension's stored value
-cate storage set <key> <value>    # value is parsed as JSON, else stored as a string
-cate storage delete <key>
-cate storage keys                 # one key per line
-
-cate agent run fix the failing test   # one-shot: open -> send -> dispose; prints the reply
-cate agent open [resume]              # start/resume a session; prints its handle
-cate agent send <handle> <prompt...>  # one turn on an open session; prints the reply
-cate agent dispose <handle>
-cate agent cancel                     # abort the in-flight turn
 ```
 
-Values in `storage set` are JSON when they parse (`5`, `true`, `{"a":1}`) and a
-raw string otherwise (`alice`). `agent`/`browser`/`storage`/etc. each require the
-matching host scope; inside a trusted Cate terminal that's already granted.
+Each group maps to a host scope that a Cate terminal is granted. Two host scopes
+are **not** available from a terminal: `agent` (a terminal must not drive the
+agent that may have spawned it) and `storage` (extension-scoped key/value, and a
+shared terminal has no extension identity). They exist only for extensions, so
+this CLI has no `agent`/`storage` group. Calling `cate api agent.*` /
+`cate api storage.*` from a terminal reports a scope error (exit 1).
 
 ## The `cate api` escape hatch
 

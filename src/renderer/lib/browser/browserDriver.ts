@@ -76,20 +76,29 @@ function getWebview(panelId: string): { webview: PortalWebview } | { error: stri
 const SNAPSHOT_JS = `(function () {
   document.querySelectorAll('[data-cate-ref]').forEach(function (el) { el.removeAttribute('data-cate-ref') })
   var sel = 'a[href],button,input,textarea,select,[role],[contenteditable],h1,h2,h3,h4,h5,h6'
-  var refs = []
-  var n = 0
+  // Two passes to avoid layout thrash: a DOM write (setAttribute) invalidates
+  // layout, so any getBoundingClientRect/getComputedStyle in the SAME loop would
+  // force a fresh synchronous reflow per element (O(n)). Pass 1 does every layout
+  // read up front; pass 2 does the writes once no more reads follow.
+  // Pass 1 — read-only: keep the visible matches in document order.
+  var visible = []
   Array.prototype.forEach.call(document.querySelectorAll(sel), function (el) {
     var rect = el.getBoundingClientRect()
     var style = getComputedStyle(el)
     if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') return
-    n++
-    var ref = '@e' + n
+    visible.push(el)
+  })
+  // Pass 2 — write refs + build output (no layout reads here).
+  var refs = []
+  for (var i = 0; i < visible.length; i++) {
+    var el = visible[i]
+    var ref = '@e' + (i + 1)
     el.setAttribute('data-cate-ref', ref)
     var role = el.getAttribute('role') || el.tagName.toLowerCase()
     var name = (el.getAttribute('aria-label') || el.textContent || el.getAttribute('placeholder') || el.getAttribute('value') || '').trim().slice(0, 200)
     var value = 'value' in el ? el.value : undefined
     refs.push({ ref: ref, role: role, name: name, value: value })
-  })
+  }
   return { url: location.href, title: document.title, refs: refs }
 })()`
 
@@ -148,7 +157,7 @@ export async function handleBrowserMethod(
         url: isStartPageUrl(p.url) ? '' : (p.url ?? ''),
         focused: p.id === active,
       }))
-    return { ok: true, result: { browsers } }
+    return { ok: true, result: browsers }
   }
 
   // `open` may create a browser when none exists; resolve/handle specially.
@@ -159,7 +168,7 @@ export async function handleBrowserMethod(
     if ('error' in target) {
       if (target.error === 'no-browser') {
         const panelId = useAppStore.getState().createBrowser(workspaceId, url)
-        return { ok: true, result: { panelId } }
+        return { ok: true, result: { panelId, url } }
       }
       return { ok: false, error: target.error }
     }
@@ -168,12 +177,12 @@ export async function handleBrowserMethod(
     // stored URL so the panel navigates there on mount — a real success.
     if (!webview) {
       useAppStore.getState().updatePanelUrl(workspaceId, target.panelId, url)
-      return { ok: true, result: { panelId: target.panelId } }
+      return { ok: true, result: { panelId: target.panelId, url } }
     }
     try {
       webview.loadURL(url)
       useAppStore.getState().updatePanelUrl(workspaceId, target.panelId, url)
-      return { ok: true, result: { panelId: target.panelId } }
+      return { ok: true, result: { panelId: target.panelId, url } }
     } catch {
       return { ok: false, error: 'webview-not-ready' }
     }
@@ -214,9 +223,11 @@ export async function handleBrowserMethod(
       }
       case 'screenshot': {
         const wcId = webview.getWebContentsId()
-        let result: { filePath: string; dataUrl: string } | null
+        // The CLI/agent path returns only the file path, so opt out of the
+        // full-page base64 encode the UI button needs.
+        let result: { filePath: string } | null
         try {
-          result = await window.electronAPI.webviewScreenshot(wcId)
+          result = await window.electronAPI.webviewScreenshot(wcId, { wantDataUrl: false })
         } catch {
           return { ok: false, error: 'screenshot-failed' }
         }

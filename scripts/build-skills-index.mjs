@@ -195,18 +195,12 @@ async function localSkills(src) {
   return out
 }
 
-async function main() {
-  const { sources } = JSON.parse(await readFile(SOURCES_PATH, 'utf-8'))
-  const skills = []
-  for (const src of sources) {
-    try {
-      const found = src.firstParty ? await localSkills(src) : await crawlSource(src)
-      console.log(`${src.repo}: ${found.length} skill(s)${src.firstParty ? ' (local)' : ''}`)
-      skills.push(...found)
-    } catch (err) {
-      console.error(`${src.repo}: ${err.message}`)
-    }
-  }
+const MIN_STARS = 10_000
+
+// Dedupe by id, apply the quality floors, and stamp first-party entries. Pure so
+// it can be unit-tested against the exact filter logic the index ships with.
+export function curateSkills(skills, firstPartyIds) {
+  const isFirstParty = (s) => firstPartyIds.has(s.sourceId)
   // The same skill can appear at two paths in a repo (e.g. a second copy whose
   // SKILL.md has empty frontmatter), and since the id is repo+name it collides.
   // Keep one entry per id — prefer the one that actually carries a description —
@@ -223,11 +217,9 @@ async function main() {
   // Quality floor: drop entries with no frontmatter description (no search
   // signal, render as broken rows) and from repos under MIN_STARS. Keeps the
   // catalog selective — only well-adopted, documented skills ship. First-party
-  // sources (Cate's own, read locally above) are always kept — never filtered.
-  const MIN_STARS = 10_000
-  const firstPartyIds = new Set(sources.filter((s) => s.firstParty).map((s) => s.id))
-  const isFirstParty = (s) => firstPartyIds.has(s.sourceId)
-  const described = deduped.filter((s) => isFirstParty(s) || (s.description && s.description.trim()))
+  // sources (Cate's own) skip the star floor, but NOT the description floor: a
+  // descriptionless skill renders as a broken row no matter who authored it.
+  const described = deduped.filter((s) => s.description && s.description.trim())
   if (described.length !== deduped.length) {
     console.log(`Dropped ${deduped.length - described.length} entr(ies) with no description`)
   }
@@ -235,14 +227,37 @@ async function main() {
   if (curated.length !== described.length) {
     console.log(`Dropped ${described.length - curated.length} entr(ies) under ${MIN_STARS} stars`)
   }
+  // Stamp first-party entries so the UI can pin them without hardcoding a
+  // source id — the `firstParty` flag on the source flows through to the entry.
+  const stamped = curated.map((s) => (isFirstParty(s) ? { ...s, firstParty: true } : s))
   // Stable order so the committed index has minimal diffs.
-  curated.sort((a, b) => a.id.localeCompare(b.id))
-  const index = { generatedAt: new Date().toISOString(), skills: curated }
-  await writeFile(INDEX_PATH, `${JSON.stringify(index, null, 2)}\n`)
-  console.log(`Wrote ${curated.length} skill(s) to ${INDEX_PATH}`)
+  stamped.sort((a, b) => a.id.localeCompare(b.id))
+  return stamped
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+async function main() {
+  const { sources } = JSON.parse(await readFile(SOURCES_PATH, 'utf-8'))
+  const skills = []
+  for (const src of sources) {
+    try {
+      const found = src.firstParty ? await localSkills(src) : await crawlSource(src)
+      console.log(`${src.repo}: ${found.length} skill(s)${src.firstParty ? ' (local)' : ''}`)
+      skills.push(...found)
+    } catch (err) {
+      console.error(`${src.repo}: ${err.message}`)
+    }
+  }
+  const firstPartyIds = new Set(sources.filter((s) => s.firstParty).map((s) => s.id))
+  const stamped = curateSkills(skills, firstPartyIds)
+  const index = { generatedAt: new Date().toISOString(), skills: stamped }
+  await writeFile(INDEX_PATH, `${JSON.stringify(index, null, 2)}\n`)
+  console.log(`Wrote ${stamped.length} skill(s) to ${INDEX_PATH}`)
+}
+
+// Only run the crawl when invoked as a script, not when imported by a test.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}

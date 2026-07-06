@@ -53,10 +53,6 @@ const api = () => window.electronAPI
 // skills-index.json).
 const SKILL_SOURCES_URL = 'https://github.com/0-AI-UG/cate/blob/main/registry/sources.json'
 
-// The `sourceId` of Cate's own first-party skills — surfaced in their own
-// section at the top of the list (see registry/sources.json `firstParty`).
-const CATE_SOURCE_ID = 'cate'
-
 function matches(entry: SkillEntry, terms: string[]): boolean {
   if (terms.length === 0) return true
   const hay = `${entry.name} ${entry.description}`.toLowerCase()
@@ -199,32 +195,25 @@ export function SkillsDialog() {
         .sort((a, b) => a.name.localeCompare(b.name)),
     [saved, installedIds, byId, terms],
   )
-  // Cate's own skills, pinned to the top; excluded from Browse so they show once.
+  // Catalog entries not already saved or installed, matching the query — split
+  // into Cate's own (pinned to the top) and the rest (Browse), so each shows once.
+  const available = useCallback(
+    (e: SkillEntry) => !savedIds.has(e.id) && !installedIds.has(e.id) && matches(e, terms),
+    [savedIds, installedIds, terms],
+  )
   const cateRows = useMemo(
     () =>
       index
-        .filter(
-          (e) =>
-            e.sourceId === CATE_SOURCE_ID &&
-            !savedIds.has(e.id) &&
-            !installedIds.has(e.id) &&
-            matches(e, terms),
-        )
+        .filter((e) => e.firstParty && available(e))
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [index, savedIds, installedIds, terms],
+    [index, available],
   )
   const browseRows = useMemo(
     () =>
       index
-        .filter(
-          (e) =>
-            e.sourceId !== CATE_SOURCE_ID &&
-            !savedIds.has(e.id) &&
-            !installedIds.has(e.id) &&
-            matches(e, terms),
-        )
+        .filter((e) => !e.firstParty && available(e))
         .sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0) || a.name.localeCompare(b.name)),
-    [index, savedIds, installedIds, terms],
+    [index, available],
   )
 
   if (!show) return null

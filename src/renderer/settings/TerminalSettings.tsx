@@ -87,7 +87,7 @@ export function TerminalSettings() {
       </SettingRow>
       <SettingRow
         label="Command-line control (cate CLI)"
-        description="Let agents and tools in your terminals drive Cate (browser, panels, editor) via the `cate` command. Exposes a per-workspace loopback endpoint to terminal and agent processes. Off: the endpoint is never created."
+        description="Let agents and tools in your terminals drive Cate (browser, panels, editor) via the `cate` command. Off by default: turning it on puts a loopback endpoint and token in the env of every process in your terminals, so any of them can drive the browser on your live session. Off: the endpoint is never created."
       >
         <Toggle
           checked={store.cliEnabled}

@@ -35,7 +35,7 @@ import { PERF_GET } from '../shared/ipc-channels'
 import { TELEMETRY_NOTICE_VERSION } from '../shared/types'
 import { installWebContentsSecurity } from './webSecurity'
 import { installProxyAuthHandler } from './browserProxy'
-import { installThemeSkill } from './installThemeSkill'
+import { installBundledSkill } from './installBundledSkill'
 
 import { createWindow } from './windows/windowFactory'
 import { IS_E2E } from './windows/reveal'
@@ -67,35 +67,6 @@ async function runSmokeAssertions(win: BrowserWindow): Promise<void> {
 
   if (!result?.hasElectronAPI || !result?.hasFullscreenCheck) {
     throw new Error('Smoke test failed: preload bridge did not initialize correctly')
-  }
-}
-
-/** Install the cate-cli agent skill into ~/.claude/skills/cate-cli/ on launch
- *  (copy-if-missing, mirroring installThemeSkill). It teaches an agent running
- *  in a Cate terminal how to use the `cate` CLI. Source is bundled at
- *  skills/cate-cli/ (dev: app path; prod: resourcesPath extraResources). */
-let cateCliSkillInstalled = false
-async function installCliSkill(): Promise<void> {
-  if (cateCliSkillInstalled) return
-  cateCliSkillInstalled = true
-  try {
-    const fs = require('fs') as typeof import('fs')
-    const os = require('os') as typeof import('os')
-    const src = [
-      path.join(app.getAppPath(), 'skills', 'cate-cli', 'SKILL.md'),
-      path.join(process.resourcesPath ?? '', 'skills', 'cate-cli', 'SKILL.md'),
-    ].find((p) => fs.existsSync(p))
-    if (!src) {
-      log.warn('[installCliSkill] source not found — cate-cli skill not installed')
-      return
-    }
-    const dest = path.join(os.homedir(), '.claude', 'skills', 'cate-cli', 'SKILL.md')
-    if (fs.existsSync(dest)) return // keep any user edits
-    fs.mkdirSync(path.dirname(dest), { recursive: true })
-    fs.copyFileSync(src, dest)
-    log.info('[installCliSkill] installed %s', dest)
-  } catch (err) {
-    log.warn('[installCliSkill] install failed: %O', err)
   }
 }
 
@@ -372,10 +343,11 @@ app.whenReady().then(async () => {
   registerCriticalHandlers()
   log.info('Critical IPC handlers registered')
 
-  // Install the cate-theme authoring skill into ~/.claude/skills (copy-if-missing).
-  void installThemeSkill()
-  // Install the cate-cli agent skill into ~/.claude/skills (copy-if-missing).
-  void installCliSkill()
+  // Install our first-party skills into ~/.claude/skills (copy-if-missing) so
+  // Claude Code discovers them: cate-theme (theme authoring) and cate-cli
+  // (teaches an agent in a Cate terminal how to use the `cate` CLI).
+  void installBundledSkill('cate-theme')
+  void installBundledSkill('cate-cli')
 
   const mainWin = createWindow({ type: 'main' })
   log.info('Main window created (id=%d)', mainWin.id)

@@ -765,7 +765,8 @@
         "path": "skills/cate-cli"
       },
       "provenance": "curated",
-      "sourceId": "cate"
+      "sourceId": "cate",
+      "firstParty": true
     },
     {
       "id": "cate/cate-extension",
@@ -779,7 +780,8 @@
         "path": "skills/cate-extension"
       },
       "provenance": "curated",
-      "sourceId": "cate"
+      "sourceId": "cate",
+      "firstParty": true
     },
     {
       "id": "cate/cate-theme",
@@ -793,7 +795,8 @@
         "path": "skills/cate-theme"
       },
       "provenance": "curated",
-      "sourceId": "cate"
+      "sourceId": "cate",
+      "firstParty": true
     },
     {
       "id": "coreyhaines-marketing-skills/ab-testing",

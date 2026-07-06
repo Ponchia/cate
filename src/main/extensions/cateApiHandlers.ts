@@ -252,10 +252,32 @@ function scopeGranted(declared: string[] | undefined, required: string): boolean
   return declared.some((s) => s === required || s === namespace)
 }
 
-// Extensions granted agent access this app session. In-memory + host-owned so
-// an extension can't grant itself; re-asked on next launch (a deliberate
-// re-confirm of a powerful capability rather than a persisted grant).
-const agentConsent = new Set<string>()
+// Extensions granted a powerful capability this app session, keyed by
+// capability. In-memory + host-owned so an extension can't grant itself;
+// re-asked on next launch (a deliberate re-confirm rather than a persisted
+// grant). First-party callers are trusted and never reach the prompt.
+const consentGranted = new Map<ConsentCapability, Set<string>>()
+
+type ConsentCapability = 'agent' | 'browser'
+
+/** Per-capability prompt copy — the only thing that differs between capabilities.
+ *  `message` takes the extension's display name. */
+const CONSENT_PROMPTS: Record<ConsentCapability, { title: string; message: (name: string) => string; detail: string }> = {
+  agent: {
+    title: 'Run agent?',
+    message: (name) => `Allow “${name}” to run the agent?`,
+    detail:
+      'This extension wants to run agent tasks on your behalf using your configured model and credentials. ' +
+      'The agent can read and modify files in this workspace. You can watch and stop a run in the Agent panel.',
+  },
+  browser: {
+    title: 'Control the browser?',
+    message: (name) => `Allow “${name}” to control the browser?`,
+    detail:
+      'This extension wants to control the browser panel (navigate, go back/forward, run actions), ' +
+      'which may act on your logged-in sessions. You can revoke this by disabling the extension.',
+  },
+}
 
 /** The active main window the agent run is attached to, or undefined if none. */
 function requireHostWindow(): ReturnType<typeof getActiveMainWindow> {
@@ -311,58 +333,28 @@ function boundedResumePath(resume: string, runtimeId: string, cwd: string): stri
   return normalized
 }
 
-/** Ask the user (once per app session) whether `extensionId` may run the agent.
- *  Returns true if already granted or the user allows. */
-async function ensureAgentConsent(extensionId: string): Promise<boolean> {
-  if (agentConsent.has(extensionId)) return true
+/** Ask the user (once per app session) whether `extensionId` may use
+ *  `capability`. Returns true if already granted or the user allows. */
+async function ensureConsent(extensionId: string, capability: ConsentCapability): Promise<boolean> {
+  let granted = consentGranted.get(capability)
+  if (!granted) consentGranted.set(capability, (granted = new Set()))
+  if (granted.has(extensionId)) return true
   const name = extensionManager.getManifest(extensionId)?.name ?? extensionId
+  const prompt = CONSENT_PROMPTS[capability]
   const win = getActiveMainWindow()
   const opts = {
     type: 'question' as const,
     buttons: ['Allow', 'Deny'],
     defaultId: 0,
     cancelId: 1,
-    title: 'Run agent?',
-    message: `Allow “${name}” to run the agent?`,
-    detail:
-      'This extension wants to run agent tasks on your behalf using your configured model and credentials. ' +
-      'The agent can read and modify files in this workspace. You can watch and stop a run in the Agent panel.',
+    title: prompt.title,
+    message: prompt.message(name),
+    detail: prompt.detail,
   }
   const { response } =
     win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
   if (response === 0) {
-    agentConsent.add(extensionId)
-    return true
-  }
-  return false
-}
-
-// Extensions granted browser control this app session. Same in-memory,
-// host-owned, re-asked-on-launch model as agentConsent — first-party callers
-// never reach here (they're trusted and skip the prompt).
-const browserConsent = new Set<string>()
-
-/** Ask the user (once per app session) whether `extensionId` may control the
- *  browser panel. Returns true if already granted or the user allows. */
-async function ensureBrowserConsent(extensionId: string): Promise<boolean> {
-  if (browserConsent.has(extensionId)) return true
-  const name = extensionManager.getManifest(extensionId)?.name ?? extensionId
-  const win = getActiveMainWindow()
-  const opts = {
-    type: 'question' as const,
-    buttons: ['Allow', 'Deny'],
-    defaultId: 0,
-    cancelId: 1,
-    title: 'Control the browser?',
-    message: `Allow “${name}” to control the browser?`,
-    detail:
-      'This extension wants to control the browser panel (navigate, go back/forward, run actions), ' +
-      'which may act on your logged-in sessions. You can revoke this by disabling the extension.',
-  }
-  const { response } =
-    win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
-  if (response === 0) {
-    browserConsent.add(extensionId)
+    granted.add(extensionId)
     return true
   }
   return false
@@ -415,7 +407,7 @@ export async function dispatchCateInvoke(
     if ('error' in target) return { error: target.error, method }
     // Consent (extension callers only) gates the forward, mirroring the agent
     // one-time-per-session prompt. First-party callers are trusted.
-    if (scope.caller !== 'first-party' && !(await ensureBrowserConsent(extensionId))) {
+    if (scope.caller !== 'first-party' && !(await ensureConsent(extensionId, 'browser'))) {
       return { error: 'consent-denied', method }
     }
     return forwardToOwner(target.wc, { extensionId, workspaceId, panelId: panelId ?? '', method, args })
@@ -465,7 +457,7 @@ export async function dispatchCateInvoke(
       if (!info) return { error: 'no-workspace', method }
       const win = requireHostWindow()
       if (!win) return { error: 'no-host-window', method }
-      if (!(await ensureAgentConsent(extensionId))) return { error: 'consent-denied', method }
+      if (!(await ensureConsent(extensionId, 'agent'))) return { error: 'consent-denied', method }
       try {
         // A turn can take minutes; no short timeout applies here.
         return await agentManager.runForExtension(promptText, {
@@ -493,7 +485,7 @@ export async function dispatchCateInvoke(
       }
       const win = requireHostWindow()
       if (!win) return { error: 'no-host-window', method }
-      if (!(await ensureAgentConsent(extensionId))) return { error: 'consent-denied', method }
+      if (!(await ensureConsent(extensionId, 'agent'))) return { error: 'consent-denied', method }
       try {
         return await agentManager.openForExtension({
           workspaceId, locator: info.rootPath, extensionId, sender: win.webContents, resume,

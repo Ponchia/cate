@@ -4,10 +4,10 @@
 // run inside them can reach Cate's dispatch core.
 //
 // This is the terminal/agent sibling of ExtensionServerManager's CATE_API
-// reverse channel: it stands up the SAME reverse tunnel (createCateApiReverse +
-// runtime.tunnel.listen), but with no server child to spawn and no
-// panel/grace lifecycle — one endpoint per workspace, minted on first use and
-// cached. The env vars CATE_API/CATE_TOKEN are injected into terminal/agent
+// reverse channel: it stands up the SAME reverse tunnel via the shared
+// createCateApiReverse + bindReverseTunnel helpers, but with no server child to
+// spawn and no panel/grace lifecycle — one endpoint per workspace, minted on
+// first use and cached. The env vars CATE_API/CATE_TOKEN are injected into terminal/agent
 // child processes; a POST to CATE_API with `Authorization: Bearer CATE_TOKEN`
 // and body {method,args} dispatches cate.* (see cateApiReverse.ts).
 //
@@ -21,14 +21,14 @@
 // =============================================================================
 
 import { randomBytes } from 'crypto'
-import type { Duplex } from 'stream'
 import log from '../logger'
 import { parseLocator } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import type { Runtime } from '../runtime/types'
 import { getWorkspaceInfo } from '../workspaceManager'
 import { getSetting } from '../settingsFile'
-import { createCateApiReverse, type CateApiReverseEndpoint } from './cateApiReverse'
+import { createCateApiReverse, bindReverseTunnel, type ReverseTunnelBinding } from './cateApiReverse'
+import { KeyedLock } from '../keyedLock'
 
 /** Sentinel extensionId for the first-party terminal/agent CATE_API session.
  *  It is NOT a real extension — createCateApiReverse only uses it for logging
@@ -65,27 +65,17 @@ interface WorkspaceSession {
   runtime: Runtime
   /** Per-workspace bearer the child injects on every CATE_API request. */
   token: string
-  /** Tunnel listener id (also the teardown key). */
-  listenerId: string
   /** Loopback port bound on the runtime host that the child POSTs to. */
   port: number
-  reverse: CateApiReverseEndpoint
-  /** Per-connId inbound duplexes for the reverse listener. */
-  conns: Map<string, Duplex>
+  /** Reverse tunnel binding (endpoint + listener + inbound duplexes). */
+  binding: ReverseTunnelBinding
 }
 
 export class WorkspaceCateApiManager {
   private sessions = new Map<string, WorkspaceSession>()
-  private locks = new Map<string, Promise<unknown>>()
-
   /** Serialize per-workspace so two concurrent terminal spawns don't both mint a
-   *  listener (double-listen). Mirrors ExtensionServerManager.withLock. */
-  private withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.locks.get(key) ?? Promise.resolve()
-    const next = prev.then(fn, fn)
-    this.locks.set(key, next.catch(() => undefined))
-    return next
-  }
+   *  listener (double-listen). */
+  private locks = new KeyedLock()
 
   /**
    * Ensure a CATE_API endpoint exists for `workspaceId` and return {port,token}.
@@ -97,63 +87,48 @@ export class WorkspaceCateApiManager {
     // THE GATE. Read fresh every call so toggling the setting takes effect on the
     // next spawn with no restart. Fail closed on anything but an explicit true.
     if (getSetting('cliEnabled') !== true) return null
-    return this.withLock(workspaceId, () => this.ensureEndpointLocked(workspaceId))
+    return this.locks.run(workspaceId, () => this.ensureEndpointLocked(workspaceId))
   }
 
   private async ensureEndpointLocked(workspaceId: string): Promise<WorkspaceCateApiEndpoint | null> {
     const existing = this.sessions.get(workspaceId)
     if (existing) return { port: existing.port, token: existing.token }
 
-    // Resolve the runtime from the workspace locator (mirror ExtensionServerManager).
-    // No workspace info / no root falls back to the local runtime.
     const info = getWorkspaceInfo(workspaceId)
     const { runtimeId } = parseLocator(info?.rootPath ?? '')
-    const runtime = runtimes.resolve(runtimeId)
 
     const token = randomBytes(32).toString('base64url')
     const listenerId = `cateapi-terminal-${workspaceId}`
 
-    const reverse = createCateApiReverse({
-      extensionId: FIRST_PARTY_ID,
-      workspaceId,
-      token,
-      runtime,
-      caller: 'first-party',
-      grantedScopes: [...GRANTED_SCOPES],
-    })
-    const conns = new Map<string, Duplex>()
-
-    const onConnection = (connId: string): void => {
-      conns.set(connId, reverse.feedConnection(connId))
-    }
-    const onData = (connId: string, b64: string): void => {
-      const duplex = conns.get(connId)
-      if (!duplex) return
-      try {
-        const buf = Buffer.from(b64, 'base64')
-        duplex.push(buf)
-        // Credit the daemon's reverse-tunnel window (mirror of ExtensionServerManager).
-        runtime.tunnel.ack(connId, buf.length)
-      } catch { /* ended */ }
-    }
-    const onClose = (connId: string): void => {
-      const duplex = conns.get(connId)
-      conns.delete(connId)
-      if (duplex) { try { duplex.push(null) } catch { /* ended */ } }
-    }
-
-    let port: number
+    // Fail-soft: resolving the runtime (throws when it's unregistered mid
+    // disconnect/reconnect) or opening the listener can fail. On either, dispose
+    // whatever we stood up and return null so the terminal/agent still spawns,
+    // just without CATE_API.
+    let runtime: Runtime
+    let binding: ReverseTunnelBinding
+    let reverse: ReturnType<typeof createCateApiReverse> | undefined
     try {
-      ;({ port } = await runtime.tunnel.listen(listenerId, onConnection, onData, onClose))
+      // Resolve the runtime from the workspace locator (mirror ExtensionServerManager).
+      // No workspace info / no root falls back to the local runtime.
+      runtime = runtimes.resolve(runtimeId)
+      reverse = createCateApiReverse({
+        extensionId: FIRST_PARTY_ID,
+        workspaceId,
+        token,
+        runtime,
+        caller: 'first-party',
+        grantedScopes: [...GRANTED_SCOPES],
+      })
+      binding = await bindReverseTunnel(runtime, reverse, listenerId)
     } catch (err) {
-      try { reverse.dispose() } catch { /* gone */ }
+      try { reverse?.dispose() } catch { /* gone */ }
       log.warn('[workspace-cateapi] failed to open listener for %s: %O', workspaceId, err)
       return null
     }
 
-    this.sessions.set(workspaceId, { workspaceId, runtime, token, listenerId, port, reverse, conns })
-    log.info('[workspace-cateapi] endpoint up ws=%s port=%d', workspaceId, port)
-    return { port, token }
+    this.sessions.set(workspaceId, { workspaceId, runtime, token, port: binding.port, binding })
+    log.info('[workspace-cateapi] endpoint up ws=%s port=%d', workspaceId, binding.port)
+    return { port: binding.port, token }
   }
 
   /** Tear down + drop one workspace's endpoint. */
@@ -184,9 +159,7 @@ export class WorkspaceCateApiManager {
   }
 
   private teardown(session: WorkspaceSession): void {
-    try { session.runtime.tunnel.stopListen(session.listenerId) } catch { /* already gone */ }
-    try { session.reverse.dispose() } catch { /* gone */ }
-    session.conns.clear()
+    session.binding.dispose()
   }
 }
 
