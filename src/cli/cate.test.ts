@@ -98,6 +98,99 @@ describe('buildRequest — browser group', () => {
   })
 })
 
+describe('buildRequest — per-scope groups', () => {
+  it('workspace / theme get take no args', () => {
+    expect(buildRequest(['workspace', 'get'], noFlags, noStdin)).toEqual({
+      method: 'cate.workspace.get',
+      args: {},
+    })
+    expect(buildRequest(['theme', 'get'], noFlags, noStdin).method).toBe('cate.theme.get')
+  })
+
+  it('ui notify joins trailing positionals into message', () => {
+    expect(buildRequest(['ui', 'notify', 'build', 'done'], noFlags, noStdin)).toEqual({
+      method: 'cate.ui.notify',
+      args: { message: 'build done' },
+    })
+  })
+
+  it('editor open -> {path}', () => {
+    expect(buildRequest(['editor', 'open', 'src/a.ts'], noFlags, noStdin)).toEqual({
+      method: 'cate.editor.openFile',
+      args: { path: 'src/a.ts' },
+    })
+  })
+
+  it('canvas create -> {type}', () => {
+    expect(buildRequest(['canvas', 'create', 'terminal'], noFlags, noStdin)).toEqual({
+      method: 'cate.canvas.createPanel',
+      args: { type: 'terminal' },
+    })
+  })
+
+  it('panel set-title joins the title', () => {
+    expect(buildRequest(['panel', 'set-title', 'My', 'Panel'], noFlags, noStdin)).toEqual({
+      method: 'cate.panel.setTitle',
+      args: { title: 'My Panel' },
+    })
+  })
+
+  it('agent send splits sessionId from a multi-word prompt', () => {
+    expect(buildRequest(['agent', 'send', 's1', 'do', 'the', 'thing'], noFlags, noStdin)).toEqual({
+      method: 'cate.agent.send',
+      args: { sessionId: 's1', prompt: 'do the thing' },
+    })
+  })
+
+  it('agent open makes resume optional', () => {
+    expect(buildRequest(['agent', 'open'], noFlags, noStdin)).toEqual({
+      method: 'cate.agent.open',
+      args: {},
+    })
+    expect(buildRequest(['agent', 'open', '/p/.cate/pi-agent/s.jsonl'], noFlags, noStdin).args).toEqual({
+      resume: '/p/.cate/pi-agent/s.jsonl',
+    })
+  })
+
+  it('agent cancel takes no args', () => {
+    expect(buildRequest(['agent', 'cancel'], noFlags, noStdin)).toEqual({
+      method: 'cate.agent.cancel',
+      args: {},
+    })
+  })
+
+  it('storage set parses a JSON value, falls back to a raw string', () => {
+    expect(buildRequest(['storage', 'set', 'n', '5'], noFlags, noStdin)).toEqual({
+      method: 'cate.storage.set',
+      args: { key: 'n', value: 5 },
+    })
+    expect(buildRequest(['storage', 'set', 'who', 'alice'], noFlags, noStdin).args).toEqual({
+      key: 'who',
+      value: 'alice',
+    })
+    expect(buildRequest(['storage', 'set', 'o', '{"a":1}'], noFlags, noStdin).args).toEqual({
+      key: 'o',
+      value: { a: 1 },
+    })
+  })
+
+  it('storage get / keys', () => {
+    expect(buildRequest(['storage', 'get', 'k'], noFlags, noStdin).args).toEqual({ key: 'k' })
+    expect(buildRequest(['storage', 'keys'], noFlags, noStdin)).toEqual({
+      method: 'cate.storage.keys',
+      args: {},
+    })
+  })
+
+  it('missing required args are usage errors', () => {
+    expect(() => buildRequest(['ui', 'notify'], noFlags, noStdin)).toThrow(/message/)
+    expect(() => buildRequest(['editor', 'open'], noFlags, noStdin)).toThrow(/path/)
+    expect(() => buildRequest(['storage', 'set', 'k'], noFlags, noStdin)).toThrow(/value/)
+    expect(() => buildRequest(['agent', 'send', 's1'], noFlags, noStdin)).toThrow(/prompt/)
+    expect(() => buildRequest(['storage', 'fly'], noFlags, noStdin)).toThrow(/unknown storage verb/)
+  })
+})
+
 describe('unwrap', () => {
   it('returns the value from {result}', () => {
     expect(unwrap('cate.version', 200, { result: 2 })).toBe(2)
@@ -158,6 +251,20 @@ describe('formatHuman — matches the host contract shapes', () => {
       { panelId: 'b2', title: 'App', url: 'https://a', focused: false },
     ])
     expect(out).toBe('* b1\thttps://d\tDocs\n  b2\thttps://a\tApp')
+  })
+
+  it('agent run/send -> the flattened turn text', () => {
+    expect(formatHuman('cate.agent.run', { text: 'all done', message: null })).toBe('all done')
+    expect(formatHuman('cate.agent.send', { text: 'ok', message: {} })).toBe('ok')
+  })
+
+  it('agent open -> the sessionId handle', () => {
+    expect(formatHuman('cate.agent.open', { sessionId: '/p/s.jsonl' })).toBe('/p/s.jsonl')
+  })
+
+  it('storage keys -> one key per line', () => {
+    expect(formatHuman('cate.storage.keys', ['a', 'b'])).toBe('a\nb')
+    expect(formatHuman('cate.storage.keys', [])).toBe('(no keys)')
   })
 })
 

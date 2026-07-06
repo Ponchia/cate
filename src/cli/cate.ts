@@ -13,11 +13,13 @@
 // `{"error":"..."}` on a transport-level failure — so BOTH a top-level `{error}`
 // and an in-band `{result:{error}}` are failures.
 //
-// Command surface (extensible — new groups are one GROUPS entry):
-//   cate api <method> [jsonArgs]     generic passthrough to ANY cate.* method
+// Command surface (extensible — new groups are one GROUPS entry). Each cate.*
+// scope has its own group; `api` stays as the raw passthrough for anything a
+// group verb doesn't cover:
 //   cate <group> <verb> [args]       resolved via the GROUPS registry
-//     browser: list | open <url> | current | back | forward | reload |
-//              screenshot | snapshot | click <ref> | type <ref> <text...>
+//     browser | workspace | theme | ui | editor | canvas | panel | agent |
+//     storage — see USAGE (bottom of file) for each group's verbs
+//   cate api <method> [jsonArgs]     generic passthrough to ANY cate.* method
 //
 // Flags: --panel <id> --json --timeout <ms> --help/-h --version.
 //
@@ -79,6 +81,23 @@ function need(value: string | undefined, name: string): string {
   return value
 }
 
+/** Join trailing positionals into one required string (multi-word args need no
+ *  quoting). Empty → usage error. */
+function needRest(rest: string[], name: string): string {
+  return need(rest.join(' ') || undefined, name)
+}
+
+/** Parse a storage value: JSON when it parses (numbers, objects, booleans),
+ *  otherwise the raw string. So `set n 5` stores 5 and `set who alice` stores
+ *  "alice". */
+function parseValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
 export const GROUPS: Record<string, Group> = {
   browser: {
     list: () => ({ method: 'cate.browser.list', args: {} }),
@@ -95,6 +114,43 @@ export const GROUPS: Record<string, Group> = {
       // Join the remaining positionals so multi-word text needs no quoting.
       args: { ref: need(a[0], 'ref'), text: need(a.slice(1).join(' ') || undefined, 'text') },
     }),
+  },
+  workspace: {
+    get: () => ({ method: 'cate.workspace.get', args: {} }),
+  },
+  theme: {
+    get: () => ({ method: 'cate.theme.get', args: {} }),
+  },
+  ui: {
+    notify: (a) => ({ method: 'cate.ui.notify', args: { message: needRest(a, 'message') } }),
+  },
+  editor: {
+    open: (a) => ({ method: 'cate.editor.openFile', args: { path: need(a[0], 'path') } }),
+  },
+  canvas: {
+    create: (a) => ({ method: 'cate.canvas.createPanel', args: { type: need(a[0], 'type') } }),
+  },
+  panel: {
+    'set-title': (a) => ({ method: 'cate.panel.setTitle', args: { title: needRest(a, 'title') } }),
+  },
+  agent: {
+    run: (a) => ({ method: 'cate.agent.run', args: { prompt: needRest(a, 'prompt') } }),
+    open: (a) => ({ method: 'cate.agent.open', args: a[0] ? { resume: a[0] } : {} }),
+    send: (a) => ({
+      method: 'cate.agent.send',
+      args: { sessionId: need(a[0], 'sessionId'), prompt: needRest(a.slice(1), 'prompt') },
+    }),
+    dispose: (a) => ({ method: 'cate.agent.dispose', args: { sessionId: need(a[0], 'sessionId') } }),
+    cancel: () => ({ method: 'cate.agent.cancel', args: {} }),
+  },
+  storage: {
+    get: (a) => ({ method: 'cate.storage.get', args: { key: need(a[0], 'key') } }),
+    set: (a) => ({
+      method: 'cate.storage.set',
+      args: { key: need(a[0], 'key'), value: parseValue(need(a[1], 'value')) },
+    }),
+    delete: (a) => ({ method: 'cate.storage.delete', args: { key: need(a[0], 'key') } }),
+    keys: () => ({ method: 'cate.storage.keys', args: {} }),
   },
 }
 
@@ -299,6 +355,11 @@ function pickPath(v: unknown): string {
   return JSON.stringify(v)
 }
 
+function pickText(v: unknown): string {
+  const o = asObj(v)
+  return o && typeof o.text === 'string' ? o.text : renderGeneric(v)
+}
+
 function formatSnapshot(v: unknown): string {
   const o = asObj(v)
   const lines: string[] = []
@@ -370,6 +431,15 @@ export function formatHuman(method: string, value: unknown): string {
     case 'cate.browser.type':
       // These resolve to { ok: true }; surface a resulting url if one is present.
       return pickUrl(value) ?? 'ok'
+    case 'cate.agent.run':
+    case 'cate.agent.send':
+      // AgentTurnResult { text, message } — the flattened text is what a human wants.
+      return pickText(value)
+    case 'cate.agent.open':
+      // { sessionId } — print the handle so it can be reused by `send`/`dispose`.
+      return (asObj(value)?.sessionId as string) ?? renderGeneric(value)
+    case 'cate.storage.keys':
+      return Array.isArray(value) ? value.join('\n') || '(no keys)' : renderGeneric(value)
     default:
       return renderGeneric(value)
   }
@@ -382,10 +452,21 @@ export function formatHuman(method: string, value: unknown): string {
 const USAGE = `cate — drive Cate from inside a Cate terminal
 
 Usage:
+  cate <group> <verb> [args]        run a grouped command (see below)
   cate api <method> [jsonArgs]      call any cate.* method (auto-prefixes "cate.")
-  cate browser <verb> [args]        list | open <url> | current | back | forward
-                                    | reload | screenshot | snapshot
-                                    | click <ref> | type <ref> <text...>
+
+Groups:
+  browser    list | open <url> | current | back | forward | reload
+             | screenshot | snapshot | click <ref> | type <ref> <text...>
+  workspace  get
+  theme      get
+  ui         notify <message...>
+  editor     open <path>
+  canvas     create <type>
+  panel      set-title <title...>
+  agent      run <prompt...> | open [resume] | send <sessionId> <prompt...>
+             | dispose <sessionId> | cancel
+  storage    get <key> | set <key> <value> | delete <key> | keys
 
 Flags:
   --panel <id>     target a specific panel (sets args.panelId)

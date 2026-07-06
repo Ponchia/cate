@@ -7,8 +7,10 @@ user-invocable: true
 # Driving Cate from the terminal with `cate`
 
 `cate` is a small CLI, preinstalled on PATH **inside Cate terminals and Cate
-agent shells**. It lets you control Cate — today, its browser panels — and call
-any `cate.*` host method. It talks to a per-workspace loopback endpoint Cate
+agent shells**. It lets you control Cate — its browser panels, plus each `cate.*`
+host scope through a matching command group (`workspace`, `theme`, `ui`,
+`editor`, `canvas`, `panel`, `agent`, `storage`) — and reach any host method
+directly via `cate api`. It talks to a per-workspace loopback endpoint Cate
 injects as `CATE_API` + `CATE_TOKEN`.
 
 **It only works inside a Cate terminal.** Outside one those env vars are unset
@@ -67,6 +69,35 @@ cate browser type e14 mechanical keyboards
 
 Typical loop: `snapshot` to find a ref → `click`/`type` → `snapshot` again (or
 `screenshot`) to confirm the result.
+
+## Host API groups
+
+Every `cate.*` scope has its own command group with named verbs, so common calls
+need no JSON. Each maps one-to-one onto a host method:
+
+```bash
+cate workspace get                # -> { rootPath, branch, worktree }
+cate theme get                    # -> the active theme tokens
+cate ui notify build finished     # OS notification; trailing words are the message
+cate editor open src/app.ts       # open a file in an editor panel
+cate canvas create terminal       # open a new panel of the given type
+cate panel set-title My Panel     # rename the calling panel
+
+cate storage get <key>            # read this extension's stored value
+cate storage set <key> <value>    # value is parsed as JSON, else stored as a string
+cate storage delete <key>
+cate storage keys                 # one key per line
+
+cate agent run fix the failing test   # one-shot: open -> send -> dispose; prints the reply
+cate agent open [resume]              # start/resume a session; prints its handle
+cate agent send <handle> <prompt...>  # one turn on an open session; prints the reply
+cate agent dispose <handle>
+cate agent cancel                     # abort the in-flight turn
+```
+
+Values in `storage set` are JSON when they parse (`5`, `true`, `{"a":1}`) and a
+raw string otherwise (`alice`). `agent`/`browser`/`storage`/etc. each require the
+matching host scope; inside a trusted Cate terminal that's already granted.
 
 ## The `cate api` escape hatch
 
