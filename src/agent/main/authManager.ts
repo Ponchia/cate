@@ -24,7 +24,7 @@ import {
   type OAuthCredentials,
   type OAuthLoginCallbacks,
 } from '@earendil-works/pi-ai'
-import { getOAuthProvider, getOAuthProviders } from '@earendil-works/pi-ai/oauth'
+import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from '@earendil-works/pi-ai/oauth'
 import { sharedAuthPath } from './agentDir'
 import { sharedAuthWriteQueue } from './writeQueue'
 import { readCustomOpenAI } from './customModels'
@@ -35,6 +35,7 @@ import type {
   AuthProviderDescriptor,
   AuthProviderStatus,
   OAuthFlowEvent,
+  ProviderVerification,
 } from '../../shared/types'
 import { AUTH_OAUTH_EVENT } from '../../shared/ipc-channels'
 
@@ -245,6 +246,61 @@ export class AuthManager {
     }
 
     return out
+  }
+
+  // -------------------------------------------------------------------------
+  // Verification — is the credential usable right now?
+  //
+  // status() is presence-only. verify() adds the one check that presence can't
+  // give: whether an OAuth token can still be minted, or whether the user must
+  // re-authenticate. This lives in main because OAuth login/refresh already does
+  // (it drives the browser + local callback) — it is NOT model inference.
+  //
+  // We deliberately do NOT make a live model request here: inference runs through
+  // the runtime (pi, local or remote — see AgentManager), never the desktop
+  // process. Whether an API key actually works is proven by the real session on
+  // its first turn; here API-key / env / custom-openai credentials are reported
+  // by presence.
+  // -------------------------------------------------------------------------
+
+  async verify(providerId: string): Promise<ProviderVerification> {
+    const auth = await readAuthJson()
+    const cred = auth[providerId]
+
+    // OAuth: minting/refreshing the access token IS the reliable test — it proves
+    // the refresh token is still valid. A failure here means re-authentication.
+    const isOAuthProvider = getOAuthProviders().some((p) => p.id === providerId)
+    if (isOAuthProvider) {
+      if (cred?.type !== 'oauth') return { id: providerId, health: 'needsReauth' }
+      try {
+        const res = await getOAuthApiKey(providerId, { [providerId]: cred })
+        if (!res) return { id: providerId, health: 'needsReauth' }
+        const next = res.newCredentials
+        if (next && (next.access !== cred.access || next.expires !== cred.expires)) {
+          const fresh = await readAuthJson()
+          fresh[providerId] = { type: 'oauth', ...next }
+          await writeAuthJson(fresh)
+          this.connectedAt.set(providerId, new Date().toISOString())
+        }
+        return { id: providerId, health: 'ok' }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err)
+        log.info('[authManager] OAuth verify needs re-auth for %s: %s', providerId, error)
+        return { id: providerId, health: 'needsReauth', error }
+      }
+    }
+
+    // custom-openai lives in models.json, not auth.json — presence only.
+    if (providerId === 'custom-openai') {
+      const custom = await readCustomOpenAI()
+      const connected = !!custom && !!custom.baseUrl && custom.models.length > 0
+      return { id: providerId, health: connected ? 'ok' : 'error' }
+    }
+
+    // API-key / env providers: presence only (the runtime session validates the
+    // key for real on first use).
+    const hasCredential = cred?.type === 'api_key' || !!findEnvKeys(providerId)
+    return { id: providerId, health: hasCredential ? 'ok' : 'error' }
   }
 
   // -------------------------------------------------------------------------

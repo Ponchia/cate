@@ -3,7 +3,7 @@
 // Ported from CanvasToolbar.swift.
 // =============================================================================
 
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useLayoutEffect, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Terminal,
@@ -15,24 +15,32 @@ import {
   Cursor,
   Hand,
   X,
+  ChatCircle,
 } from '@phosphor-icons/react'
-import { CateLogo } from '../ui/CateLogo'
 import Minimap from './Minimap'
 import WorktreeToolbarMenu from './WorktreeToolbarMenu'
 import ExtensionToolbarMenu from './ExtensionToolbarMenu'
 import { useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import { useUIStore } from '../stores/uiStore'
 import { useUIStateStore } from '../stores/uiStateStore'
+import { cornerFromPoint } from '../lib/canvasCorners'
 import { useShortcutStore } from '../stores/shortcutStore'
 import { displayString, PANEL_DEFAULT_SIZES } from '../../shared/types'
 import { useAppStore } from '../stores/appStore'
 import { inheritedWorktreeFromSelection } from '../lib/inheritWorktree'
 import { Tooltip } from '../ui/Tooltip'
+import { CateAgentToolbarButton } from '../cateAgent/CateAgentToolbarButton'
+import { CateAgentInputBar } from '../cateAgent/CateAgentInputBar'
+import { CateAgentChat } from '../cateAgent/CateAgentChat'
+import { useCateAgentWs, useCateAgentStore } from '../cateAgent/cateAgentStore'
+import { cateAgentController } from '../cateAgent/cateAgentController'
+import { deriveTopic } from '../cateAgent/cateAgentTools'
+import { useCateAgentReady } from '../stores/providerReadinessStore'
+import { useChatsStore } from '../stores/chatsStore'
 
-// The minimap pill can be docked in any of the four canvas corners. The choice
-// persists across sessions in ui-state.json (via the UI-state store).
-type MinimapCorner = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
-const loadMinimapCorner = (): MinimapCorner => useUIStateStore.getState().minimapButtonCorner
+// Collapsed toolbar row height = the w-9/h-9 buttons. Used as the input's one-line
+// height and the close-collapse target, so it can't drift with measurement.
+const AGENT_ROW_H = 36
 
 interface CanvasToolbarProps {
   canvasPanelId: string
@@ -220,11 +228,92 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const zoomResetKey = useShortcutStore((s) => displayString(s.shortcuts.zoomReset))
   const zoomText = `${Math.round(zoom * 100)}%`
 
-  // Minimap pill docking corner + drag-to-dock handling. The toggle button
-  // doubles as a drag handle: a click toggles the map, a drag past a small
-  // threshold re-docks the pill to whichever corner the cursor ends up in.
-  const [minimapCorner, setMinimapCorner] = useState<MinimapCorner>(loadMinimapCorner)
+  const cateAgent = useCateAgentWs(workspaceId)
+  // The Cate Agent is unusable without a working provider — hide its entry points
+  // entirely (see App.tsx, which also pauses its loops). A connected-but-expired
+  // OAuth sign-in ('needsReauth') hides it too; the reconnect prompt lives in
+  // Settings → Cate Agent. Returns when a usable provider connects.
+  const hasProvider = useCateAgentReady() === 'ok'
+  const inputOpen = cateAgent.inputOpen
+  const toggleAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, !inputOpen)
+  const closeAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, false)
+  // Compose into the active chat, minting one (titled from the prompt) on the first
+  // send. The chat's persistent agent decides how to respond.
+  const sendAgentPrompt = (text: string) => {
+    const store = useChatsStore.getState()
+    let chatId = cateAgent.activeChatId
+    if (!chatId || !store.getChat(rootPath, chatId)) {
+      chatId = store.createChat(rootPath, deriveTopic(text)).id
+      useCateAgentStore.getState().setActiveChat(workspaceId, chatId)
+    }
+    void cateAgentController.sendMessage(workspaceId, rootPath, chatId, text)
+  }
+  // The dot means "there's observer feed to check via the eye tab" — it's the exact
+  // counterpart of that tab's gate (`unseen` is set only when a feed item arrives while
+  // closed, so it implies feed content). Chat attention (review / interrupted) is carried
+  // by the chat tabs, not this dot. An open panel means the user is already looking.
+  const agentAttention = !inputOpen && cateAgent.unseen
+  // The content zone is sized explicitly so opening (wider for the input), typing
+  // (taller as text wraps), and closing all animate via the width/height
+  // transition. The tools define the closed size; we measure it while closed and
+  // grow from there. `agentInputH` is the textarea's reported content height.
+  const agentToolsRef = useRef<HTMLDivElement>(null)
+  const [agentToolsSize, setAgentToolsSize] = useState({ w: 0, h: 36 })
+  // The textarea's current content height, reported live on every keystroke (and
+  // on mount) — never a remembered/stale value, so an empty input is always one
+  // line. Used to drive an explicit, animatable zone height.
+  const [agentInputH, setAgentInputH] = useState(36)
+  // Measure the tools' natural size — even while the input is open (the tools
+  // stay laid out, just hidden, so offsetWidth is still valid). Measuring
+  // only-when-closed broke if the toolbar first mounted with the input already
+  // open (HMR, or a second toolbar sharing state): the width stayed 0 and the bar
+  // collapsed. Dedupe to avoid a measure→render loop.
+  useLayoutEffect(() => {
+    const el = agentToolsRef.current
+    if (!el) return
+    const measure = () =>
+      setAgentToolsSize((prev) => {
+        const w = Math.round(el.offsetWidth)
+        const h = Math.round(el.offsetHeight)
+        return prev.w === w && prev.h === h ? prev : { w, h }
+      })
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // Snap the remembered input height back to one line whenever the panel closes,
+  // so reopening starts collapsed (the textarea re-reports on mount) instead of
+  // briefly flashing the previous tall height.
+  useEffect(() => {
+    if (!inputOpen) setAgentInputH(AGENT_ROW_H)
+  }, [inputOpen])
+  const AGENT_INPUT_EXTRA = 96 // how much wider than the toolbar the input grows
+  // Both width and height are explicit so opening, typing (as text wraps), and
+  // closing all animate via the transition. Height tracks the live textarea
+  // content (clamped to one toolbar row); the closed target is the fixed row
+  // height so it always collapses back to exactly the toolbar.
+  const agentZoneStyle: React.CSSProperties = {
+    width: inputOpen ? agentToolsSize.w + AGENT_INPUT_EXTRA : agentToolsSize.w || undefined,
+    height: inputOpen ? Math.max(AGENT_ROW_H, agentInputH) : AGENT_ROW_H,
+  }
+  // Single-line: center everything vertically. Multi-line (the input wrapped):
+  // anchor the controls to the bottom so they stay put as the textarea grows up.
+  const agentMultiline = inputOpen && agentInputH > AGENT_ROW_H + 6
+  const agentAlign = agentMultiline ? 'items-end' : 'items-center'
+  // Pin the pill's corner radius to the COLLAPSED height/2 so a one-line bar is
+  // fully rounded and the radius stays constant as it grows taller. Collapsed
+  // pill height = row height + the row's py-1 (8px).
+  const agentPillRadius = (AGENT_ROW_H + 8) / 2
+
+  // Minimap pill docking corner + drag-to-dock handling. The corner is driven
+  // straight from the UI-state store so an external shove (the Cate Agent landing on
+  // this corner) moves the pill immediately. The toggle button doubles as a
+  // drag handle: a click toggles the map, a drag past a small threshold re-docks
+  // the pill to whichever corner the cursor ends up in.
+  const minimapCorner = useUIStateStore((s) => s.minimapButtonCorner)
   const minimapDidDragRef = useRef(false)
+  const minimapPillRef = useRef<HTMLDivElement>(null)
   const mmBottom = minimapCorner.startsWith('bottom')
   const mmRight = minimapCorner.endsWith('right')
 
@@ -234,23 +323,25 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     const startX = e.clientX
     const startY = e.clientY
     minimapDidDragRef.current = false
-    let nextCorner = minimapCorner
+    // Resolve corners against this canvas's own area so the quadrant split lines
+    // up with where the pill (and the Cate Agent) actually render.
+    const area = minimapPillRef.current?.closest('[data-canvas-area]')
+    const rect = area?.getBoundingClientRect() ??
+      { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
     const onMove = (ev: MouseEvent) => {
       if (!minimapDidDragRef.current && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) {
         return
       }
       minimapDidDragRef.current = true
-      const right = ev.clientX > window.innerWidth / 2
-      const bottom = ev.clientY > window.innerHeight / 2
-      nextCorner = `${bottom ? 'bottom' : 'top'}-${right ? 'right' : 'left'}` as MinimapCorner
-      setMinimapCorner((prev) => (prev === nextCorner ? prev : nextCorner))
+      const next = cornerFromPoint(ev.clientX, ev.clientY, rect)
+      const store = useUIStateStore.getState()
+      const prev = store.minimapButtonCorner
+      if (next === prev) return
+      store.setUIState('minimapButtonCorner', next)
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
-      if (minimapDidDragRef.current) {
-        useUIStateStore.getState().setUIState('minimapButtonCorner', nextCorner)
-      }
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -269,8 +360,32 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     <>
     <div className="absolute inset-x-0 bottom-4 z-50 flex justify-center pointer-events-none">
       <div data-onboarding="toolbar" className="relative pointer-events-auto">
-        <div className="rounded-full border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]">
-          <div className="flex items-center gap-0.5 px-1 py-1">
+        {hasProvider && <CateAgentChat workspaceId={workspaceId} rootPath={rootPath} />}
+        <div className="border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]" style={{ borderRadius: agentPillRadius }}>
+          <div className={`flex ${agentAlign} gap-0.5 px-1 py-1`}>
+            {/* Cate Agent — always leftmost; toggles the prompt input. Hidden when
+                no provider is connected (the agent can't run). */}
+            {hasProvider && (
+              <CateAgentToolbarButton
+                activity={cateAgent.activity}
+                active={inputOpen}
+                attention={agentAttention}
+                onClick={toggleAgentInput}
+              />
+            )}
+            {/* Content zone: the tools define the closed size (measured via
+                agentToolsRef); opening grows it wider for the input and taller as
+                text wraps. Width + height are explicit so every change animates. */}
+            <div
+              className="relative flex items-stretch ml-1.5 overflow-hidden transition-[width,height] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              style={agentZoneStyle}
+            >
+              <div
+                ref={agentToolsRef}
+                className={`flex items-center gap-0.5 ${
+                  inputOpen ? 'absolute left-0 top-0 opacity-0 pointer-events-none' : ''
+                }`}
+              >
             {/* Interaction tools (Select / Hand) */}
             <ModeButton
               onClick={() => setActiveTool('select')}
@@ -306,8 +421,8 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             <ToolbarButton onClick={onNewEditor} title={`Editor (${newEditorKey})`} size="panel">
               <FileText size={18} />
             </ToolbarButton>
-            <ToolbarButton onClick={onNewAgent} title="Cate agent" size="panel">
-              <CateLogo size={18} />
+            <ToolbarButton onClick={onNewAgent} title="Agent" size="panel">
+              <ChatCircle size={18} />
             </ToolbarButton>
 
             {/* Extensions — only shown when an enabled extension exposes a panel.
@@ -335,6 +450,19 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             <ToolbarButton onClick={onZoomIn} title={`Zoom In (${zoomInKey})`} size="zoom">
               <Plus size={16} />
             </ToolbarButton>
+              </div>
+              {hasProvider && inputOpen && (
+                <div className={`flex-1 min-w-0 flex ${agentAlign}`}>
+                  <CateAgentInputBar
+                    workspaceId={workspaceId}
+                    multiline={agentMultiline}
+                    onSend={sendAgentPrompt}
+                    onClose={closeAgentInput}
+                    onHeightChange={setAgentInputH}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -346,6 +474,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
         the docked corner so open and close feel like the same gesture. Drag the
         button to re-dock the pill to a different corner. */}
     <div
+      ref={minimapPillRef}
       className="absolute z-50 flex gap-2"
       style={{
         ...(mmBottom ? { bottom: '1rem' } : { top: '1rem' }),

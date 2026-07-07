@@ -19,10 +19,10 @@ import {
   FileText,
   SquaresFour,
   FileDoc,
+  ChatCircle,
   PuzzlePiece,
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react'
-import { CateLogo } from '../ui/CateLogo'
 import type { PanelType, Point, BrowserTab } from '../../shared/types'
 import type { PanelPlacement } from '../stores/appStore'
 import { useAppStore } from '../stores/appStore'
@@ -115,7 +115,7 @@ export const PANEL_REGISTRY: Record<PanelType, RendererPanelDefinition> = {
   },
   agent: {
     ...PANEL_DEFINITIONS.agent,
-    icon: CateLogo as unknown as PhosphorIcon,
+    icon: ChatCircle,
     Component: AgentPanel,
     create: ({ workspaceId, canvasPoint, placement }) =>
       trackCreated('agent', useAppStore.getState().createAgent(workspaceId, canvasPoint, placement) || null),

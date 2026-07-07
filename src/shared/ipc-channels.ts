@@ -120,6 +120,14 @@ export const WORKSPACE_EXTERNAL_EDIT = 'project:externalEdit' // main -> rendere
 // the current in-app layout overwrites the external edit.
 export const WORKSPACE_EXTERNAL_EDIT_DISMISS = 'project:externalEditDismiss' // renderer -> main
 
+// Per-workspace Cate Agent enablement (.cate/cateAgent.json).
+export const PROJECT_CATE_AGENT_LOAD = 'project:cateAgentLoad' // renderer -> main
+export const PROJECT_CATE_AGENT_SAVE = 'project:cateAgentSave' // renderer -> main
+
+// Per-workspace Cate Agent chats (.cate/chats.json) — the agent's front door.
+export const PROJECT_CHATS_LOAD = 'project:chatsLoad' // renderer -> main
+export const PROJECT_CHATS_SAVE = 'project:chatsSave' // renderer -> main
+
 // Boot snapshot — a tiny JSON file (geometry, theme, last workspace id, native
 // tabs flag) written by the renderer whenever the relevant settings change.
 // Read synchronously at launch by the main process to construct the
@@ -202,6 +210,7 @@ export const DIALOG_CONFIRM_CLOSE_TERMINAL = 'dialog:confirmCloseTerminal'
 export const DIALOG_CONFIRM_CLOSE_CANVAS = 'dialog:confirmCloseCanvas'
 export const DIALOG_CONFIRM_IMPORT = 'dialog:confirmImport'
 export const DIALOG_CONFIRM_RELOAD_WORKSPACE = 'dialog:confirmReloadWorkspace'
+export const DIALOG_CONFIRM_DISCARD_JOB = 'dialog:confirmDiscardJob'
 export const DIALOG_TERMINAL_LINK_OPEN = 'dialog:terminalLinkOpen'
 
 // Canvas wallpaper — read an arbitrary image file as a data URL (the file is
@@ -370,6 +379,7 @@ export const SKILLS_SET_TOKEN = 'skills:setToken'             // renderer -> mai
 // Pi auth / providers
 export const AUTH_LIST_PROVIDERS = 'auth:listProviders'
 export const AUTH_STATUS = 'auth:status'
+export const AUTH_VERIFY = 'auth:verify'
 export const AUTH_OAUTH_START = 'auth:oauthStart'
 export const AUTH_OAUTH_PROMPT_REPLY = 'auth:oauthPromptReply' // renderer -> main
 export const AUTH_OAUTH_EVENT = 'auth:oauthEvent'              // main -> renderer
@@ -393,6 +403,7 @@ export const RUNTIME_INSTALL = 'runtime:install'       // renderer -> main (expl
 export const RUNTIME_DELETE = 'runtime:delete'         // renderer -> main (rm -rf the host install, keep saved auth)
 export const RUNTIME_STATUS = 'runtime:status'         // main -> renderer (broadcast)
 export const RUNTIME_LOCAL_STATUS = 'runtime:local-status' // renderer -> main (current LOCAL phase, seeds the loading blocker)
+export const RUNTIME_RETRY_LOCAL = 'runtime:retry-local' // renderer -> main (relaunch the built-in LOCAL daemon after a failed connect)
 export const RUNTIME_PICK_SSH_KEY = 'runtime:pick-ssh-key' // renderer -> main (native file picker for an SSH private key)
 
 

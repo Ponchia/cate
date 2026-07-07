@@ -2,7 +2,7 @@
 // Type declaration for window.electronAPI exposed via contextBridge
 // =============================================================================
 
-import type { AgentCreateOptions, AgentEventEnvelope, AgentExtensionUIResponse, AgentImageAttachment, AgentModelRef, AgentModelDescriptor, AgentRpcState, AgentSessionListEntry, AgentSessionStats, AgentSlashCommand, AgentThinkingLevel, AppSettings, AgentState, AuthProviderDescriptor, AuthProviderStatus, CanvasLayoutSnapshot, CateWindowParams, CustomOpenAIProvider, DockWindowInitPayload, DockWindowSyncState, DetachedDockWindowSnapshot, WindowPanelInfo, WindowPanelReport, DockStateSnapshot, FileSearchOptions, FileSearchResult, FileTreeNode, GitInfo, SearchOptions, SearchResultBatch, SearchDoneEvent, NotificationAction, OAuthFlowEvent, PanelState, PanelTransferSnapshot, PerfSnapshot, Point, SessionSnapshot, SidebarSession, TerminalActivity, WorkspaceInfo, WorkspaceMutationResult, RemoteConnectSpec, RuntimeConnectResult, RuntimeStatusEvent, RuntimeConnection, RuntimePhase, RemoteProjectEntry, SshHostEntry, UIState } from './types'
+import type { AgentCreateOptions, AgentEventEnvelope, AgentExtensionUIResponse, AgentImageAttachment, AgentModelRef, AgentModelDescriptor, AgentRpcState, AgentSessionListEntry, AgentSessionStats, AgentSlashCommand, AgentThinkingLevel, AppSettings, AgentState, AuthProviderDescriptor, AuthProviderStatus, CanvasLayoutSnapshot, CateWindowParams, CustomOpenAIProvider, DockWindowInitPayload, DockWindowSyncState, DetachedDockWindowSnapshot, WindowPanelInfo, WindowPanelReport, DockStateSnapshot, FileSearchOptions, FileSearchResult, FileTreeNode, GitInfo, SearchOptions, SearchResultBatch, SearchDoneEvent, NotificationAction, OAuthFlowEvent, PanelState, PanelTransferSnapshot, PerfSnapshot, Point, ProviderVerification, SessionSnapshot, SidebarSession, TerminalActivity, WorkspaceInfo, WorkspaceMutationResult, RemoteConnectSpec, RuntimeConnectResult, RuntimeStatusEvent, RuntimeConnection, RuntimePhase, RemoteProjectEntry, SshHostEntry, UIState } from './types'
 import type { SavedSkill, InstalledSkill, SkillEntry, SkillSource, SkillTargetId } from './skills'
 import type { ExtensionListEntry, ExtensionManifest } from './extensions'
 
@@ -420,6 +420,18 @@ export interface ElectronAPI {
     session: import('./types').ProjectSessionFile | null
   } | null>
 
+  /** Load per-workspace Cate Agent enablement from .cate/cateAgent.json. */
+  projectCateAgentLoad(rootPath: string): Promise<import('./types').ProjectCateAgentFile>
+
+  /** Persist per-workspace Cate Agent enablement to .cate/cateAgent.json. */
+  projectCateAgentSave(rootPath: string, state: import('./types').ProjectCateAgentFile): Promise<void>
+
+  /** Load the per-workspace Cate Agent chats from .cate/chats.json (empty if absent). */
+  projectChatsLoad(rootPath: string): Promise<import('./types').Chat[]>
+
+  /** Persist the whole per-workspace Cate Agent chat list to .cate/chats.json. */
+  projectChatsSave(rootPath: string, chats: import('./types').Chat[]): Promise<void>
+
   // ---------------------------------------------------------------------------
   // App
   // ---------------------------------------------------------------------------
@@ -471,6 +483,11 @@ export interface ElectronAPI {
 
   /** Confirm reloading the canvas after workspace.json changed on disk. */
   confirmReloadWorkspace(payload: { name?: string }): Promise<'reload' | 'cancel'>
+
+  /** Native confirmation shown when discarding an agent job, which deletes its
+   *  worktree and closes its terminals. The detail adapts to what the job has.
+   *  Returns 'discard' | 'cancel'. */
+  confirmDiscardJob(payload: { hasWorktree?: boolean; terminalCount?: number }): Promise<'discard' | 'cancel'>
 
   /** Native confirmation shown when external files/folders are dropped onto the
    *  file explorer. Returns 'copy' (duplicate into the directory), 'move'
@@ -781,6 +798,11 @@ export interface ElectronAPI {
    *  a window subscribes to the RUNTIME_STATUS broadcast. */
   runtimeLocalStatus(): Promise<{ phase: RuntimePhase; message?: string }>
 
+  /** Relaunch the built-in LOCAL runtime daemon after a failed connect — the
+   *  recovery behind Retry buttons (a failed startup connect is otherwise dead
+   *  until app restart). Resolves once the connect settles; no-op when live. */
+  runtimeRetryLocal(): Promise<{ ok: boolean; error?: string }>
+
   /** Names of WSL distros installed on this host ([] on non-Windows / no WSL). */
   runtimeWslDistros(): Promise<string[]>
 
@@ -1019,8 +1041,14 @@ export interface ElectronAPI {
   /** List all known providers (built-in + custom). */
   authListProviders(): Promise<AuthProviderDescriptor[]>
 
-  /** Get current connection status for each provider. */
+  /** Get current connection status for each provider (presence-only, cheap). */
   authStatus(): Promise<AuthProviderStatus[]>
+
+  /** Verify a provider's credential is usable: refreshes an OAuth token (→
+   *  `needsReauth` if it can't), or reports presence for API-key / env / custom
+   *  providers (→ `error` if no credential). Does not make model requests — that
+   *  runs through the runtime session, not the desktop process. */
+  authVerify(providerId: string): Promise<ProviderVerification>
 
   /** Begin an OAuth login flow for the given provider. Returns when done or errored. */
   authOAuthStart(providerId: string): Promise<{ ok: true } | { ok: false; error: string }>

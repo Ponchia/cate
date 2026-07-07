@@ -1,7 +1,7 @@
 // =============================================================================
 // installMcpAdapter — register the `pi-mcp-adapter` npm package in the
 // workspace's pi settings so pi auto-installs and loads it on session start.
-// That adapter is what gives the Cate Agent MCP support: on pi's `session_start`
+// That adapter is what gives the agent panel MCP support: on pi's `session_start`
 // it reads MCP server config from (later wins) `~/.config/mcp/mcp.json`,
 // `<agentDir>/mcp.json`, `<cwd>/.mcp.json`, `<cwd>/.pi/mcp.json`. The cate.mcp
 // panel writes `<cwd>/.pi/mcp.json`, and pi runs with cwd = workspace root, so

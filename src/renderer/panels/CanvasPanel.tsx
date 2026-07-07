@@ -18,6 +18,7 @@ import { EmptyCanvasOverlay } from './EmptyCanvasOverlay'
 import type { PanelType, Point, DockLayoutNode, PanelLocation, WindowDockState } from '../../shared/types'
 import { useAppStore, useSelectedWorkspace, registerCanvasOps, unregisterCanvasOps, type PanelPlacement } from '../stores/appStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useCateAgentStore } from '../cateAgent/cateAgentStore'
 import { useStore } from 'zustand'
 import { useStoreWithEqualityFn } from 'zustand/traditional'
 import type { StoreApi } from 'zustand'
@@ -282,7 +283,21 @@ export default function CanvasPanel({ panelId, workspaceId, nodeId, renderPanelC
   // unrelated panel churn (titles, dirty flags) never re-runs the cull.
   const nodeIds = useNodeIds(store)
   const keepMountedPanelIds = useKeepMountedPanelIds(workspaceId)
-  const visibleNodeIds = useVisibleNodeIds(store, keepMountedPanelIds)
+  // Terminals the Cate Agent is driving must also stay mounted off-view: they're
+  // placed beside the user's content without moving the camera, and an unmounted
+  // terminal can't boot its pty or render the screen the agent reads. Fold them
+  // into the same keep-mounted set the cull consults. Both inputs are
+  // identity-stable across pan/zoom, so the merged set is too (and when there are
+  // no controlled terminals we pass keepMountedPanelIds through unchanged, fully
+  // preserving the cull's identity-keyed keep-alive cache).
+  const controlledTerminals = useCateAgentStore((s) => s.byWs[workspaceId]?.controlledTerminals)
+  const mountedPanelIds = useMemo(() => {
+    if (!controlledTerminals || Object.keys(controlledTerminals).length === 0) return keepMountedPanelIds
+    const merged = new Set(keepMountedPanelIds)
+    for (const id of Object.keys(controlledTerminals)) merged.add(id)
+    return merged
+  }, [keepMountedPanelIds, controlledTerminals])
+  const visibleNodeIds = useVisibleNodeIds(store, mountedPanelIds)
   // Welcome page only shows on a brand-new workspace (no rootPath chosen yet).
   // After a folder is picked, deleting all panels leaves a blank canvas.
   const workspaceRootPath = useAppStore(
@@ -353,7 +368,7 @@ export default function CanvasPanel({ panelId, workspaceId, nodeId, renderPanelC
           z-50 escapes to the root stacking context and renders on top of the
           sidebars — visible when the toolbar overflows its inset box on small
           or split-view screens. Behind-the-sidebar is the intended layering. */}
-      <div className="relative w-full h-full isolate" onPointerDown={handlePointerDown}>
+      <div data-canvas-area className="relative w-full h-full isolate" onPointerDown={handlePointerDown}>
         {/* Welcome page only on a fresh, uninitialized workspace (no panels
             yet AND no rootPath). Once a folder is picked, the canvas stays
             blank when emptied — the start page does not return. */}

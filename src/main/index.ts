@@ -13,6 +13,8 @@ import { registerHandlers as registerGitMonitorHandlers } from './ipc/git-monito
 import { registerHandlers as registerStoreHandlers, loadSettingsSyncFromDisk, getSettingSync, setSettingsFromMain } from './store'
 import { registerUIStateHandlers } from './uiStateStore'
 import { registerProjectStateHandlers } from './projectWorkspaceStore'
+import { registerProjectCateAgentHandlers } from './projectCateAgentStore'
+import { registerProjectChatsHandlers } from './projectChatsStore'
 import { registerHandlers as registerMenuHandlers } from './ipc/menu'
 import { registerHandlers as registerNotificationHandlers } from './ipc/notifications'
 import { registerAgentHandlers } from '../agent/main/ipcAgent'
@@ -88,6 +90,8 @@ function registerCriticalHandlers(): void {
   registerStoreHandlers()
   registerUIStateHandlers()
   registerProjectStateHandlers()
+  registerProjectCateAgentHandlers()
+  registerProjectChatsHandlers()
   registerWorkspaceHandlers()
   registerFilesystemHandlers()
   registerTerminalHandlers()
