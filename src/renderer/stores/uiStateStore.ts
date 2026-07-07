@@ -34,8 +34,8 @@ export const useUIStateStore = create<UIStateStore>((set) => ({
     const api = getAPI()
     if (!api) { set({ _loaded: true }); return }
     try {
-      const stored = await api.uiStateGetAll()
-      set({ ...mergeKnown(DEFAULT_UI_STATE, stored), _loaded: true })
+      const merged = { ...DEFAULT_UI_STATE, ...mergeKnown(DEFAULT_UI_STATE, await api.uiStateGetAll()) }
+      set({ ...merged, _loaded: true })
     } catch {
       set({ _loaded: true })
     }

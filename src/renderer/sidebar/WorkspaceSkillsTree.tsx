@@ -1,7 +1,7 @@
 // =============================================================================
 // WorkspaceSkillsTree — the skills a workspace's agents already have, folded into
 // that workspace's expanded tree under a single collapsible "Skills" node. Open
-// it and each agent the workspace installs into (Claude Code, Cate Agent, …) is
+// it and each agent the workspace installs into (Claude Code, Agent, …) is
 // a row, with the skills installed for that agent nested one level beneath.
 //
 // Rendered only while the workspace is expanded, so the manifest read
@@ -12,11 +12,10 @@
 // =============================================================================
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { PuzzlePiece, CaretRight } from '@phosphor-icons/react'
+import { PuzzlePiece, CaretRight, ChatCircle } from '@phosphor-icons/react'
 import { useAppStore } from '../stores/appStore'
 import { useUIStore } from '../stores/uiStore'
 import { getAgentLogoById } from '../lib/agent/agentLogos'
-import { CateLogo } from '../ui/CateLogo'
 import { SKILL_TARGETS, type SkillTargetId } from '../../shared/skills'
 import type { AgentId } from '../../shared/agents'
 import { toSkillTargetGroups, type SkillTargetGroup } from './skillTargetGroups'
@@ -28,8 +27,9 @@ const TARGET_LABEL: Record<string, string> = Object.fromEntries(
   SKILL_TARGETS.map((t) => [t.id, t.label]),
 )
 
-// Skill target → agent id for the logo lookup. cate-agent has no bundled SVG —
-// it uses the Cate mark; pi-native's logo lives under `pi`.
+// Skill target → agent id for the logo lookup. cate-agent is Cate's built-in
+// Agent panel — it has no bundled SVG and uses the panel's chat-bubble mark
+// instead; pi-native's logo lives under `pi`.
 const TARGET_LOGO_ID: Partial<Record<SkillTargetId, AgentId>> = {
   'claude-code': 'claude-code',
   'pi-native': 'pi',
@@ -40,7 +40,7 @@ const TARGET_LOGO_ID: Partial<Record<SkillTargetId, AgentId>> = {
 
 const AgentIcon: React.FC<{ targetId: SkillTargetId }> = ({ targetId }) => {
   if (targetId === 'cate-agent') {
-    return <CateLogo size={11} className="flex-shrink-0 text-secondary" style={{ opacity: 0.9 }} />
+    return <ChatCircle size={11} className="flex-shrink-0 text-[rgb(var(--agent-rgb))]" style={{ opacity: 0.9 }} />
   }
   const logo = getAgentLogoById(TARGET_LOGO_ID[targetId])
   if (logo) {

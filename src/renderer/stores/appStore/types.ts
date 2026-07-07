@@ -28,8 +28,12 @@ export type PanelPlacement =
    *  the workspace's primary canvas — correct for session restore and auto
    *  creates, but wrong for an interactive create on a secondary/nested canvas.
    *  `size` pins the node's size (used by layout restore to reproduce the saved
-   *  geometry exactly); without it the panel type's default size is used. */
-  | { target: 'canvas'; position?: Point; canvasPanelId?: string; size?: Size }
+   *  geometry exactly); without it the panel type's default size is used.
+   *  `focus: false` adds the node WITHOUT focusing it or moving the viewport —
+   *  for background creates (Cate Agent terminals). An off-view unfocused node
+   *  is culled, so a creator that needs it mounted (a terminal booting its pty)
+   *  must keep it exempt itself (see useVisibleNodeIds' alwaysMount). */
+  | { target: 'canvas'; position?: Point; canvasPanelId?: string; size?: Size; focus?: boolean }
   /** `stackId` docks the panel as a new tab in a SPECIFIC stack (the one the
    *  user is working in — e.g. the focused pane of a split). Without it the
    *  panel lands in the zone's default stack. A stale stackId falls back to the
@@ -113,8 +117,9 @@ export interface AppStoreActions {
   setWorkspaceRootPath: (wsId: string, rootPath: string) => Promise<boolean>
   connectRemoteWorkspace: (wsId: string, spec: RemoteConnectSpec) => Promise<boolean>
   ensureWorkspaceRuntime: (wsId: string) => Promise<boolean>
-  /** Cheap relaunch of an existing connection (runtime:ensure) — for a
-   *  disconnected/unreachable runtime whose connection record is intact. */
+  /** Cheap relaunch of an existing connection — for a disconnected/unreachable
+   *  runtime. Remote/WSL re-probe via runtime:ensure; a local workspace
+   *  relaunches the built-in daemon via runtime:retry-local. */
   retryRuntime: (wsId: string) => Promise<boolean>
   /** Explicit clean install of the runtime daemon, then connect. The entry
    *  action of the `missing` phase — the only action that installs. */

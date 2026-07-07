@@ -735,7 +735,7 @@ export const SHORTCUT_DISPLAY_NAMES: Record<ShortcutAction, string> = {
   newTerminal: 'New Terminal',
   newBrowser: 'New Browser',
   newEditor: 'New Editor',
-  newAgent: 'New Cate Agent',
+  newAgent: 'New Agent',
   newCanvas: 'New Canvas',
   newFile: 'New File',
   closePanel: 'Close Panel',
@@ -1107,6 +1107,222 @@ export interface ProjectSessionPanel {
 }
 
 // -----------------------------------------------------------------------------
+// Cate Agent — the iterate/verify loop layer (shared by a chat's `run`)
+//
+// A code task runs as a loop: the chat agent sets a goal + check, then spawns
+// parallel ITERATIONS (each its own fresh worktree + coding agents). When an
+// iteration's agents park, an independent verifier driver runs the check in its
+// worktree and writes a verdict; the chat agent picks a winner or runs another round.
+// This state lives on the chat's `run` (see ChatRun above).
+// -----------------------------------------------------------------------------
+
+/** A single verification verdict for one iteration — produced by a checker coding
+ *  agent that ran the check in the iteration's worktree and wrote {met, reason}. */
+export interface VerifyResult {
+  met: boolean
+  reason: string
+  /** Unix ms when verification completed. */
+  at: number
+}
+
+export type IterationStatus =
+  | 'running' // coding agents working in the worktree
+  | 'finished' // agents parked — work done, awaiting the check
+  | 'verifying' // a checker coding agent is judging the result
+  | 'passed' // verification met
+  | 'failed' // verification not met
+  | 'error' // could not run / crashed
+  | 'cancelled' // round discarded or superseded
+
+/** One coding agent inside an iteration, DISCOVERED as the iteration's driver opens
+ *  terminals (the orchestrator no longer pre-assigns agents or scopes). Several can
+ *  run in one iteration's shared worktree at once (e.g. claude + codex). */
+export interface IterationAgent {
+  /** AgentId (e.g. 'claude-code', 'codex') or a free label. */
+  agent: string
+  /** Canvas panel id of the terminal running this agent. */
+  terminalId: string
+  /** The disjoint slice of the work this agent owns, if the driver partitioned. */
+  scope?: string
+  /** Which phase opened this terminal: `work` does the task, `verify` checks it.
+   *  Both get a job-card chip and stay open; absent ⇒ `work` (back-compat). The
+   *  orchestrator context and winner note are scoped to the work agents. */
+  kind?: 'work' | 'verify'
+}
+
+export interface Iteration {
+  id: string
+  /** Back-reference to the owning chat id (the chat whose `run` holds this iteration). */
+  todoId: string
+  /** Which round spawned it (1-based). */
+  round: number
+  /** Its own fresh worktree (never shared with another iteration). */
+  worktreeId?: string
+  branch?: string
+  /** The agents the driver launched (empty until create_terminal records them). */
+  agents: IterationAgent[]
+  status: IterationStatus
+  /** The verifier's verdict, once judged. */
+  verify?: VerifyResult
+  createdAt: number
+}
+
+// -----------------------------------------------------------------------------
+// Cate Agent — per-workspace CHATS (.cate/chats.json)
+//
+// The chat is the Cate Agent's front door: a persistent thread you type into. Its
+// agent (the former orchestrator, now one persistent session per chat that keeps
+// its conversation history) answers a question inline, or runs a code task as the
+// iterate/verify LOOP, or delegates a canvas task. Each agent action renders as a
+// purpose-built typed block in the transcript — not a text bubble — so the thread
+// still means something after a reload. The loop machinery (iterations, drivers,
+// verifiers, worktrees) is unchanged; its state now lives on the chat's `run`
+// instead of a global todo.
+// -----------------------------------------------------------------------------
+
+export type ChatMessageRole = 'user' | 'agent'
+
+/** A plain markdown message — the user's prompt, or the agent's inline answer. */
+export interface ChatTextMessage {
+  id: string
+  role: ChatMessageRole
+  ts: number
+  kind: 'text'
+  text: string
+}
+
+/** The agent's plan for a code task: the goal + how it will be checked (set_goal). */
+export interface ChatPlanMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'plan'
+  goal: string
+  check: string
+}
+
+/** The parallel-attempts grid for a code task (iterate). While the run is live the
+ *  UI reads iterations off `chat.run`; the fields here are the frozen snapshot
+ *  written when the run settles so the transcript survives a reload. */
+export interface ChatAttemptsMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'attempts'
+  iterations?: Iteration[]
+  round?: number
+  recommendedIterationId?: string
+}
+
+/** The outcome of a code task (select_winner / fail): the winning verdict + the
+ *  land actions. `outcome` records the user's land decision once they act. */
+export interface ChatResultMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'result'
+  iterationId?: string
+  met: boolean
+  reason: string
+  worktreeId?: string
+  branch?: string
+  outcome?: 'merged' | 'pr' | 'discarded'
+  note?: string
+}
+
+/** A delegated canvas task (canvas): a working indicator while the canvas subagent
+ *  runs, then the panels it left on the canvas + a jump-to-canvas target. */
+export interface ChatCanvasMessage {
+  id: string
+  role: 'agent'
+  ts: number
+  kind: 'canvas'
+  request: string
+  working: boolean
+  panels?: Array<{ id: string; type: string; title: string }>
+  canvasPanelId?: string
+}
+
+export type ChatMessage =
+  | ChatTextMessage
+  | ChatPlanMessage
+  | ChatAttemptsMessage
+  | ChatResultMessage
+  | ChatCanvasMessage
+
+/** The live (or last) run state for one chat's active code/canvas task — the
+ *  iterate/verify loop layer that used to live on a Todo. Absent when the chat has
+ *  only ever answered questions. */
+export interface ChatRun {
+  status: 'running' | 'review' | 'done' | 'failed'
+  /** The goal the loop iterates toward (set_goal). */
+  goal?: string
+  /** How an iteration is verified (set_goal). */
+  check?: string
+  /** Parallel attempts across rounds (the current round's are live). */
+  iterations?: Iteration[]
+  /** Current round number (1-based); bumped each time the agent iterates. */
+  round?: number
+  /** The iteration selected to land (select_winner). */
+  recommendedIterationId?: string
+  /** The winning iteration's worktree/branch, copied on at review (what lands). */
+  worktreeId?: string
+  branch?: string
+  /** Canvas node ids of every terminal spawned across this run's iterations. */
+  terminalNodeIds?: string[]
+  /** The canvas this run is pinned to (captured when the chat's session starts). */
+  canvasPanelId?: string
+  /** Failure reason / land note. */
+  note?: string
+  /** Set when a run was cut off by an app restart; the block offers Continue. */
+  interrupted?: boolean
+  /** The attempts message this run's live iteration grid binds to. */
+  attemptsMessageId?: string
+}
+
+export interface Chat {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  messages: ChatMessage[]
+  run?: ChatRun
+}
+
+export interface ProjectChatsFile {
+  version: 1
+  chats: Chat[]
+}
+
+/** Which headless brain a Cate Agent session drives. Passed to the cate-agent-tools
+ *  extension via `CATE_AGENT_ROLE` so it registers the matching tool subset.
+ *  - observer: watches, proposes todos.
+ *  - orchestrator: sets a goal + check, spawns iterations from an overview, never
+ *    chooses agents or touches files itself. Each iteration is checked by an
+ *    independent verifier driver.
+ *  - driver: ONE per iteration. Seeded with the overview + worktree cwd, it opens
+ *    terminals, launches coding-agent CLIs, answers startup/permission prompts, and
+ *    submits the task; a backgrounded send_keys re-prompts it as each terminal
+ *    finishes. create_terminal + read_terminal + send_keys. */
+export type CateAgentRole = 'observer' | 'orchestrator' | 'driver' | 'canvas'
+
+/** The Cate Agent's coarse runtime state, surfaced in the toolbar button + feedback panel. */
+export type CateAgentActivity =
+  | 'off' // not started yet (workspace still restoring, or the session failed to start)
+  | 'resting' // running, nothing to do
+  | 'observing' // observer taking a look at user activity
+  | 'working' // orchestrator running a todo
+
+/** Persisted per-workspace Cate Agent preferences (.cate/cateAgent.json). Machine-local.
+ *  The Cate Agent is always on for a workspace — only automatic observations toggle. */
+export interface ProjectCateAgentFile {
+  version: 1
+  /** Whether the observer runs automatically on a timer. When false, observe
+   *  turns happen only when the user clicks the idle Cate Agent. Defaults to true. */
+  autoObserve: boolean
+}
+
+// -----------------------------------------------------------------------------
 // Layout snapshot (saved canvas arrangements)
 // -----------------------------------------------------------------------------
 
@@ -1342,6 +1558,21 @@ export interface AppSettings {
    *  none. Was renderer localStorage (cate.agent.defaultModel.v1) before. */
   agentDefaultModel: AgentModelRef | null
 
+  // Cate Agent — the model both headless Cate Agent brains (observer + orchestrator) run on.
+  // null falls back to agentDefaultModel, then pi's first-available. Chosen by the
+  // user in Settings → Cate Agent.
+  cateAgentModel: AgentModelRef | null
+  /** The coding-agent CLI each iteration's driver launches in a terminal to do the
+   *  actual work — an AgentId from src/shared/agents.ts. Empty ⇒ the driver picks
+   *  an installed one itself. */
+  cateAgentOrchestratorAgentId: string
+  /** How often the observer may take an automatic look, in minutes. Applies only
+   *  when a workspace has automatic observations on. */
+  cateAgentObserveCooldownMin: number
+  /** Most iterations (each a fresh worktree running its own coding agents) a job
+   *  may have active at once in a round. Enforced by the `iterate` tool. */
+  cateAgentMaxParallelIterations: number
+
   // Layout
   /** Which sidebar views live in the left vs. right rail. Was renderer
    *  localStorage (cate.sidebarLayout.v3) before. */
@@ -1436,6 +1667,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   // Agent
   agentDefaultModel: null,
+
+  // Cate Agent
+  cateAgentModel: null,
+  cateAgentOrchestratorAgentId: '',
+  cateAgentObserveCooldownMin: 1,
+  cateAgentMaxParallelIterations: 3,
 
   // Layout — keep in sync with the sidebar's default arrangement.
   sidebarLayout: {
@@ -1546,6 +1783,20 @@ export interface AuthProviderStatus {
   source?: 'oauth' | 'safeStorage' | 'env' | 'config'
 }
 
+/** Result of actively verifying that a provider's credential works.
+ *  - `ok`         — the credential authenticated (OAuth token minted/refreshed, or a
+ *                   live model request succeeded).
+ *  - `needsReauth`— an OAuth token could not be refreshed; the user must sign in again.
+ *  - `error`      — a live request failed (bad/expired API key, endpoint unreachable, …). */
+export type ProviderHealth = 'ok' | 'needsReauth' | 'error'
+
+export interface ProviderVerification {
+  id: string
+  health: ProviderHealth
+  /** Human-readable failure detail for `needsReauth` / `error`. */
+  error?: string
+}
+
 /** A user-defined OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, a
  *  proxy, ...). Surfaced as one extra provider in the agent provider list and
  *  written to pi's models.json. */
@@ -1597,6 +1848,14 @@ export interface AgentCreateOptions {
   /** Resume an existing pi session file (jsonl). When set, pi will load it
    *  on start instead of creating a fresh session. */
   sessionFile?: string
+  /** Extra environment variables merged into the pi process env. Used by the
+   *  Cate Agent to pass `CATE_AGENT_ROLE` so the cate-agent-tools extension knows
+   *  which tool subset to register for this (headless) session. */
+  env?: Record<string, string>
+  /** Which per-workspace pi dir this session uses. `'cateAgent'` isolates the Cate
+   *  Agent's headless sessions in `.cate/pi-agent-cate-agent` so their transcripts never
+   *  appear in the agent panel's session list. Defaults to `'default'`. */
+  agentDir?: 'default' | 'cateAgent'
 }
 
 /** Pi agent events forwarded from main to renderer. We keep the shape loose

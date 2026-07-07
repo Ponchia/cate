@@ -77,6 +77,10 @@ import {
   SESSION_FLUSH_SAVE_DONE,
   PROJECT_STATE_SAVE,
   PROJECT_STATE_LOAD,
+  PROJECT_CATE_AGENT_LOAD,
+  PROJECT_CATE_AGENT_SAVE,
+  PROJECT_CHATS_LOAD,
+  PROJECT_CHATS_SAVE,
   WORKSPACE_EXTERNAL_EDIT,
   WORKSPACE_EXTERNAL_EDIT_DISMISS,
   BOOT_SNAPSHOT_WRITE,
@@ -96,6 +100,7 @@ import {
   DIALOG_CONFIRM_CLOSE_TERMINAL,
   DIALOG_CONFIRM_CLOSE_CANVAS,
   DIALOG_CONFIRM_RELOAD_WORKSPACE,
+  DIALOG_CONFIRM_DISCARD_JOB,
   DIALOG_CONFIRM_IMPORT,
   DIALOG_TERMINAL_LINK_OPEN,
   RECENT_PROJECTS_GET,
@@ -177,6 +182,7 @@ import {
   RUNTIME_INSTALL,
   RUNTIME_STATUS,
   RUNTIME_LOCAL_STATUS,
+  RUNTIME_RETRY_LOCAL,
   RUNTIME_PICK_SSH_KEY,
   WEBVIEW_SCREENSHOT,
   BROWSER_SET_PROXY,
@@ -237,6 +243,7 @@ import {
   SKILLS_SET_TOKEN,
   AUTH_LIST_PROVIDERS,
   AUTH_STATUS,
+  AUTH_VERIFY,
   AUTH_OAUTH_START,
   AUTH_OAUTH_PROMPT_REPLY,
   AUTH_OAUTH_EVENT,
@@ -413,6 +420,10 @@ const invokeForwarders = {
   // Session
   projectStateSave: makeInvoker<'projectStateSave'>(PROJECT_STATE_SAVE),
   projectStateLoad: makeInvoker<'projectStateLoad'>(PROJECT_STATE_LOAD),
+  projectCateAgentLoad: makeInvoker<'projectCateAgentLoad'>(PROJECT_CATE_AGENT_LOAD),
+  projectCateAgentSave: makeInvoker<'projectCateAgentSave'>(PROJECT_CATE_AGENT_SAVE),
+  projectChatsLoad: makeInvoker<'projectChatsLoad'>(PROJECT_CHATS_LOAD),
+  projectChatsSave: makeInvoker<'projectChatsSave'>(PROJECT_CHATS_SAVE),
 
   // Dialog
   openFolderDialog: makeInvoker<'openFolderDialog'>(DIALOG_OPEN_FOLDER),
@@ -422,6 +433,7 @@ const invokeForwarders = {
   confirmCloseTerminal: makeInvoker<'confirmCloseTerminal'>(DIALOG_CONFIRM_CLOSE_TERMINAL),
   confirmCloseCanvas: makeInvoker<'confirmCloseCanvas'>(DIALOG_CONFIRM_CLOSE_CANVAS),
   confirmReloadWorkspace: makeInvoker<'confirmReloadWorkspace'>(DIALOG_CONFIRM_RELOAD_WORKSPACE),
+  confirmDiscardJob: makeInvoker<'confirmDiscardJob'>(DIALOG_CONFIRM_DISCARD_JOB),
   confirmImportEntries: makeInvoker<'confirmImportEntries'>(DIALOG_CONFIRM_IMPORT),
 
   // Recent projects / sidebar / remote projects
@@ -512,6 +524,7 @@ const invokeForwarders = {
   runtimePickSshKey: makeInvoker<'runtimePickSshKey'>(RUNTIME_PICK_SSH_KEY),
   runtimeInstall: makeInvoker<'runtimeInstall'>(RUNTIME_INSTALL),
   runtimeDelete: makeInvoker<'runtimeDelete'>(RUNTIME_DELETE),
+  runtimeRetryLocal: makeInvoker<'runtimeRetryLocal'>(RUNTIME_RETRY_LOCAL),
 
   // Menu
   showContextMenu: makeInvoker<'showContextMenu'>(MENU_SHOW_CONTEXT),
@@ -590,6 +603,7 @@ const invokeForwarders = {
   // Pi auth / providers
   authListProviders: makeInvoker<'authListProviders'>(AUTH_LIST_PROVIDERS),
   authStatus: makeInvoker<'authStatus'>(AUTH_STATUS),
+  authVerify: makeInvoker<'authVerify'>(AUTH_VERIFY),
   authOAuthStart: makeInvoker<'authOAuthStart'>(AUTH_OAUTH_START),
   authOAuthPromptReply: makeInvoker<'authOAuthPromptReply'>(AUTH_OAUTH_PROMPT_REPLY),
   authSaveApiKey: makeInvoker<'authSaveApiKey'>(AUTH_SAVE_API_KEY),

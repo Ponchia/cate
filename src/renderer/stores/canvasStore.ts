@@ -203,12 +203,14 @@ export function useNodeIds(store?: UseBoundStore<StoreApi<CanvasStore>>): string
  * Viewport-culled variant of useNodeIds. Only returns ids for nodes whose
  * bounding box intersects the visible canvas rect (expanded by a 1-screen
  * margin so panning doesn't thrash mount state at the edges). Focused, pinned,
- * and keep-mounted (webview-backed, e.g. extensions) nodes are always included
- * so they keep their live state. `keepMountedPanelIds` is the set of panel ids
- * whose type must stay mounted off-screen (see keepsMountedOffscreen); a node is
- * exempt from the cull when it hosts any of them. Omitting it skips that
- * exemption entirely (pure geometric cull) — the hook below requires it so a
- * real caller can never accidentally re-enable webview-destroying culling.
+ * and keep-mounted nodes are always included so they keep their live state.
+ * `keepMountedPanelIds` is the set of panel ids that must stay mounted
+ * off-screen — webview-backed extensions (see keepsMountedOffscreen) and
+ * terminals the Cate Agent is driving (their pty boots on mount and the agent
+ * reads their rendered screen). A node is exempt from the cull when it hosts any
+ * of them. Omitting it skips that exemption entirely (pure geometric cull) — the
+ * hook below requires it so a real caller can never accidentally re-enable
+ * webview-destroying culling.
  *
  * This is the primary lever for reducing memory/CPU when many terminals or
  * editors are open on a canvas — off-screen nodes don't mount at all.

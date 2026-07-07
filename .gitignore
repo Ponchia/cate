@@ -40,3 +40,6 @@ cate-extensions/
 cate-local-ws-*/
 cate-local-install-*/
 cate-daemon-ws-*/
+
+# Superpowers planning artifacts (plans/specs) — scratch, not tracked
+docs/superpowers/
