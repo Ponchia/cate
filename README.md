@@ -47,6 +47,10 @@ Download a prebuilt release. Don't build from source for daily use.
 - **AI agents:** in-app coding agent (Pi) with chat threads and per-chat model memory. Connect Anthropic, OpenAI Codex, GitHub Copilot, Gemini, OpenRouter, Groq, Mistral, DeepSeek, and more via OAuth or API key.
 - **Navigation:** canvas-wide search across files, terminal scrollback, and panel titles; command palette; panel-to-panel keyboard navigation.
 
+## Extensions
+
+Cate has an extension system for third-party panels (MCP servers, diagrams, and more), each served in its own isolated webview. Browse and build them in the companion repo: [0-AI-UG/cate-extensions](https://github.com/0-AI-UG/cate-extensions).
+
 ## Keyboard shortcuts
 
 macOS shown below; on Windows/Linux use `Ctrl` in place of `Cmd`.

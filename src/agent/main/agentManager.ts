@@ -38,6 +38,7 @@ import { installSubagentExtension } from './installSubagents'
 import { installPlanModeExtension } from './installPlanMode'
 import { installAskUserExtension } from './installAskUser'
 import { installCateAgentToolsExtension } from './installCateAgentTools'
+import { installMcpAdapter } from './installMcpAdapter'
 import { hostAgentDir, prepareAgentDir, watchWorkspaceAuth, pushSharedToWorkspace, type AgentDirVariant } from './agentDir'
 import { mirrorModelsToWorkspace } from './customModels'
 import { authManager, type AuthManager } from './authManager'
@@ -195,7 +196,11 @@ export class AgentManager {
         await installSubagentExtension(runtime, cwd)
         await installPlanModeExtension(runtime, cwd)
         await installAskUserExtension(runtime, cwd)
+        // Register pi-mcp-adapter in <cwd>/.cate/pi-agent/settings.json so pi
+        // auto-installs + loads it on session start (MCP driven by <cwd>/.pi/mcp.json).
+        await installMcpAdapter(runtime, cwd)
       }
+
 
       const extraArgs: string[] = []
       if (opts.sessionFile) extraArgs.push('--session', opts.sessionFile)

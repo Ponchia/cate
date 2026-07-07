@@ -17,6 +17,7 @@ vi.mock('./piRpcClient', () => ({ PiRpcClient: vi.fn() }))
 vi.mock('./installSubagents', () => ({ installSubagentExtension: vi.fn() }))
 vi.mock('./installPlanMode', () => ({ installPlanModeExtension: vi.fn() }))
 vi.mock('./installAskUser', () => ({ installAskUserExtension: vi.fn() }))
+vi.mock('./installMcpAdapter', () => ({ installMcpAdapter: vi.fn() }))
 vi.mock('./agentDir', () => ({
   hostAgentDir: vi.fn(() => '/agent'),
   prepareAgentDir: vi.fn(),
