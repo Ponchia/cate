@@ -265,17 +265,9 @@
   transform-origin: bottom center;
   animation: cate-agent-window-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-/* On close it collapses HORIZONTALLY only (scaleX toward the center), matching the
-   toolbar's width collapse — no vertical fold, no fade. Kept mounted for the
-   animation's duration, then unmounted. */
-@keyframes cate-agent-window-out {
-  from { transform: scaleX(1); }
-  to   { transform: scaleX(0); }
-}
-.cate-agent-window-out {
-  transform-origin: center;
-  animation: cate-agent-window-out 180ms cubic-bezier(0.4, 0, 0.2, 1) both;
-}
+/* On close there's no exit transform: the window is anchored left-0/right-0, so it
+   simply tracks the toolbar's collapsing width and shrinks horizontally to the
+   toolbar's min width (not to nothing), then unmounts. */
 
 /* Skill install progress — an indeterminate left-to-right fill on an agent pill
    while a skill downloads/installs. The pill sets position:relative;overflow:hidden
