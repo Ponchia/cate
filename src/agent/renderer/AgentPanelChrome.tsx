@@ -71,10 +71,14 @@ export function QueueBadges({
 // Extension chrome
 // -----------------------------------------------------------------------------
 
+// Status keys hidden from the footer. `plan-mode` drives the toggle-button
+// highlight in ChatInput, so surfacing it here too is redundant chrome. `mcp` /
+// `mcp-auth` are the pi-mcp-adapter's connection status — the MCP feature stays
+// fully active; we just don't want its footer line.
+const HIDDEN_STATUS_KEYS = new Set(['plan-mode', 'mcp', 'mcp-auth'])
+
 export function ExtensionStatusBar({ entries }: { entries: ExtensionStatusEntry[] }) {
-  // `plan-mode` drives the toggle-button highlight in ChatInput — surfacing it
-  // here too would be redundant chrome, so we hide it from the footer.
-  const visible = entries.filter((e) => e.key !== 'plan-mode')
+  const visible = entries.filter((e) => !HIDDEN_STATUS_KEYS.has(e.key))
   if (visible.length === 0) return null
   return (
     <div className="flex flex-wrap gap-2 px-3 py-1 border-t border-subtle bg-surface-0 text-[11px] text-muted">

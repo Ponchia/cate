@@ -714,6 +714,28 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
   const observerView = cateAgent.observerView
   const setObserverView = useCateAgentStore((s) => s.setObserverView)
 
+  // Keep the window mounted through its close animation: when the input closes we
+  // flip to `closing` (playing the fold-down) and only unmount once it finishes, so
+  // the panel animates out (vertically + tracking the toolbar's horizontal collapse)
+  // instead of vanishing.
+  const inputOpen = cateAgent.inputOpen
+  const [mounted, setMounted] = React.useState(inputOpen)
+  const [closing, setClosing] = React.useState(false)
+  React.useEffect(() => {
+    if (inputOpen) {
+      setMounted(true)
+      setClosing(false)
+      return
+    }
+    if (!mounted) return
+    setClosing(true)
+    const id = window.setTimeout(() => {
+      setMounted(false)
+      setClosing(false)
+    }, 180)
+    return () => window.clearTimeout(id)
+  }, [inputOpen, mounted])
+
   // Stick to the bottom (newest, nearest the input) as the transcript grows, unless
   // the user has scrolled up to read.
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
@@ -734,7 +756,7 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight
   }, [msgCount, runTick, visibleFeed.length, cateAgent.activeChatId, observerView])
 
-  if (!wsId || !cateAgent.inputOpen) return null
+  if (!wsId || !mounted) return null
   const hasChats = list.length > 0
   if (!hasChats && visibleFeed.length === 0) return null
 
@@ -744,7 +766,7 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
   // the observer timeline; picking a chat swaps it back.
   return (
     <div className="absolute bottom-full left-0 right-0 mb-2">
-      <div className="cate-agent-window-in flex flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]">
+      <div className={`${closing ? 'cate-agent-window-out' : 'cate-agent-window-in'} flex flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]`}>
         <div className="flex-none flex items-stretch bg-surface-0">
           <ChatTabs
             wsId={wsId}
