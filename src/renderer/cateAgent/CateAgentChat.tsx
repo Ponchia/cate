@@ -1,25 +1,26 @@
 // =============================================================================
-// CateAgentChat — the Cate Agent's front door, docked above the toolbar.
+// CateAgentChat — the Cate Agent's floating window, docked above the toolbar.
 //
-// A CHAT: a persistent thread you type into. Chats are a browser-style TAB STRIP
-// (top); the running one spins, one awaiting a decision shows an amber dot. The
-// transcript below renders the active chat as a stream of TYPED blocks on one flat
-// surface — a markdown answer (`text`), a code task's plan (`plan`), its
-// parallel-attempts grid (`attempts`), its land actions (`result`), or a delegated
-// canvas task (`canvas`). Tool blocks are calm left-accent RAILS, not boxed cards,
-// so the thread reads as one conversation. Live blocks bind to the chat's `run`
-// while it goes, then freeze to a snapshot so the transcript survives a reload.
+// The FRONT DOOR is the OBSERVER: opening the agent shows a compact, read-only
+// timeline of what it has watched — a single accent rail, one dot + relative time
+// per remark, newest at the bottom. The window is only as tall as that content
+// needs. Which view is shown (observer, or a specific chat) is chosen from the
+// picker in the toolbar bar — there is no tab strip here.
 //
-// The observer's remarks (the feed tail) get their own OBSERVER view, opened from an eye
-// tab beside the chats: the window body swaps to a full-height timeline — a single accent
-// rail, one dot + relative time per remark, newest at the bottom. A transient FYI, NOT
-// chat — the observer never mints a chat, it just speaks there. Hover a remark to dismiss
-// it, or clear the whole log. The whole surface shows only while the panel is open.
+// Selecting a CHAT clears the observer view and GROWS the window into that chat's
+// transcript: a stream of TYPED blocks on one flat surface — a markdown answer
+// (`text`), a code task's plan (`plan`), its parallel-attempts grid (`attempts`),
+// its land actions (`result`), or a delegated canvas task (`canvas`). Tool blocks
+// are calm left-accent RAILS, not boxed cards, so the thread reads as one
+// conversation. Live blocks bind to the chat's `run` while it goes, then freeze to
+// a snapshot so the transcript survives a reload.
+//
+// The card's height is measured from its content, so opening, closing, and the
+// observer↔chat switch all animate purely as a grow/shrink (no fade or scale).
 // =============================================================================
 
 import React from 'react'
 import {
-  Plus,
   X,
   Stop,
   Play,
@@ -415,109 +416,6 @@ const MessageBlock: React.FC<{ chat: Chat; msg: ChatMessage; wsId: string; rootP
   }
 }
 
-// --- chat tabs ---------------------------------------------------------------
-
-const chatDot = (chat: Chat): React.ReactNode => {
-  if (chat.run?.status === 'running') return <CircleNotch size={10} className="flex-shrink-0 text-green-400 animate-spin" />
-  if (chat.run?.interrupted) return <WarningCircle size={10} weight="fill" className="flex-shrink-0 text-amber-400" />
-  if (chat.run?.status === 'review') return <GitMerge size={10} className="flex-shrink-0 text-amber-400" />
-  if (chat.run?.status === 'failed') return <X size={10} className="flex-shrink-0 text-red-400/70" />
-  return <span className="w-[6px] h-[6px] rounded-full bg-surface-5 flex-shrink-0" />
-}
-
-// Browser-style tab strip: one tab per chat (newest first), the active one pulled up
-// to merge with the transcript below, plus a trailing "+" to start a fresh chat.
-const ChatTabs: React.FC<{
-  wsId: string
-  rootPath: string
-  chats: Chat[]
-  activeChatId: string
-  /** True while the observer view owns the body, so no chat tab reads as active. */
-  observerView: boolean
-  /** Picking any chat (or the "+") leaves the observer view. */
-  onPickChat: () => void
-}> = ({ wsId, rootPath, chats, activeChatId, observerView, onPickChat }) => {
-  const setActiveChat = useCateAgentStore((s) => s.setActiveChat)
-  // With two or more chats the tabs join into a segmented strip: no gap, square
-  // corners, and shared 1px seams (collapsed via -ml-px). A lone tab keeps its
-  // rounded, standalone look.
-  const multi = chats.length >= 2
-  const hasChats = chats.length > 0
-  const pick = (chatId: string) => {
-    onPickChat()
-    setActiveChat(wsId, chatId)
-  }
-  return (
-    // No padding: tabs sit flush and fill the bar edge-to-edge. The card's rounded
-    // overflow clips the outer corners round while the seams between tabs stay square.
-    <div className={`no-scrollbar flex flex-1 min-w-0 items-stretch overflow-x-auto ${multi ? 'gap-0' : 'gap-1'}`}>
-      {/* With no chats the row would collapse below a tab's height; an invisible
-          tab-shaped spacer keeps the bar exactly as tall as it is with tabs. */}
-      {!hasChats && (
-        <div aria-hidden className="flex-shrink-0 flex items-center px-2.5 py-1.5 text-[11.5px] invisible">
-          &nbsp;
-        </div>
-      )}
-      {[...chats].reverse().map((chat) => {
-        const active = !observerView && chat.id === activeChatId
-        return (
-          <div
-            key={chat.id}
-            className={`group/tab flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 -mb-px border border-b-0 transition-colors ${
-              active ? 'bg-surface-0 border-subtle' : 'border-transparent hover:bg-hover'
-            }`}
-          >
-            <button onClick={() => pick(chat.id)} className="flex items-center gap-1.5 min-w-0" title={chat.title}>
-              {chatDot(chat)}
-              <span className={`text-[11.5px] truncate max-w-[130px] ${active ? 'text-primary' : 'text-secondary'}`}>{chat.title}</span>
-            </button>
-            <button
-              onClick={() => void cateAgentController.closeChat(wsId, rootPath, chat.id)}
-              title="Delete chat"
-              className="flex-shrink-0 opacity-0 group-hover/tab:opacity-100 text-muted hover:text-red-400 transition-opacity"
-            >
-              <X size={10} />
-            </button>
-          </div>
-        )
-      })}
-      {/* No "+" until there's a chat to switch from — a fresh chat is already the
-          default, so a lone plus in the empty bar just reads as a stray chip. */}
-      {hasChats && (
-        <button
-          onClick={() => pick('')}
-          title="New chat"
-          className={`flex-shrink-0 self-center ml-0.5 flex items-center justify-center w-6 h-6 rounded-md transition-colors ${
-            !observerView && activeChatId === '' ? 'bg-hover-strong text-primary' : 'text-muted hover:text-primary hover:bg-hover'
-          }`}
-        >
-          <Plus size={13} weight="bold" />
-        </button>
-      )}
-    </div>
-  )
-}
-
-// The observer's own tab, pinned to the right of the chat tabs: a round accent dot. Toggles the
-// full-height timeline view into the window body. Only shown while the timeline has content.
-const ObserverTab: React.FC<{ active: boolean; onClick: () => void }> = ({ active, onClick }) => (
-  <button
-    onClick={onClick}
-    title="Observer"
-    aria-label="Observer"
-    aria-pressed={active}
-    className={`flex-shrink-0 flex items-center justify-center px-2.5 -mb-px border border-b-0 transition-colors ${
-      active ? 'bg-surface-0 border-subtle' : 'border-transparent hover:bg-hover'
-    }`}
-  >
-    <span
-      aria-hidden
-      className="w-2.5 h-2.5 rounded-full"
-      style={{ backgroundColor: 'rgb(var(--agent-rgb))' }}
-    />
-  </button>
-)
-
 // --- observer timeline -------------------------------------------------------
 
 // Relative age of a remark, coarsely (s / m / h). Recomputed on a slow tick so idle
@@ -708,34 +606,42 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
   const lastUserIdx = feed.map((f) => f.kind).lastIndexOf('user')
   const visibleFeed = (lastUserIdx >= 0 ? feed.slice(lastUserIdx) : feed).slice(-MAX_VISIBLE_FEED)
 
-  // The eye tab swaps the body from the active chat to the full-height observer
-  // timeline. Lifted into the store so the toolbar's input bar can disable sending
-  // while the (read-only) observer view owns the body.
+  // The window shows the observer (the default front door) or the selected chat.
+  // Which one is chosen from the picker in the toolbar bar, not a tab strip here.
   const observerView = cateAgent.observerView
-  const setObserverView = useCateAgentStore((s) => s.setObserverView)
 
-  // Keep the window mounted through its close animation: when the input closes we
-  // flip to `closing` (playing the fold-down) and only unmount once it finishes, so
-  // the panel animates out (vertically + tracking the toolbar's horizontal collapse)
-  // instead of vanishing.
+  // Open/close is a morph out of / into the Cate Agent button: mount, then flip
+  // `entered` on the next frame so the enter transition plays from the collapsed
+  // (scaled-into-button, height 0) state; on close flip it back and unmount after.
   const inputOpen = cateAgent.inputOpen
   const [mounted, setMounted] = React.useState(inputOpen)
-  const [closing, setClosing] = React.useState(false)
+  const [entered, setEntered] = React.useState(false)
   React.useEffect(() => {
     if (inputOpen) {
       setMounted(true)
-      setClosing(false)
-      return
+      const r = requestAnimationFrame(() => setEntered(true))
+      return () => cancelAnimationFrame(r)
     }
-    if (!mounted) return
-    setClosing(true)
-    // Hold the mount until the morph-into-button finishes (matches the out anim), then unmount.
-    const id = window.setTimeout(() => {
-      setMounted(false)
-      setClosing(false)
-    }, 220)
+    setEntered(false)
+    const id = window.setTimeout(() => setMounted(false), 300)
     return () => window.clearTimeout(id)
-  }, [inputOpen, mounted])
+  }, [inputOpen])
+
+  // The card's height is driven by its content: compact for the observer, tall
+  // (capped, then scrolls) for a chat. Measuring the content and mirroring it onto
+  // the card's explicit height lets the height TRANSITION — so selecting a chat
+  // grows the window and returning to the observer shrinks it.
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const [naturalH, setNaturalH] = React.useState(0)
+  React.useLayoutEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const measure = () => setNaturalH(el.scrollHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [mounted, observerView, activeChat?.id])
 
   // Stick to the bottom (newest, nearest the input) as the transcript grows, unless
   // the user has scrolled up to read.
@@ -758,41 +664,39 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
   }, [msgCount, runTick, visibleFeed.length, cateAgent.activeChatId, observerView])
 
   if (!wsId || !mounted) return null
-  const hasChats = list.length > 0
-  if (!hasChats && visibleFeed.length === 0) return null
 
-  // A tab bar (chats + the observer's eye tab) over a body of FIXED height, so the window
-  // stays the same size whichever tab is active — short chats have room to spare, long
-  // ones scroll — instead of jumping as you switch. The eye tab swaps that same body to
-  // the observer timeline; picking a chat swaps it back.
   return (
     <div className="absolute bottom-full left-0 right-0 mb-2">
-      <div className={`${closing ? 'cate-agent-window-out' : 'cate-agent-window-in'} flex flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]`}>
-        <div className="flex-none flex items-stretch bg-surface-0">
-          <ChatTabs
-            wsId={wsId}
-            rootPath={rootPath}
-            chats={list}
-            activeChatId={cateAgent.activeChatId}
-            observerView={observerView}
-            onPickChat={() => setObserverView(wsId, false)}
-          />
-          {(visibleFeed.length > 0 || observerView) && (
-            <ObserverTab active={observerView} onClick={() => setObserverView(wsId, !observerView)} />
-          )}
-        </div>
-        <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar h-[min(420px,55vh)] overflow-y-auto border-t border-subtle">
+      <div
+        className="overflow-hidden rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]"
+        style={{
+          // Grow only: the window opens, closes, and switches observer↔chat purely by
+          // animating its height — no fade, no scale-morph.
+          transition: 'height 280ms cubic-bezier(0.16,1,0.3,1)',
+          height: entered ? naturalH : 0,
+        }}
+      >
+        <div ref={contentRef}>
           {observerView ? (
-            <ObserverTimeline wsId={wsId} items={visibleFeed} />
-          ) : activeChat ? (
-            <div className="flex flex-col gap-3.5 px-3 py-3">
-              {activeChat.messages.map((msg) => (
-                <MessageBlock key={msg.id} chat={activeChat} msg={msg} wsId={wsId} rootPath={rootPath} worktrees={worktrees} />
-              ))}
-              <RunControls chat={activeChat} wsId={wsId} rootPath={rootPath} working={working} />
+            // Observer: only as tall as its content needs (a floor so the empty state
+            // has room, a ceiling before it scrolls).
+            <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar min-h-[120px] max-h-[min(420px,55vh)] overflow-y-auto">
+              <ObserverTimeline wsId={wsId} items={visibleFeed} />
             </div>
           ) : (
-            <EmptyState />
+            // Chat: the full-height transcript, scrolling internally.
+            <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar h-[min(420px,55vh)] overflow-y-auto">
+              {activeChat ? (
+                <div className="flex flex-col gap-3.5 px-3 py-3">
+                  {activeChat.messages.map((msg) => (
+                    <MessageBlock key={msg.id} chat={activeChat} msg={msg} wsId={wsId} rootPath={rootPath} worktrees={worktrees} />
+                  ))}
+                  <RunControls chat={activeChat} wsId={wsId} rootPath={rootPath} working={working} />
+                </div>
+              ) : (
+                <EmptyState />
+              )}
+            </div>
           )}
         </div>
       </div>

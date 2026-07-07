@@ -253,31 +253,6 @@
   animation: cate-fade-in 0.35s ease-out both;
 }
 
-/* Cate Agent chat window morph — the panel grows out of / collapses into the
-   Cate Agent toolbar button (its entry point). The scale origin is aimed at that
-   button's center: the button is w-9 (36px) inside the pill's px-1/py-1 (4px), so
-   its center is ~22px right of the pill's left edge and ~22px below the pill top;
-   the window sits left-0 above the pill with an 8px (mb-2) gap, putting the button
-   at (22px, 100% + 30px) in the card's own box. Opening scales up from there,
-   closing scales back into it. */
-@keyframes cate-agent-window-in {
-  from { transform: scale(0.05); }
-  to   { transform: scale(1); }
-}
-@keyframes cate-agent-window-out {
-  from { transform: scale(1); }
-  to   { transform: scale(0.05); }
-}
-.cate-agent-window-in,
-.cate-agent-window-out {
-  transform-origin: 22px calc(100% + 30px);
-}
-.cate-agent-window-in {
-  animation: cate-agent-window-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-.cate-agent-window-out {
-  animation: cate-agent-window-out 220ms cubic-bezier(0.4, 0, 0.2, 1) both;
-}
 
 /* Skill install progress — an indeterminate left-to-right fill on an agent pill
    while a skill downloads/installs. The pill sets position:relative;overflow:hidden

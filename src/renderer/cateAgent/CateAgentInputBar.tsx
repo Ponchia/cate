@@ -38,13 +38,13 @@ export const CateAgentInputBar: React.FC<{
   workspaceId: string
   /** Bottom-anchor controls when the input has wrapped (else vertically center). */
   multiline: boolean
-  /** Read-only: the observer timeline owns the panel body, which takes no reply. */
-  disabled?: boolean
+  /** Placeholder text (varies with what the window is showing, e.g. the observer). */
+  placeholder?: string
   onSend: (text: string) => void
   onClose: () => void
   /** Reports the textarea's current content height (px) so the toolbar resizes. */
   onHeightChange?: (px: number) => void
-}> = ({ workspaceId, multiline, disabled, onSend, onClose, onHeightChange }) => {
+}> = ({ workspaceId, multiline, placeholder = 'Message Cate…', onSend, onClose, onHeightChange }) => {
   // Seed from the persisted draft so a reopened bar (or a fresh app launch)
   // restores whatever was typed but not sent.
   const [text, setText] = React.useState(() => loadDraft(workspaceId))
@@ -104,7 +104,6 @@ export const CateAgentInputBar: React.FC<{
   }, [resize])
 
   const send = () => {
-    if (disabled) return
     const t = text.trim()
     if (!t) return
     onSend(t)
@@ -117,7 +116,6 @@ export const CateAgentInputBar: React.FC<{
         ref={ref}
         rows={1}
         value={text}
-        disabled={disabled}
         onChange={(e) => update(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -128,14 +126,14 @@ export const CateAgentInputBar: React.FC<{
             onClose()
           }
         }}
-        placeholder={disabled ? 'Viewing observer feed' : 'Message Cate…'}
-        className="flex-1 min-w-0 resize-none bg-transparent text-sm leading-snug text-primary px-2 py-1.5 outline-none placeholder:text-muted disabled:cursor-default"
+        placeholder={placeholder}
+        className="flex-1 min-w-0 resize-none bg-transparent text-sm leading-snug text-primary px-2 py-1.5 outline-none placeholder:text-muted"
         style={{ maxHeight: MAX_HEIGHT }}
       />
       <button
         type="button"
         onClick={send}
-        disabled={disabled || !text.trim()}
+        disabled={!text.trim()}
         aria-label="Send"
         title="Send"
         style={{ WebkitTapHighlightColor: 'transparent' }}

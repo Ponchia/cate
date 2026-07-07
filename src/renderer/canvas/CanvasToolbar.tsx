@@ -31,6 +31,7 @@ import { inheritedWorktreeFromSelection } from '../lib/inheritWorktree'
 import { Tooltip } from '../ui/Tooltip'
 import { CateAgentToolbarButton } from '../cateAgent/CateAgentToolbarButton'
 import { CateAgentInputBar } from '../cateAgent/CateAgentInputBar'
+import { CateAgentChatPicker } from '../cateAgent/CateAgentChatPicker'
 import { CateAgentChat } from '../cateAgent/CateAgentChat'
 import { useCateAgentWs, useCateAgentStore } from '../cateAgent/cateAgentStore'
 import { cateAgentController } from '../cateAgent/cateAgentController'
@@ -244,14 +245,16 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   // Compose into the active chat, minting one (titled from the prompt) on the first
   // send. The chat's persistent agent decides how to respond.
   const sendAgentPrompt = (text: string) => {
-    // The observer timeline is a read-only FYI view; it never takes a reply.
-    if (cateAgent.observerView) return
     const store = useChatsStore.getState()
-    let chatId = cateAgent.activeChatId
+    // From the observer front door, a message always starts a NEW chat (you don't
+    // reply to the observer). Otherwise it composes into the selected chat.
+    let chatId = cateAgent.observerView ? '' : cateAgent.activeChatId
     if (!chatId || !store.getChat(rootPath, chatId)) {
       chatId = store.createChat(rootPath, deriveTopic(text)).id
-      useCateAgentStore.getState().setActiveChat(workspaceId, chatId)
     }
+    // Always select the target chat: this clears the observer view and grows the
+    // window into the chat we're sending to.
+    useCateAgentStore.getState().setActiveChat(workspaceId, chatId)
     void cateAgentController.sendMessage(workspaceId, rootPath, chatId, text)
   }
   // The dot means "there's observer feed to check via the eye tab" — it's the exact
@@ -294,7 +297,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   useEffect(() => {
     if (!inputOpen) setAgentInputH(AGENT_ROW_H)
   }, [inputOpen])
-  const AGENT_INPUT_EXTRA = 96 // how much wider than the toolbar the input grows
+  const AGENT_INPUT_EXTRA = 210 // how much wider than the toolbar the input grows (picker + textarea)
   // Both width and height are explicit so opening, typing (as text wraps), and
   // closing all animate via the transition. Height tracks the live textarea
   // content (clamped to one toolbar row); the closed target is the fixed row
@@ -460,11 +463,14 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             </ToolbarButton>
               </div>
               {hasProvider && inputOpen && (
-                <div className={`flex-1 min-w-0 flex ${agentAlign}`}>
+                <div className={`flex-1 min-w-0 flex gap-1.5 ${agentAlign}`}>
+                  {/* Chat picker replaces the old tab strip: choose the observer
+                      (default) or a chat; it names what the window shows. */}
+                  <CateAgentChatPicker workspaceId={workspaceId} rootPath={rootPath} />
                   <CateAgentInputBar
                     workspaceId={workspaceId}
                     multiline={agentMultiline}
-                    disabled={cateAgent.observerView}
+                    placeholder={cateAgent.observerView ? 'Ask Cate to do something…' : 'Message Cate…'}
                     onSend={sendAgentPrompt}
                     onClose={closeAgentInput}
                     onHeightChange={setAgentInputH}

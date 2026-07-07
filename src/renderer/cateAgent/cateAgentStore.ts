@@ -38,9 +38,10 @@ export interface CateAgentWsState {
   /** The chat the input composes into and the transcript shows. Empty string means
    *  "compose a new chat" (one is minted on the first send). */
   activeChatId: string
-  /** The observer timeline (eye tab) owns the panel body instead of a chat. A
-   *  read-only FYI view — the input bar is disabled while it's shown, since the
-   *  observer never takes a reply. */
+  /** The observer timeline owns the panel body instead of a chat. This is the
+   *  DEFAULT the panel opens onto (the front door): a compact, read-only view of
+   *  what the observer has watched. Picking a chat (or sending a first message)
+   *  turns it off and grows the window into that chat. */
   observerView: boolean
   /** Persistent-per-session feedback log shown above the toolbar, newest last. */
   feed: CateAgentFeedItem[]
@@ -112,12 +113,13 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
   setInputOpen(wsId, open) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      // Opening the panel means the user has now seen any pending activity.
-      // Closing drops the observer view so a reopen always lands on the chat.
+      // Opening the panel means the user has now seen any pending activity, and it
+      // opens onto the observer (the front door) by default — not a chat. Closing
+      // drops the observer view so the next open starts clean.
       return {
         byWs: {
           ...s.byWs,
-          [wsId]: { ...prev, inputOpen: open, unseen: open ? false : prev.unseen, observerView: open ? prev.observerView : false },
+          [wsId]: { ...prev, inputOpen: open, unseen: open ? false : prev.unseen, observerView: open },
         },
       }
     })
