@@ -41,6 +41,8 @@ import { hostAgentDir, prepareAgentDir, watchWorkspaceAuth, pushSharedToWorkspac
 import { mirrorModelsToWorkspace } from './customModels'
 import { authManager, type AuthManager } from './authManager'
 import { getSetting } from '../../main/settingsFile'
+import { workspaceCateApi } from '../../main/extensions/workspaceCateApi'
+import { KeyedLock } from '../../main/keyedLock'
 
 interface AgentSession {
   panelId: string
@@ -111,7 +113,7 @@ interface ExtSession {
 
 export class AgentManager {
   private sessions = new Map<string, AgentSession>()
-  private locks = new Map<string, Promise<unknown>>()
+  private locks = new KeyedLock()
   // Used to resolve the default model for extension-initiated background runs
   // (see runForExtension) and for the auth-change mirror hook below.
   private authManager: AuthManager
@@ -161,15 +163,8 @@ export class AgentManager {
     }
   }
 
-  private withLock<T>(panelId: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.locks.get(panelId) ?? Promise.resolve()
-    const next = prev.then(fn, fn)
-    this.locks.set(panelId, next.catch(() => undefined))
-    return next
-  }
-
   async create(opts: AgentCreateOptions, sender: WebContents): Promise<void> {
-    return this.withLock(opts.panelId, async () => {
+    return this.locks.run(opts.panelId, async () => {
       if (this.sessions.has(opts.panelId)) {
         log.info('[agentManager] disposing existing session for %s before re-create', opts.panelId)
         await this.disposeInternal(opts.panelId)
@@ -193,12 +188,22 @@ export class AgentManager {
       const extraArgs: string[] = []
       if (opts.sessionFile) extraArgs.push('--session', opts.sessionFile)
 
+      // First-party CATE_API endpoint: give pi CATE_API/CATE_TOKEN so a `cate`
+      // CLI run from a tool can reach the dispatch core. Null when the CLI
+      // setting is disabled (the gate) — then nothing is injected (fail closed).
+      const env: Record<string, string> = { PI_CODING_AGENT_DIR: hostAgentDir(runtimeId, cwd) }
+      const cateApi = await workspaceCateApi.ensureEndpoint(opts.workspaceId)
+      if (cateApi) {
+        env.CATE_API = `http://127.0.0.1:${cateApi.port}`
+        env.CATE_TOKEN = cateApi.token
+      }
+
       const client = new PiRpcClient(runtime, {
         cwd,
         provider: opts.model?.provider,
         model: opts.model?.model,
         args: extraArgs.length > 0 ? extraArgs : undefined,
-        env: { PI_CODING_AGENT_DIR: hostAgentDir(runtimeId, cwd) },
+        env,
       })
 
       // Ensure pi is present on the host BEFORE start. pi ships in the runtime
@@ -317,7 +322,7 @@ export class AgentManager {
   }
 
   async dispose(panelId: string): Promise<void> {
-    return this.withLock(panelId, () => this.disposeInternal(panelId))
+    return this.locks.run(panelId, () => this.disposeInternal(panelId))
   }
 
   // ---------------------------------------------------------------------------

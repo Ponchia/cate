@@ -754,6 +754,21 @@
       "sourceId": "career-ops"
     },
     {
+      "id": "cate/cate-cli",
+      "name": "cate-cli",
+      "description": "Drive the Cate IDE from inside a Cate terminal with the `cate` CLI — control the built-in browser panel (open URLs, navigate, screenshot, read an accessibility snapshot, click and type by ref) and call any cate.* host method. Use when an agent or user working in a Cate terminal needs to see or steer a web page, capture a screenshot, or reach Cate's host API from the shell.",
+      "tags": [],
+      "format": "skill-md",
+      "source": {
+        "repo": "0-AI-UG/cate",
+        "ref": "main",
+        "path": "skills/cate-cli"
+      },
+      "provenance": "curated",
+      "sourceId": "cate",
+      "firstParty": true
+    },
+    {
       "id": "cate/cate-extension",
       "name": "cate-extension",
       "description": "Build, test, and publish a Cate extension, a web panel (optionally backed by a local server) that runs on Cate's canvas. Use when the user wants to create or scaffold a Cate extension, add a panel to Cate, work with the extension manifest, cateApi scopes, or the window.cate host API, or submit an extension to the cate-extensions catalog.",
@@ -764,10 +779,9 @@
         "ref": "main",
         "path": "skills/cate-extension"
       },
-      "stars": 1765,
-      "updatedAt": "2026-07-05T18:58:50Z",
       "provenance": "curated",
-      "sourceId": "cate"
+      "sourceId": "cate",
+      "firstParty": true
     },
     {
       "id": "cate/cate-theme",
@@ -780,10 +794,9 @@
         "ref": "main",
         "path": "skills/cate-theme"
       },
-      "stars": 1765,
-      "updatedAt": "2026-07-05T18:58:50Z",
       "provenance": "curated",
-      "sourceId": "cate"
+      "sourceId": "cate",
+      "firstParty": true
     },
     {
       "id": "coreyhaines-marketing-skills/ab-testing",
