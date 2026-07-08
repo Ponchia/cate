@@ -31,6 +31,7 @@ import { inheritedWorktreeFromSelection } from '../lib/inheritWorktree'
 import { Tooltip } from '../ui/Tooltip'
 import { CateAgentToolbarButton } from '../cateAgent/CateAgentToolbarButton'
 import { CateAgentInputBar } from '../cateAgent/CateAgentInputBar'
+import { CateAgentChatPicker } from '../cateAgent/CateAgentChatPicker'
 import { CateAgentChat } from '../cateAgent/CateAgentChat'
 import { useCateAgentWs, useCateAgentStore } from '../cateAgent/cateAgentStore'
 import { cateAgentController } from '../cateAgent/cateAgentController'
@@ -234,18 +235,26 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   // OAuth sign-in ('needsReauth') hides it too; the reconnect prompt lives in
   // Settings → Cate Agent. Returns when a usable provider connects.
   const hasProvider = useCateAgentReady() === 'ok'
-  const inputOpen = cateAgent.inputOpen
+  // Without a provider the agent button and input bar are both hidden, so a
+  // lingering open state (persisted per-workspace) must not keep the content zone
+  // expanded — otherwise the pill renders empty and wide. Force it closed so the
+  // normal tools row shows.
+  const inputOpen = cateAgent.inputOpen && hasProvider
   const toggleAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, !inputOpen)
   const closeAgentInput = () => useCateAgentStore.getState().setInputOpen(workspaceId, false)
   // Compose into the active chat, minting one (titled from the prompt) on the first
   // send. The chat's persistent agent decides how to respond.
   const sendAgentPrompt = (text: string) => {
     const store = useChatsStore.getState()
-    let chatId = cateAgent.activeChatId
+    // From the observer front door, a message always starts a NEW chat (you don't
+    // reply to the observer). Otherwise it composes into the selected chat.
+    let chatId = cateAgent.observerView ? '' : cateAgent.activeChatId
     if (!chatId || !store.getChat(rootPath, chatId)) {
       chatId = store.createChat(rootPath, deriveTopic(text)).id
-      useCateAgentStore.getState().setActiveChat(workspaceId, chatId)
     }
+    // Always select the target chat: this clears the observer view and grows the
+    // window into the chat we're sending to.
+    useCateAgentStore.getState().setActiveChat(workspaceId, chatId)
     void cateAgentController.sendMessage(workspaceId, rootPath, chatId, text)
   }
   // The dot means "there's observer feed to check via the eye tab" — it's the exact
@@ -288,7 +297,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   useEffect(() => {
     if (!inputOpen) setAgentInputH(AGENT_ROW_H)
   }, [inputOpen])
-  const AGENT_INPUT_EXTRA = 96 // how much wider than the toolbar the input grows
+  const AGENT_INPUT_EXTRA = 120 // how much wider than the toolbar the input grows (picker + textarea)
   // Both width and height are explicit so opening, typing (as text wraps), and
   // closing all animate via the transition. Height tracks the live textarea
   // content (clamped to one toolbar row); the closed target is the fixed row
@@ -377,7 +386,9 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
                 agentToolsRef); opening grows it wider for the input and taller as
                 text wraps. Width + height are explicit so every change animates. */}
             <div
-              className="relative flex items-stretch ml-1.5 overflow-hidden transition-[width,height] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              className={`relative flex items-stretch overflow-hidden transition-[width,height] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
+                hasProvider ? 'ml-1.5' : ''
+              }`}
               style={agentZoneStyle}
             >
               <div
@@ -452,10 +463,14 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
             </ToolbarButton>
               </div>
               {hasProvider && inputOpen && (
-                <div className={`flex-1 min-w-0 flex ${agentAlign}`}>
+                <div className={`flex-1 min-w-0 flex gap-1.5 ${agentAlign}`}>
+                  {/* Chat picker replaces the old tab strip: choose the observer
+                      (default) or a chat; it names what the window shows. */}
+                  <CateAgentChatPicker workspaceId={workspaceId} rootPath={rootPath} />
                   <CateAgentInputBar
                     workspaceId={workspaceId}
                     multiline={agentMultiline}
+                    placeholder={cateAgent.observerView ? 'Ask Cate to do something…' : 'Message Cate…'}
                     onSend={sendAgentPrompt}
                     onClose={closeAgentInput}
                     onHeightChange={setAgentInputH}

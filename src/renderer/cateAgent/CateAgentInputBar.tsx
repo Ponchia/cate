@@ -38,11 +38,13 @@ export const CateAgentInputBar: React.FC<{
   workspaceId: string
   /** Bottom-anchor controls when the input has wrapped (else vertically center). */
   multiline: boolean
+  /** Placeholder text (varies with what the window is showing, e.g. the observer). */
+  placeholder?: string
   onSend: (text: string) => void
   onClose: () => void
   /** Reports the textarea's current content height (px) so the toolbar resizes. */
   onHeightChange?: (px: number) => void
-}> = ({ workspaceId, multiline, onSend, onClose, onHeightChange }) => {
+}> = ({ workspaceId, multiline, placeholder = 'Message Cate…', onSend, onClose, onHeightChange }) => {
   // Seed from the persisted draft so a reopened bar (or a fresh app launch)
   // restores whatever was typed but not sent.
   const [text, setText] = React.useState(() => loadDraft(workspaceId))
@@ -124,7 +126,7 @@ export const CateAgentInputBar: React.FC<{
             onClose()
           }
         }}
-        placeholder="Message Cate…"
+        placeholder={placeholder}
         className="flex-1 min-w-0 resize-none bg-transparent text-sm leading-snug text-primary px-2 py-1.5 outline-none placeholder:text-muted"
         style={{ maxHeight: MAX_HEIGHT }}
       />

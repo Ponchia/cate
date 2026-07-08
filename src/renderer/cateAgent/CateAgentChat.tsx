@@ -1,25 +1,26 @@
 // =============================================================================
-// CateAgentChat — the Cate Agent's front door, docked above the toolbar.
+// CateAgentChat — the Cate Agent's floating window, docked above the toolbar.
 //
-// A CHAT: a persistent thread you type into. Chats are a browser-style TAB STRIP
-// (top); the running one spins, one awaiting a decision shows an amber dot. The
-// transcript below renders the active chat as a stream of TYPED blocks on one flat
-// surface — a markdown answer (`text`), a code task's plan (`plan`), its
-// parallel-attempts grid (`attempts`), its land actions (`result`), or a delegated
-// canvas task (`canvas`). Tool blocks are calm left-accent RAILS, not boxed cards,
-// so the thread reads as one conversation. Live blocks bind to the chat's `run`
-// while it goes, then freeze to a snapshot so the transcript survives a reload.
+// The FRONT DOOR is the OBSERVER: opening the agent shows a compact, read-only
+// timeline of what it has watched — a single accent rail, one dot + relative time
+// per remark, newest at the bottom. The window is only as tall as that content
+// needs. Which view is shown (observer, or a specific chat) is chosen from the
+// picker in the toolbar bar — there is no tab strip here.
 //
-// The observer's remarks (the feed tail) get their own OBSERVER view, opened from an eye
-// tab beside the chats: the window body swaps to a full-height timeline — a single accent
-// rail, one dot + relative time per remark, newest at the bottom. A transient FYI, NOT
-// chat — the observer never mints a chat, it just speaks there. Hover a remark to dismiss
-// it, or clear the whole log. The whole surface shows only while the panel is open.
+// Selecting a CHAT clears the observer view and GROWS the window into that chat's
+// transcript: a stream of TYPED blocks on one flat surface — a markdown answer
+// (`text`), a code task's plan (`plan`), its parallel-attempts grid (`attempts`),
+// its land actions (`result`), or a delegated canvas task (`canvas`). Tool blocks
+// are calm left-accent RAILS, not boxed cards, so the thread reads as one
+// conversation. Live blocks bind to the chat's `run` while it goes, then freeze to
+// a snapshot so the transcript survives a reload.
+//
+// The card's height is measured from its content, so opening, closing, and the
+// observer↔chat switch all animate purely as a grow/shrink (no fade or scale).
 // =============================================================================
 
 import React from 'react'
 import {
-  Plus,
   X,
   Stop,
   Play,
@@ -34,12 +35,14 @@ import {
   ArrowsSplit,
   SquaresFour,
   Eye,
+  Check,
 } from '@phosphor-icons/react'
 import { useShallow } from 'zustand/react/shallow'
 import { useChatsStore } from '../stores/chatsStore'
 import { useAppStore } from '../stores/appStore'
 import { useCateAgentWs, useCateAgentStore, type CateAgentFeedItem, type CateAgentFeedKind } from './cateAgentStore'
 import { cateAgentController } from './cateAgentController'
+import { deriveTopic } from './cateAgentTools'
 import { mergeChat, openPrChat, discardChat, type ReviewResult } from './cateAgentReviewActions'
 import { revealPanel } from '../lib/workspace/panelReveal'
 import { useWorktrees, type JoinedWorktree } from '../stores/useWorktrees'
@@ -80,9 +83,9 @@ const wtTitle = (wt: JoinedWorktree): string => wt.label || wt.branch || wt.path
 const IterationStatusGlyph: React.FC<{ status: IterationStatus }> = ({ status }) => {
   switch (status) {
     case 'running':
-      return <CircleNotch size={12} className="flex-shrink-0 text-green-400 animate-spin" />
+      return <span className="flex-shrink-0 mt-[3px] w-2 h-2 rounded-full bg-green-400" />
     case 'verifying':
-      return <MagnifyingGlass size={12} className="flex-shrink-0 text-blue-400 animate-pulse" />
+      return <MagnifyingGlass size={12} className="flex-shrink-0 text-blue-400" />
     case 'passed':
       return <CheckCircle size={12} weight="fill" className="flex-shrink-0 text-green-400" />
     case 'failed':
@@ -121,7 +124,6 @@ const TerminalChip: React.FC<{ wsId: string; panelId: string }> = ({ wsId, panel
     }),
   )
   const info = useAgentInfoByPanel(ownerWsId)[panelId]
-  const isRunning = info?.state === 'running'
   if (!ownerWsId || !label) return null
   return (
     <button
@@ -133,8 +135,8 @@ const TerminalChip: React.FC<{ wsId: string; panelId: string }> = ({ wsId, panel
         <TabIcon type={type} size={11} logo={info?.logo} agentName={info?.name} />
       </span>
       <span
-        className={`text-[10px] font-mono text-secondary truncate max-w-[160px] ${isRunning ? 'cate-notif-pulse' : ''}`}
-        style={worktreeTitleStyle(color, isRunning)}
+        className="text-[10px] font-mono text-secondary truncate max-w-[160px]"
+        style={worktreeTitleStyle(color, false)}
       >
         {label}
       </span>
@@ -206,7 +208,7 @@ const IterationRow: React.FC<{ it: Iteration; index: number; multi: boolean; win
         {winner && multi && <Trophy size={11} weight="fill" className="flex-shrink-0 mt-[1px] text-green-400" />}
         <div className={`text-[11.5px] leading-snug break-words ${bad ? 'text-red-400/80' : 'text-secondary'}`}>
           {multi && <span className="text-muted">#{index + 1} · </span>}
-          {it.verify ? it.verify.reason : <span className="text-muted">Working…</span>}
+          {it.verify ? it.verify.reason : <span className={it.status === 'running' || it.status === 'verifying' ? 'cate-notif-pulse' : 'text-muted'}>Working</span>}
         </div>
       </div>
       {it.agents.length > 0 && (
@@ -268,7 +270,7 @@ const AttemptsBlock: React.FC<{ chat: Chat; msg: ChatAttemptsMessage; wsId: stri
           <IterationStatusGlyph status={it.status} />
         </div>
         <div className={`text-[12.5px] leading-snug break-words ${bad ? 'text-red-400/80' : 'text-secondary'}`}>
-          {it.verify ? it.verify.reason : <span className="text-muted">Working…</span>}
+          {it.verify ? it.verify.reason : <span className={it.status === 'running' || it.status === 'verifying' ? 'cate-notif-pulse' : 'text-muted'}>Working</span>}
         </div>
         {it.agents.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -368,11 +370,7 @@ const ResultBlock: React.FC<{ chat: Chat; msg: ChatResultMessage; wsId: string; 
 const CanvasBlock: React.FC<{ msg: ChatCanvasMessage; wsId: string }> = ({ msg, wsId }) => (
   <div className="flex flex-col gap-1.5">
     <div className="flex items-center gap-2">
-      {msg.working ? (
-        <CircleNotch size={13} className="flex-shrink-0 text-blue-400 animate-spin" />
-      ) : (
-        <SquaresFour size={13} weight="fill" className="flex-shrink-0 text-blue-400" />
-      )}
+      <SquaresFour size={13} weight="fill" className="flex-shrink-0 text-blue-400" />
       <div className={`${LBL} flex-1`}>Canvas</div>
       {msg.canvasPanelId && !msg.working && (
         <button
@@ -385,7 +383,7 @@ const CanvasBlock: React.FC<{ msg: ChatCanvasMessage; wsId: string }> = ({ msg, 
     </div>
     <div className="text-[12.5px] leading-snug text-secondary break-words">{msg.request}</div>
     {msg.working ? (
-      <div className="text-[11px] text-muted animate-pulse">Laying out the canvas…</div>
+      <div className="text-[11px] cate-notif-pulse">Laying out the canvas</div>
     ) : (
       msg.panels && msg.panels.length > 0 && <div className="text-[11px] text-muted">{msg.panels.length} panel{msg.panels.length === 1 ? '' : 's'} on the canvas</div>
     )}
@@ -415,97 +413,6 @@ const MessageBlock: React.FC<{ chat: Chat; msg: ChatMessage; wsId: string; rootP
   }
 }
 
-// --- chat tabs ---------------------------------------------------------------
-
-const chatDot = (chat: Chat): React.ReactNode => {
-  if (chat.run?.status === 'running') return <CircleNotch size={10} className="flex-shrink-0 text-green-400 animate-spin" />
-  if (chat.run?.interrupted) return <WarningCircle size={10} weight="fill" className="flex-shrink-0 text-amber-400" />
-  if (chat.run?.status === 'review') return <GitMerge size={10} className="flex-shrink-0 text-amber-400" />
-  if (chat.run?.status === 'failed') return <X size={10} className="flex-shrink-0 text-red-400/70" />
-  return <span className="w-[6px] h-[6px] rounded-full bg-surface-5 flex-shrink-0" />
-}
-
-// Browser-style tab strip: one tab per chat (newest first), the active one pulled up
-// to merge with the transcript below, plus a trailing "+" to start a fresh chat.
-const ChatTabs: React.FC<{
-  wsId: string
-  rootPath: string
-  chats: Chat[]
-  activeChatId: string
-  /** True while the observer view owns the body, so no chat tab reads as active. */
-  observerView: boolean
-  /** Picking any chat (or the "+") leaves the observer view. */
-  onPickChat: () => void
-}> = ({ wsId, rootPath, chats, activeChatId, observerView, onPickChat }) => {
-  const setActiveChat = useCateAgentStore((s) => s.setActiveChat)
-  // With two or more chats the tabs join into a segmented strip: no gap, square
-  // corners, and shared 1px seams (collapsed via -ml-px). A lone tab keeps its
-  // rounded, standalone look.
-  const multi = chats.length >= 2
-  const pick = (chatId: string) => {
-    onPickChat()
-    setActiveChat(wsId, chatId)
-  }
-  return (
-    // No padding: tabs sit flush and fill the bar edge-to-edge. The card's rounded
-    // overflow clips the outer corners round while the seams between tabs stay square.
-    <div className={`no-scrollbar flex flex-1 min-w-0 items-stretch overflow-x-auto ${multi ? 'gap-0' : 'gap-1'}`}>
-      {[...chats].reverse().map((chat) => {
-        const active = !observerView && chat.id === activeChatId
-        return (
-          <div
-            key={chat.id}
-            className={`group/tab flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 -mb-px border border-b-0 transition-colors ${
-              active ? 'bg-surface-0 border-subtle' : 'border-transparent hover:bg-hover'
-            }`}
-          >
-            <button onClick={() => pick(chat.id)} className="flex items-center gap-1.5 min-w-0" title={chat.title}>
-              {chatDot(chat)}
-              <span className={`text-[11.5px] truncate max-w-[130px] ${active ? 'text-primary' : 'text-secondary'}`}>{chat.title}</span>
-            </button>
-            <button
-              onClick={() => void cateAgentController.closeChat(wsId, rootPath, chat.id)}
-              title="Delete chat"
-              className="flex-shrink-0 opacity-0 group-hover/tab:opacity-100 text-muted hover:text-red-400 transition-opacity"
-            >
-              <X size={10} />
-            </button>
-          </div>
-        )
-      })}
-      <button
-        onClick={() => pick('')}
-        title="New chat"
-        className={`flex-shrink-0 self-center ml-0.5 flex items-center justify-center w-6 h-6 rounded-md transition-colors ${
-          !observerView && activeChatId === '' ? 'bg-hover-strong text-primary' : 'text-muted hover:text-primary hover:bg-hover'
-        }`}
-      >
-        <Plus size={13} weight="bold" />
-      </button>
-    </div>
-  )
-}
-
-// The observer's own tab, pinned to the right of the chat tabs: a round accent dot. Toggles the
-// full-height timeline view into the window body. Only shown while the timeline has content.
-const ObserverTab: React.FC<{ active: boolean; onClick: () => void }> = ({ active, onClick }) => (
-  <button
-    onClick={onClick}
-    title="Observer"
-    aria-label="Observer"
-    aria-pressed={active}
-    className={`flex-shrink-0 flex items-center justify-center px-2.5 -mb-px border border-b-0 transition-colors ${
-      active ? 'bg-surface-0 border-subtle' : 'border-transparent hover:bg-hover'
-    }`}
-  >
-    <span
-      aria-hidden
-      className="w-2.5 h-2.5 rounded-full"
-      style={{ backgroundColor: 'rgb(var(--agent-rgb))' }}
-    />
-  </button>
-)
-
 // --- observer timeline -------------------------------------------------------
 
 // Relative age of a remark, coarsely (s / m / h). Recomputed on a slow tick so idle
@@ -523,8 +430,9 @@ const relAge = (ts: number, now: number): string => {
 // A transient FYI — never a chat: the observer never mints a chat, it just speaks here.
 // Hover a remark to dismiss it; "Clear" empties the log. When the observer is quiet the
 // body explains what will show up here.
-const ObserverTimeline: React.FC<{ wsId: string; items: CateAgentFeedItem[] }> = ({ wsId, items }) => {
+const ObserverTimeline: React.FC<{ wsId: string; items: CateAgentFeedItem[]; onRun: (prompt: string) => void }> = ({ wsId, items, onRun }) => {
   const dismissFeedItem = useCateAgentStore((s) => s.dismissFeedItem)
+  const resolveFeedAction = useCateAgentStore((s) => s.resolveFeedAction)
   const clearFeed = useCateAgentStore((s) => s.clearFeed)
   const [now, setNow] = React.useState(() => Date.now())
 
@@ -537,20 +445,19 @@ const ObserverTimeline: React.FC<{ wsId: string; items: CateAgentFeedItem[] }> =
 
   if (items.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-        <Eye size={22} weight="bold" className="opacity-70" style={{ color: 'rgb(var(--agent-rgb))' }} />
-        <span className="text-[12.5px] text-secondary">Nothing to report yet</span>
-        <span className="text-[11.5px] leading-snug text-muted">Cate drops a short note here as it watches your workspace.</span>
+      <div className="flex min-h-[96px] flex-col items-center justify-center gap-2 px-8 py-6 text-center">
+        <Eye size={20} weight="bold" className="opacity-60" style={{ color: 'rgb(var(--agent-rgb))' }} />
+        <span className="text-[12px] text-muted">Nothing to report yet</span>
       </div>
     )
   }
   return (
     <div className="flex flex-col gap-3 px-4 py-3">
       <div className="flex items-center gap-1.5">
-        <span className={LBL}>Observer</span>
+        <span className={LBL}>Feed</span>
         <button
           onClick={() => clearFeed(wsId)}
-          title="Clear observer log"
+          title="Clear feed"
           className="ml-auto text-[10px] text-muted hover:text-primary transition-colors"
         >
           Clear
@@ -573,14 +480,46 @@ const ObserverTimeline: React.FC<{ wsId: string; items: CateAgentFeedItem[] }> =
             <span className="flex-shrink-0 w-[30px] font-mono text-[10px] leading-snug text-muted tabular-nums">
               {relAge(item.ts, now)}
             </span>
-            <span className={`flex-1 text-[12.5px] leading-snug break-words ${FEED_KIND_CLASS[item.kind]}`}>{item.text}</span>
-            <button
-              onClick={() => dismissFeedItem(wsId, item.id)}
-              title="Dismiss"
-              className="flex-shrink-0 -mt-[1px] p-0.5 rounded text-muted opacity-0 group-hover/obs:opacity-100 hover:text-primary hover:bg-hover transition-opacity"
-            >
-              <X size={12} />
-            </button>
+            <div className="flex flex-1 flex-col gap-1.5 min-w-0">
+              <span className={`text-[12.5px] leading-snug break-words ${FEED_KIND_CLASS[item.kind]}`}>{item.text}</span>
+              {item.action &&
+                (item.resolved ? (
+                  // Acted on: a spent record, not a live control. It stays in the feed
+                  // but can't be run again.
+                  <span className="self-start flex items-center gap-1 px-2 py-0.5 rounded text-xs text-muted opacity-70">
+                    {item.resolved === 'approved' ? (
+                      <>
+                        <Check size={11} weight="bold" /> {item.action.label}
+                      </>
+                    ) : (
+                      <span className="line-through">{item.action.label}</span>
+                    )}
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => {
+                      onRun(item.action!.prompt)
+                      resolveFeedAction(wsId, item.id, 'approved')
+                    }}
+                    title={item.action.prompt}
+                    className={`${btn} self-start text-white hover:brightness-110`}
+                    style={{ backgroundColor: 'rgb(var(--agent-rgb))' }}
+                  >
+                    <Play size={10} weight="fill" /> {item.action.label}
+                  </button>
+                ))}
+            </div>
+            {/* Suggestions resolve (and stay) instead of vanishing; once resolved the X
+                is gone so they can't be dismissed twice. Plain remarks still just clear. */}
+            {!(item.action && item.resolved) && (
+              <button
+                onClick={() => (item.action ? resolveFeedAction(wsId, item.id, 'dismissed') : dismissFeedItem(wsId, item.id))}
+                title="Dismiss"
+                className="flex-shrink-0 -mt-[1px] p-0.5 rounded text-muted opacity-0 group-hover/obs:opacity-100 hover:text-primary hover:bg-hover transition-opacity"
+              >
+                <X size={12} />
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -590,7 +529,7 @@ const ObserverTimeline: React.FC<{ wsId: string; items: CateAgentFeedItem[] }> =
 
 // --- run controls (Stop / Continue) ------------------------------------------
 
-const RunControls: React.FC<{ chat: Chat; wsId: string; rootPath: string; working: boolean }> = ({ chat, wsId, rootPath, working }) => {
+const RunControls: React.FC<{ chat: Chat; wsId: string; rootPath: string; working: boolean; activeWork: boolean }> = ({ chat, wsId, rootPath, working, activeWork }) => {
   const [busy, setBusy] = React.useState(false)
   const run = chat.run
   if (run?.interrupted) {
@@ -619,19 +558,19 @@ const RunControls: React.FC<{ chat: Chat; wsId: string; rootPath: string; workin
   if (run?.status === 'running') {
     return (
       <div className="flex items-center gap-1.5">
-        <CircleNotch size={12} className="text-green-400 animate-spin" />
-        <span className="text-[11px] text-muted flex-1">Working…</span>
+        {/* A live tool call already shimmers above; the status line then carries
+            only the Stop control. In the gap it shimmers "Working" itself. */}
+        {activeWork ? <span className="flex-1" /> : <span className="text-[13px] cate-notif-pulse flex-1">Working</span>}
         <button onClick={() => cateAgentController.stop(wsId, chat.id)} className={`${btn} text-secondary hover:text-red-400 hover:bg-hover`}>
           <Stop size={11} weight="fill" /> Stop
         </button>
       </div>
     )
   }
-  if (working) {
+  if (working && !activeWork) {
     return (
       <div className="flex items-center gap-1.5">
-        <CircleNotch size={12} className="text-blue-400 animate-spin" />
-        <span className="text-[11px] text-muted">Cate is thinking…</span>
+        <span className="text-[13px] cate-notif-pulse">Thinking</span>
       </div>
     )
   }
@@ -691,13 +630,80 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
   const activeChat = cateAgent.activeChatId ? list.find((c) => c.id === cateAgent.activeChatId) : undefined
   const working = cateAgent.activity === 'working' && !!activeChat && !activeChat.run
 
+  // The shimmer rides the active work, like the agent panel. While a tool call is
+  // live — a running loop iteration (one, or several in parallel) or a canvas being
+  // laid out — that block shimmers, and the bottom status line drops its own
+  // shimmer (just the Stop control remains). Only in the gap, when nothing is live,
+  // does the status line itself shimmer ("Thinking"/"Working"). Never both at once.
+  const liveIters = activeChat?.run?.status === 'running' ? (activeChat.run.iterations ?? []) : []
+  const hasActiveWork =
+    liveIters.some((i) => i.status === 'running' || i.status === 'verifying') ||
+    (activeChat?.messages.some((m) => m.kind === 'canvas' && m.working) ?? false)
+
+  // Run an observer suggestion: like a first message from the front door, it always
+  // starts a NEW chat (titled from the prompt), which clears the observer view and
+  // grows the window into that chat's transcript.
+  const runPrompt = (prompt: string) => {
+    const store = useChatsStore.getState()
+    const chatId = store.createChat(rootPath, deriveTopic(prompt)).id
+    useCateAgentStore.getState().setActiveChat(wsId, chatId)
+    void cateAgentController.sendMessage(wsId, rootPath, chatId, prompt)
+  }
+
   // Observer feed tail: the latest turn (since the last user line), capped.
   const feed = cateAgent.feed
   const lastUserIdx = feed.map((f) => f.kind).lastIndexOf('user')
   const visibleFeed = (lastUserIdx >= 0 ? feed.slice(lastUserIdx) : feed).slice(-MAX_VISIBLE_FEED)
 
-  // The eye tab swaps the body from the active chat to the full-height observer timeline.
-  const [observerView, setObserverView] = React.useState(false)
+  // The window shows the observer (the default front door) or the selected chat.
+  // Which one is chosen from the picker in the toolbar bar, not a tab strip here.
+  const observerView = cateAgent.observerView
+
+  // The window is shown only while the input bar is open; it simply appears and
+  // disappears with it — no open/close fade or grow animation.
+  const inputOpen = cateAgent.inputOpen
+
+  const msgCount = activeChat?.messages.length ?? 0
+  // Live iteration count also grows the transcript without a new message; track it so
+  // an active run stays pinned to the bottom.
+  const runTick = activeChat?.run?.iterations?.length ?? 0
+
+  // The card is only as tall as its content (each view clamps itself to a max and
+  // scrolls past that). We mirror the measured content height onto the card so that
+  // *switching* views (observer↔chat, chat↔chat) animates the grow/shrink. The
+  // transition is armed one frame after the first measurement, so the window still
+  // appears instantly at full size on open instead of growing from zero.
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const [naturalH, setNaturalH] = React.useState(0)
+  const [animate, setAnimate] = React.useState(false)
+  const measure = React.useCallback(() => {
+    const el = contentRef.current
+    if (el) setNaturalH(el.scrollHeight)
+  }, [])
+  // A signature of everything that changes the content's height. Measuring in a
+  // layout effect keyed on this applies the new height in the SAME commit as the
+  // content swap — so the grow/shrink always transitions, instead of waiting for
+  // the ResizeObserver to fire a frame later (which sometimes skipped the animation).
+  const contentSig = observerView
+    ? 'obs:' + visibleFeed.map((f) => `${f.id}${f.resolved ?? (f.action ? 'a' : '')}`).join('|')
+    : `chat:${cateAgent.activeChatId}:${msgCount}:${runTick}:${!!activeChat}`
+  React.useLayoutEffect(() => {
+    measure()
+  }, [measure, contentSig])
+  // Async settle (text wrap, images, late-loading data) that no state change captures.
+  React.useLayoutEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [measure])
+  React.useEffect(() => {
+    if (naturalH > 0 && !animate) {
+      const r = requestAnimationFrame(() => setAnimate(true))
+      return () => cancelAnimationFrame(r)
+    }
+  }, [naturalH, animate])
 
   // Stick to the bottom (newest, nearest the input) as the transcript grows, unless
   // the user has scrolled up to read.
@@ -709,52 +715,45 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
     if (!el) return
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
   }
-
-  const msgCount = activeChat?.messages.length ?? 0
-  // Live iteration count also grows the transcript without a new message; track it so
-  // an active run stays pinned to the bottom.
-  const runTick = activeChat?.run?.iterations?.length ?? 0
   React.useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight
   }, [msgCount, runTick, visibleFeed.length, cateAgent.activeChatId, observerView])
 
-  if (!wsId || !cateAgent.inputOpen) return null
-  const hasChats = list.length > 0
-  if (!hasChats && visibleFeed.length === 0) return null
+  if (!wsId || !inputOpen) return null
 
-  // A tab bar (chats + the observer's eye tab) over a body of FIXED height, so the window
-  // stays the same size whichever tab is active — short chats have room to spare, long
-  // ones scroll — instead of jumping as you switch. The eye tab swaps that same body to
-  // the observer timeline; picking a chat swaps it back.
   return (
-    <div className="absolute bottom-full left-0 right-0 mb-2">
-      <div className="flex flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]">
-        <div className="flex-none flex items-stretch bg-surface-0">
-          <ChatTabs
-            wsId={wsId}
-            rootPath={rootPath}
-            chats={list}
-            activeChatId={cateAgent.activeChatId}
-            observerView={observerView}
-            onPickChat={() => setObserverView(false)}
-          />
-          {(visibleFeed.length > 0 || observerView) && (
-            <ObserverTab active={observerView} onClick={() => setObserverView((v) => !v)} />
-          )}
-        </div>
-        <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar h-[min(420px,55vh)] overflow-y-auto border-t border-subtle">
+    // Same width as the toolbar bar below it: the relative parent is sized by the
+    // pill, so inset-x-0 pins the card to exactly the bar's width.
+    <div className="absolute bottom-full inset-x-0 mb-2">
+      <div
+        className="overflow-hidden rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]"
+        style={{
+          height: naturalH || undefined,
+          transition: animate ? 'height 240ms cubic-bezier(0.16,1,0.3,1)' : undefined,
+        }}
+      >
+        <div ref={contentRef}>
           {observerView ? (
-            <ObserverTimeline wsId={wsId} items={visibleFeed} />
-          ) : activeChat ? (
-            <div className="flex flex-col gap-3.5 px-3 py-3">
-              {activeChat.messages.map((msg) => (
-                <MessageBlock key={msg.id} chat={activeChat} msg={msg} wsId={wsId} rootPath={rootPath} worktrees={worktrees} />
-              ))}
-              <RunControls chat={activeChat} wsId={wsId} rootPath={rootPath} working={working} />
+            // Observer: only as tall as its content needs (a floor so the empty state
+            // has room, a ceiling before it scrolls).
+            <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar max-h-[min(420px,55vh)] overflow-y-auto">
+              <ObserverTimeline wsId={wsId} items={visibleFeed} onRun={runPrompt} />
             </div>
           ) : (
-            <EmptyState />
+            // Chat: as tall as the transcript, capped before it scrolls internally.
+            <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar max-h-[min(420px,55vh)] overflow-y-auto">
+              {activeChat ? (
+                <div className="flex flex-col gap-3.5 px-3 py-3">
+                  {activeChat.messages.map((msg) => (
+                    <MessageBlock key={msg.id} chat={activeChat} msg={msg} wsId={wsId} rootPath={rootPath} worktrees={worktrees} />
+                  ))}
+                  <RunControls chat={activeChat} wsId={wsId} rootPath={rootPath} working={working} activeWork={hasActiveWork} />
+                </div>
+              ) : (
+                <EmptyState />
+              )}
+            </div>
           )}
         </div>
       </div>

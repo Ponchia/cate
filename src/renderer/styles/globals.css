@@ -253,6 +253,7 @@
   animation: cate-fade-in 0.35s ease-out both;
 }
 
+
 /* Skill install progress — an indeterminate left-to-right fill on an agent pill
    while a skill downloads/installs. The pill sets position:relative;overflow:hidden
    and renders <span class="skill-fill"> behind its label. Fills, fades, repeats

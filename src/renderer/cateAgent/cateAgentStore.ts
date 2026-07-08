@@ -15,11 +15,26 @@ import type { CateAgentActivity, Point } from '../../shared/types'
  *  cleared or rolls past the cap. */
 export type CateAgentFeedKind = 'user' | 'agent' | 'status' | 'error'
 
+/** An observer-authored, ready-to-run prompt for the Cate Agent. When a feed item
+ *  carries one, the timeline renders a call-to-action button labelled `label`
+ *  (the observer's free choice, e.g. "Fix", "Implement") that starts a new chat
+ *  with `prompt`. */
+export interface CateAgentFeedAction {
+  label: string
+  prompt: string
+}
+
 export interface CateAgentFeedItem {
   id: number
   kind: CateAgentFeedKind
   text: string
   ts: number
+  /** Present on a suggestion: a one-click prompt the user can run as a new chat. */
+  action?: CateAgentFeedAction
+  /** A suggestion, once acted on, stays in the feed as a record but can't be run or
+   *  dismissed again. Undefined = still pending; 'approved' = the user ran it;
+   *  'dismissed' = the user waved it off. */
+  resolved?: 'approved' | 'dismissed'
 }
 
 let feedSeq = 0
@@ -38,6 +53,11 @@ export interface CateAgentWsState {
   /** The chat the input composes into and the transcript shows. Empty string means
    *  "compose a new chat" (one is minted on the first send). */
   activeChatId: string
+  /** The observer timeline owns the panel body instead of a chat. This is the
+   *  DEFAULT the panel opens onto (the front door): a compact, read-only view of
+   *  what the observer has watched. Picking a chat (or sending a first message)
+   *  turns it off and grows the window into that chat. */
+  observerView: boolean
   /** Persistent-per-session feedback log shown above the toolbar, newest last. */
   feed: CateAgentFeedItem[]
   /** Terminals the orchestrator is actively driving → their pulsing glow color, keyed
@@ -61,6 +81,7 @@ export const DEFAULT_CATE_AGENT_WS: CateAgentWsState = {
   status: '',
   inputOpen: false,
   activeChatId: '',
+  observerView: false,
   feed: [],
   controlledTerminals: {},
   runAnchors: {},
@@ -75,9 +96,14 @@ interface CateAgentStore {
   setInputOpen: (wsId: string, open: boolean) => void
   /** Select the active chat (empty string = compose a new one). */
   setActiveChat: (wsId: string, chatId: string) => void
-  appendFeed: (wsId: string, kind: CateAgentFeedKind, text: string) => void
+  /** Toggle the observer timeline view (eye tab) on/off. */
+  setObserverView: (wsId: string, value: boolean) => void
+  appendFeed: (wsId: string, kind: CateAgentFeedKind, text: string, action?: CateAgentFeedAction) => void
   /** Remove a single feed line by id (the per-remark dismiss button). */
   dismissFeedItem: (wsId: string, id: number) => void
+  /** Mark a suggestion acted-on (run or waved off). It stays in the feed as a record
+   *  but its button + dismiss are spent — idempotent, so it can't resolve twice. */
+  resolveFeedAction: (wsId: string, id: number, resolution: 'approved' | 'dismissed') => void
   clearFeed: (wsId: string) => void
   /** Flag/clear unseen agent activity (drives the toolbar attention indicator). */
   setUnseen: (wsId: string, value: boolean) => void
@@ -105,22 +131,37 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
   setInputOpen(wsId, open) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      // Opening the panel means the user has now seen any pending activity.
-      return { byWs: { ...s.byWs, [wsId]: { ...prev, inputOpen: open, unseen: open ? false : prev.unseen } } }
+      // Opening the panel means the user has now seen any pending activity, and it
+      // opens onto the observer (the front door) by default — not a chat. Closing
+      // drops the observer view so the next open starts clean.
+      return {
+        byWs: {
+          ...s.byWs,
+          [wsId]: { ...prev, inputOpen: open, unseen: open ? false : prev.unseen, observerView: open },
+        },
+      }
     })
   },
 
   setActiveChat(wsId, chatId) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      return { byWs: { ...s.byWs, [wsId]: { ...prev, activeChatId: chatId } } }
+      // Picking a chat always leaves the observer timeline.
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, activeChatId: chatId, observerView: false } } }
     })
   },
 
-  appendFeed(wsId, kind, text) {
+  setObserverView(wsId, value) {
     set((s) => {
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
-      const item: CateAgentFeedItem = { id: ++feedSeq, kind, text, ts: Date.now() }
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, observerView: value } } }
+    })
+  },
+
+  appendFeed(wsId, kind, text, action) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      const item: CateAgentFeedItem = { id: ++feedSeq, kind, text, ts: Date.now(), action }
       // Agent output (anything but the user's own line) arriving while the panel
       // is closed becomes unseen activity → toolbar attention indicator.
       const unseen = prev.unseen || (kind !== 'user' && !prev.inputOpen)
@@ -133,6 +174,18 @@ export const useCateAgentStore = create<CateAgentStore>((set, getStore) => ({
       const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
       const feed = prev.feed.filter((f) => f.id !== id)
       if (feed.length === prev.feed.length) return s
+      return { byWs: { ...s.byWs, [wsId]: { ...prev, feed } } }
+    })
+  },
+
+  resolveFeedAction(wsId, id, resolution) {
+    set((s) => {
+      const prev = s.byWs[wsId] ?? DEFAULT_CATE_AGENT_WS
+      // Only pending suggestions resolve; already-resolved (or plain) items are left
+      // untouched so a double-click can't re-run or re-dismiss.
+      const target = prev.feed.find((f) => f.id === id)
+      if (!target || !target.action || target.resolved) return s
+      const feed = prev.feed.map((f) => (f.id === id ? { ...f, resolved: resolution } : f))
       return { byWs: { ...s.byWs, [wsId]: { ...prev, feed } } }
     })
   },
