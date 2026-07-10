@@ -2,14 +2,14 @@
 // Git Monitor — polls git branch + dirty status per workspace
 // =============================================================================
 
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, ipcMain } from 'electron'
 import log from '../logger'
 import {
   GIT_BRANCH_UPDATE,
   GIT_MONITOR_START,
   GIT_MONITOR_STOP,
 } from '../../shared/ipc-channels'
-import { sendToWindow, windowFromEvent } from '../windowRegistry'
+import { sendToWindow, windowFromEvent, isAnyWindowFocused } from '../windowRegistry'
 import { parseLocator } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import type { Runtime } from '../runtime/types'
@@ -47,8 +47,7 @@ const lastState: Map<string, { branch: string; isDirty: boolean; branchesKey: st
 let anyWindowFocused: boolean = false
 
 function refreshFocusState(): boolean {
-  const wins = BrowserWindow.getAllWindows()
-  anyWindowFocused = wins.some((w) => !w.isDestroyed() && w.isFocused())
+  anyWindowFocused = isAnyWindowFocused()
   return anyWindowFocused
 }
 
@@ -98,7 +97,7 @@ async function pollGitStatus(entry: MonitorEntry): Promise<boolean> {
   const epoch = ++entry.pollEpoch
 
   try {
-    const { branch, dirty: isDirty, branches } = await runtime.vcs.monitorStatus(rootPath)
+    const { branch, dirty: isDirty, branches } = await runtime.vcs.monitorStatus(rootPath, { scopeId: workspaceId })
 
     // Stale: a fresher poll started, or the monitor was torn down/restarted.
     if (entry.pollEpoch !== epoch || !activeMonitors.has(workspaceId)) return false
@@ -251,7 +250,7 @@ export function registerHandlers(): void {
         clearTimer(entry)
         void tick(entry)
       })
-    })
+    }, { scopeId: workspaceId })
 
     activeMonitors.set(workspaceId, entry)
 

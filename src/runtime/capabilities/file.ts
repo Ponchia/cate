@@ -9,7 +9,6 @@
 
 import fs from 'fs/promises'
 import path from 'path'
-import { validatePathForCreation } from '../../main/ipc/pathValidation'
 import type { FileTreeNode, FileSearchResult, FileSearchOptions } from '../../shared/types'
 
 export async function readFile(filePath: string): Promise<string> {
@@ -20,7 +19,19 @@ export async function readBinary(filePath: string): Promise<Buffer> {
   return fs.readFile(filePath)
 }
 
+/** Refuse to write THROUGH a symlink: path validation realpaths the parent
+ *  chain but the final segment may not exist yet, so an existing symlink
+ *  basename would otherwise redirect the write outside the validated location.
+ *  Mirrors statEntry/removeEntry, which likewise reject symlinks. */
+async function assertNotSymlink(filePath: string): Promise<void> {
+  const stat = await fs.lstat(filePath).catch(() => null) // missing target — fine
+  if (stat?.isSymbolicLink()) {
+    throw new Error(`Access denied: "${filePath}" is a symbolic link`)
+  }
+}
+
 export async function writeFile(filePath: string, content: string): Promise<void> {
+  await assertNotSymlink(filePath)
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await fs.writeFile(filePath, content, 'utf-8')
 }
@@ -28,6 +39,7 @@ export async function writeFile(filePath: string, content: string): Promise<void
 /** Write raw bytes (used by remote upload, where the source is read client-side
  *  and the contents are streamed in as a Buffer). Creates the parent directory. */
 export async function writeBinary(filePath: string, data: Buffer): Promise<void> {
+  await assertNotSymlink(filePath)
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await fs.writeFile(filePath, data)
 }
@@ -187,7 +199,7 @@ async function nextAvailableName(destDir: string, baseName: string, intoSameDir:
 export async function copyInto(safeSrc: string, safeDestDir: string): Promise<string> {
   const intoSameDir = path.dirname(safeSrc) === safeDestDir
   const candidate = await nextAvailableName(safeDestDir, path.basename(safeSrc), intoSameDir)
-  const finalDest = await validatePathForCreation(path.join(safeDestDir, candidate))
+  const finalDest = path.join(safeDestDir, candidate)
   if (finalDest === safeSrc || finalDest.startsWith(safeSrc + path.sep)) {
     throw new Error('Cannot copy a folder into itself')
   }
@@ -199,7 +211,6 @@ export async function importEntriesInto(
   sources: string[],
   safeDestDir: string,
   mode: 'copy' | 'move',
-  ownerWindowId: number | undefined,
   onError: (src: string, error: unknown) => void,
 ): Promise<{ created: string[]; failed: number }> {
   const created: string[] = []
@@ -213,7 +224,7 @@ export async function importEntriesInto(
       }
       const intoSameDir = path.dirname(realSrc) === safeDestDir
       const candidate = await nextAvailableName(safeDestDir, path.basename(realSrc), intoSameDir)
-      const finalDest = await validatePathForCreation(path.join(safeDestDir, candidate), ownerWindowId)
+      const finalDest = path.join(safeDestDir, candidate)
 
       if (mode === 'move') {
         try {

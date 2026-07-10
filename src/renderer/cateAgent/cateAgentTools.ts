@@ -31,6 +31,7 @@ import { useChatsStore } from '../stores/chatsStore'
 import { gitStatusStore } from '../stores/gitStatusStore'
 import { useCateAgentStore } from './cateAgentStore'
 import { generateId } from '../stores/canvas/helpers'
+import { newWorktreeId } from '../lib/worktreeSync'
 import type { Chat, ChatRun, WorktreeMeta, Iteration } from '../../shared/types'
 import type { CateAgentContext } from './cateAgentTypes'
 import {
@@ -47,6 +48,7 @@ import { worktreeMetaFor, teardownWorktree } from './cateAgentWorktrees'
 import { getAgentCanvasStore } from '../lib/workspace/canvasAccess'
 import type { PanelType, Point } from '../../shared/types'
 import log from '../lib/logger'
+import { collectPanelIds } from '../../shared/collectPanelIds'
 
 const json = (v: unknown): string => JSON.stringify(v)
 
@@ -104,10 +106,10 @@ async function buildCanvasSnapshot(wsId: string, canvasPanelId?: string): Promis
   const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
   const nodes = Object.values(store.getState().nodes)
   const panels = await Promise.all(
-    nodes.map(async (node) => {
-      const panel = ws?.panels[node.panelId]
+    nodes.flatMap((node) => collectPanelIds(node.dockLayout).map(async (panelId) => {
+      const panel = ws?.panels[panelId]
       const base = {
-        id: shortId(node.panelId),
+        id: shortId(panelId),
         type: panel?.type ?? 'unknown',
         title: panel?.title ?? '',
         x: Math.round(node.origin.x),
@@ -117,7 +119,7 @@ async function buildCanvasSnapshot(wsId: string, canvasPanelId?: string): Promis
       }
       if (panel?.type === 'terminal') {
         try {
-          const state = await readTerminalState(wsId, node.panelId)
+          const state = await readTerminalState(wsId, panelId)
           const preview = state.output.trim().slice(-400)
           return { ...base, preview }
         } catch {
@@ -125,7 +127,7 @@ async function buildCanvasSnapshot(wsId: string, canvasPanelId?: string): Promis
         }
       }
       return base
-    }),
+    })),
   )
   return json({ panels })
 }
@@ -168,9 +170,9 @@ export function deriveTopic(prompt: string): string {
   return out.join(' ') || oneLine.slice(0, 48)
 }
 
-async function isGitRepo(rootPath: string): Promise<boolean> {
+async function isGitRepo(rootPath: string, wsId: string): Promise<boolean> {
   try {
-    return await window.electronAPI.gitIsRepo(rootPath)
+    return await window.electronAPI.gitIsRepo(rootPath, wsId)
   } catch {
     return false
   }
@@ -186,19 +188,19 @@ export async function createWorktree(
   nameSource: string,
   baseRef?: string,
 ): Promise<{ worktreeId: string; branch: string; cwd: string } | null> {
-  if (!(await isGitRepo(rootPath))) return null
+  if (!(await isGitRepo(rootPath, wsId))) return null
   const suffix = generateId().replace(/[^a-zA-Z0-9]/g, '').slice(0, 6) || 'wt'
   const branch = `cate-agent/${toBranchName(nameSource)}-${suffix}`
   const targetPath = worktreePathFor(rootPath, branch)
   try {
-    await window.electronAPI.gitWorktreeAdd(rootPath, branch, targetPath, { createBranch: true, baseRef })
+    await window.electronAPI.gitWorktreeAdd(rootPath, branch, targetPath, { createBranch: true, baseRef }, wsId)
   } catch (err) {
     log.warn('[cateAgentTools] worktree add failed for %s: %O', branch, err)
     return null
   }
   const ws = useAppStore.getState().workspaces.find((w) => w.id === wsId)
   const meta: WorktreeMeta = {
-    id: `wt-${generateId()}`,
+    id: newWorktreeId(),
     path: targetPath,
     label: nameSource.slice(0, 40),
     color: pickWorktreeColor(ws?.worktrees ?? []),
@@ -236,7 +238,7 @@ export async function buildObserveContext(wsId: string, rootPath: string): Promi
   let branch: string | null = null
   let changedFiles: string[] = []
   try {
-    const status = await window.electronAPI.gitStatus(rootPath)
+    const status = await window.electronAPI.gitStatus(rootPath, wsId)
     branch = status.current
     changedFiles = status.files.slice(0, 40).map((f) => f.path)
   } catch {

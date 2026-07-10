@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
 import { provisionCatalogToRuntime, provisionSideloadToRuntime } from './install'
 import { hostJoin } from '../../agent/main/agentDir'
 import { buildDaemonRuntime } from '../../runtime/capabilities'
-import { addAllowedRoot, removeAllowedRoot } from '../ipc/pathValidation'
+import { loopbackRuntime } from '../runtime/testHarness'
 import type { CatalogEntry } from './catalog'
 import type { Runtime } from '../runtime/types'
 
@@ -36,11 +36,9 @@ beforeEach(() => {
   mkdirSync(h.userData, { recursive: true })
   hostRoot = path.join(tmp, 'host-extensions')
   process.env.CATE_EXTENSIONS_ROOT = hostRoot
-  addAllowedRoot(hostRoot)
 })
 
 afterEach(() => {
-  removeAllowedRoot(hostRoot)
   delete process.env.CATE_EXTENSIONS_ROOT
   rmSync(tmp, { recursive: true, force: true })
 })
@@ -58,14 +56,16 @@ function buildEntry(id = 'cate.hello', version = '1.2.0'): CatalogEntry {
   return {
     manifest: { id, name: 'Hello', version, panels: [{ id: 'main', label: 'Hello' }], frontend: 'index.html' },
     artifactUrl: pathToFileURL(file).toString(),
+    sourceIsLocal: true,
   }
 }
 
 // A daemon runtime under an arbitrary id, so we can pretend it's a remote host.
-// In-process, so the "upload" (writeBinary) and extract run against real fs under
+// In-process loopback (the production RemoteRuntime client over the real
+// framing), so the "upload" (writeBinary) and extract run against real fs under
 // the temp host root — the same code paths a real remote daemon would run.
 function runtimeWithId(id: string): Runtime {
-  return buildDaemonRuntime({ id }).runtime
+  return loopbackRuntime(buildDaemonRuntime({ id }).runtime, id)
 }
 
 describe('provisionCatalogToRuntime', () => {
@@ -139,7 +139,6 @@ describe('provisionSideloadToRuntime', () => {
       // The folder's assets are now readable back through the runtime.
       expect((await runtime.file.readBinary(path.join(folder, 'index.html'))).toString()).toContain('hi')
     } finally {
-      removeAllowedRoot(folder)
     }
   })
 })

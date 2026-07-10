@@ -61,7 +61,7 @@ vi.mock('../windowRegistry', () => {
   }
 })
 vi.mock('../shellEnv', () => ({ getShellEnv: () => ({}) }))
-vi.mock('../shellResolver', () => ({ resolveShell: () => ({ path: '/bin/sh', fallback: false }) }))
+vi.mock('../../runtime/capabilities/shellResolver', () => ({ resolveShell: () => ({ path: '/bin/sh', fallback: false }) }))
 
 // Hoisted spies shared with the module mocks below (vi.mock factories are
 // hoisted above all other code, so the spies they reference must be too).
@@ -364,7 +364,6 @@ describe('terminalLifecycle dispose-during-creation', () => {
       settingsGet: vi.fn(() => Promise.resolve('/bin/zsh')),
       terminalCreate: vi.fn(() => createPromise),
       terminalKill,
-      shellUnregisterTerminal: vi.fn(() => Promise.resolve()),
     }
     ;(globalThis as unknown as { window: unknown }).window = { electronAPI }
 

@@ -2,7 +2,7 @@
 // Type declaration for window.electronAPI exposed via contextBridge
 // =============================================================================
 
-import type { AgentCreateOptions, AgentEventEnvelope, AgentExtensionUIResponse, AgentImageAttachment, AgentModelRef, AgentModelDescriptor, AgentRpcState, AgentSessionListEntry, AgentSessionStats, AgentSlashCommand, AgentThinkingLevel, AppSettings, AgentState, AuthProviderDescriptor, AuthProviderStatus, CanvasLayoutSnapshot, CateWindowParams, CustomOpenAIProvider, DockWindowInitPayload, DockWindowSyncState, DetachedDockWindowSnapshot, WindowPanelInfo, WindowPanelReport, DockStateSnapshot, FileSearchOptions, FileSearchResult, FileTreeNode, GitInfo, SearchOptions, SearchResultBatch, SearchDoneEvent, NotificationAction, OAuthFlowEvent, PanelState, PanelTransferSnapshot, PerfSnapshot, Point, ProviderVerification, SessionSnapshot, SidebarSession, TerminalActivity, WorkspaceInfo, WorkspaceMutationResult, RemoteConnectSpec, RuntimeConnectResult, RuntimeStatusEvent, RuntimeConnection, RuntimePhase, RemoteProjectEntry, SshHostEntry, UIState } from './types'
+import type { AgentCreateOptions, AgentEventEnvelope, AgentExtensionUIResponse, AgentImageAttachment, AgentModelRef, AgentModelDescriptor, AgentRpcState, AgentSessionListEntry, AgentSessionStats, AgentSlashCommand, AgentThinkingLevel, AppSettings, AgentState, AuthProviderDescriptor, AuthProviderStatus, CustomOpenAIProvider, DockWindowInitPayload, DockWindowSyncState, DetachedDockWindowSnapshot, WindowPanelInfo, WindowPanelReport, FileSearchOptions, FileSearchResult, FileTreeNode, SearchOptions, SearchResultBatch, SearchDoneEvent, NotificationAction, OAuthFlowEvent, PanelTransferSnapshot, PerfSnapshot, Point, ProviderVerification, SidebarSession, TerminalActivity, WorkspaceInfo, WorkspaceMutationResult, RemoteConnectSpec, RuntimeConnectResult, RuntimeStatusEvent, RuntimeConnection, RuntimePhase, RemoteProjectEntry, SshHostEntry, UIState } from './types'
 import type { SavedSkill, InstalledSkill, SkillEntry, SkillSource, SkillTargetId } from './skills'
 import type { ExtensionListEntry, ExtensionManifest } from './extensions'
 
@@ -142,24 +142,30 @@ export interface ElectronAPI {
 
   // ---------------------------------------------------------------------------
   // Git
+  //
+  // Every git method takes the calling workspace's id as its REQUIRED last
+  // argument (optional middle args are `| undefined` so the trailing id can be
+  // required). The main process validates the cwd against that workspace's
+  // registered roots, so a workspace can only run git inside its own scope —
+  // mirroring how the fs* methods thread workspaceId.
   // ---------------------------------------------------------------------------
 
   /** Check if a path is inside a git repository. */
-  gitIsRepo(dirPath: string): Promise<boolean>
+  gitIsRepo(dirPath: string, workspaceId: string): Promise<boolean>
 
   /** Discover git repos at or below `dirPath`, scanning at most `maxDepth`
    *  levels (default 1) and stopping at each repo found. Returns locators (one
    *  per repo) ready to hand back to the other git APIs as their cwd. */
-  gitFindRepos(dirPath: string, maxDepth?: number): Promise<string[]>
+  gitFindRepos(dirPath: string, maxDepth: number | undefined, workspaceId: string): Promise<string[]>
 
   /** Initialize a new git repository at the given directory. */
-  gitInit(dirPath: string): Promise<void>
+  gitInit(dirPath: string, workspaceId: string): Promise<void>
 
   /** List tracked + untracked files (git ls-files --cached --others --exclude-standard). */
-  gitLsFiles(dirPath: string): Promise<string[]>
+  gitLsFiles(dirPath: string, workspaceId: string): Promise<string[]>
 
   /** Get git status for a repository. */
-  gitStatus(cwd: string): Promise<{
+  gitStatus(cwd: string, workspaceId: string): Promise<{
     files: Array<{ path: string; index: string; working_dir: string }>
     current: string | null
     tracking: string | null
@@ -168,19 +174,19 @@ export interface ElectronAPI {
   }>
 
   /** Get diff output for a file or the whole working tree. */
-  gitDiff(cwd: string, filePath?: string): Promise<string>
+  gitDiff(cwd: string, filePath: string | undefined, workspaceId: string): Promise<string>
 
   /** Stage a file. */
-  gitStage(cwd: string, filePath: string): Promise<void>
+  gitStage(cwd: string, filePath: string, workspaceId: string): Promise<void>
 
   /** Unstage a file. */
-  gitUnstage(cwd: string, filePath: string): Promise<void>
+  gitUnstage(cwd: string, filePath: string, workspaceId: string): Promise<void>
 
   /** Commit staged changes with a message. */
-  gitCommit(cwd: string, message: string): Promise<void>
+  gitCommit(cwd: string, message: string, workspaceId: string): Promise<void>
 
   /** List git worktrees for a repository. */
-  gitWorktreeList(cwd: string): Promise<Array<{
+  gitWorktreeList(cwd: string, workspaceId: string): Promise<Array<{
     path: string
     branch: string
     isBare: boolean
@@ -194,17 +200,18 @@ export interface ElectronAPI {
     repoCwd: string,
     branch: string,
     targetPath: string,
-    options?: { createBranch?: boolean; baseRef?: string; symlinkPaths?: string[] },
+    options: { createBranch?: boolean; baseRef?: string; symlinkPaths?: string[] } | undefined,
+    workspaceId: string,
   ): Promise<{ path: string; branch: string }>
 
   /** Remove a git worktree registration and delete its directory from disk. */
-  gitWorktreeRemove(repoCwd: string, worktreePath: string, options?: { force?: boolean }): Promise<void>
+  gitWorktreeRemove(repoCwd: string, worktreePath: string, options: { force?: boolean } | undefined, workspaceId: string): Promise<void>
 
   /** Prune git worktree metadata for directories that no longer exist. */
-  gitWorktreePrune(repoCwd: string): Promise<{ output: string }>
+  gitWorktreePrune(repoCwd: string, workspaceId: string): Promise<{ output: string }>
 
   /** Cheap status snapshot for a worktree — used for sidebar badges. */
-  gitWorktreeStatus(worktreePath: string): Promise<{
+  gitWorktreeStatus(worktreePath: string, workspaceId: string): Promise<{
     branch: string
     dirty: boolean
     ahead: number
@@ -221,6 +228,7 @@ export interface ElectronAPI {
     repoCwd: string,
     fromBranch: string,
     toBranch: string,
+    workspaceId: string,
   ): Promise<{ ok: true; result: unknown } | { ok: false; conflict: boolean; message: string }>
 
   /** Fetch + merge `fromBranch` (the primary branch) into a worktree's own
@@ -228,6 +236,7 @@ export interface ElectronAPI {
   gitWorktreeUpdateFrom(
     worktreePath: string,
     fromBranch: string,
+    workspaceId: string,
   ): Promise<{ ok: true; result: unknown } | { ok: false; conflict: boolean; message: string }>
 
   /** Check out an open pull request (including fork branches) into its own
@@ -236,12 +245,14 @@ export interface ElectronAPI {
     repoCwd: string,
     prNumber: number,
     targetPath: string,
-    options?: { symlinkPaths?: string[] },
+    options: { symlinkPaths?: string[] } | undefined,
+    workspaceId: string,
   ): Promise<{ path: string; branch: string }>
 
   /** List open pull requests for the branch picker. Returns [] without `gh`. */
   gitPrList(
     repoCwd: string,
+    workspaceId: string,
   ): Promise<Array<{ number: number; title: string; headRefName: string; author: string; isFork: boolean }>>
 
   /** Push the branch (with upstream) and open a GitHub PR via the `gh` CLI,
@@ -249,6 +260,7 @@ export interface ElectronAPI {
   gitCreatePR(
     worktreePath: string,
     branch: string,
+    workspaceId: string,
   ): Promise<
     | { ok: true; created: boolean; url: string; fallback?: boolean }
     | { ok: false; message: string }
@@ -259,21 +271,22 @@ export interface ElectronAPI {
   gitPrStatus(
     worktreePath: string,
     branch: string,
+    workspaceId: string,
   ): Promise<{ number: number; state: string; url: string; isDraft: boolean } | null>
 
   /** Push to remote. */
-  gitPush(cwd: string, remote?: string, branch?: string): Promise<void>
+  gitPush(cwd: string, remote: string | undefined, branch: string | undefined, workspaceId: string): Promise<void>
 
   /** Pull from remote. */
-  gitPull(cwd: string, remote?: string, branch?: string): Promise<{
+  gitPull(cwd: string, remote: string | undefined, branch: string | undefined, workspaceId: string): Promise<{
     summary: { changes: number; insertions: number; deletions: number }
   }>
 
   /** Fetch from remote. */
-  gitFetch(cwd: string, remote?: string): Promise<void>
+  gitFetch(cwd: string, remote: string | undefined, workspaceId: string): Promise<void>
 
   /** Get commit log. */
-  gitLog(cwd: string, maxCount?: number): Promise<Array<{
+  gitLog(cwd: string, maxCount: number | undefined, workspaceId: string): Promise<Array<{
     hash: string
     message: string
     author_name: string
@@ -282,7 +295,7 @@ export interface ElectronAPI {
   }>>
 
   /** List all branches. */
-  gitBranchList(cwd: string): Promise<{
+  gitBranchList(cwd: string, workspaceId: string): Promise<{
     current: string
     branches: Array<{
       name: string
@@ -294,35 +307,29 @@ export interface ElectronAPI {
   }>
 
   /** Create a new branch and switch to it. */
-  gitBranchCreate(cwd: string, branchName: string, startPoint?: string): Promise<void>
+  gitBranchCreate(cwd: string, branchName: string, startPoint: string | undefined, workspaceId: string): Promise<void>
 
   /** Delete a branch. */
-  gitBranchDelete(cwd: string, branchName: string, force?: boolean): Promise<void>
+  gitBranchDelete(cwd: string, branchName: string, force: boolean | undefined, workspaceId: string): Promise<void>
 
   /** Checkout a branch. */
-  gitCheckout(cwd: string, branchName: string): Promise<void>
+  gitCheckout(cwd: string, branchName: string, workspaceId: string): Promise<void>
 
   /** Get diff of staged changes. */
-  gitDiffStaged(cwd: string, filePath?: string): Promise<string>
+  gitDiffStaged(cwd: string, filePath: string | undefined, workspaceId: string): Promise<string>
 
   /** Stash changes. */
-  gitStash(cwd: string, message?: string): Promise<void>
+  gitStash(cwd: string, message: string | undefined, workspaceId: string): Promise<void>
 
   /** Pop stashed changes. */
-  gitStashPop(cwd: string): Promise<void>
+  gitStashPop(cwd: string, workspaceId: string): Promise<void>
 
   /** Discard changes to a file (checkout -- file). */
-  gitDiscardFile(cwd: string, filePath: string): Promise<void>
+  gitDiscardFile(cwd: string, filePath: string, workspaceId: string): Promise<void>
 
   // ---------------------------------------------------------------------------
   // Shell / Process Monitor
   // ---------------------------------------------------------------------------
-
-  /** Register a terminal for process activity monitoring. */
-  shellRegisterTerminal(terminalId: string, pid?: number): Promise<void>
-
-  /** Unregister a terminal from process monitoring. */
-  shellUnregisterTerminal(terminalId: string): Promise<void>
 
   /** Subscribe to shell activity updates (main -> renderer). */
   onShellActivityUpdate(
@@ -578,9 +585,6 @@ export interface ElectronAPI {
   /** Delete a named layout. */
   layoutDelete(name: string): Promise<void>
 
-  /** Capture the current page as a data URL for panel previews. */
-  capturePage(): Promise<string | null>
-
   /** Capture a webview's content and save as PNG. Returns file path + data URL or
    *  null. Pass `{ wantDataUrl: false }` (CLI/agent path) to skip the base64
    *  encode and get back only the file path. */
@@ -606,7 +610,7 @@ export interface ElectronAPI {
    *  which must resolve inside a workspace root. `mode` is 'copy' or 'move'.
    *  Returns the created destination paths and a count of entries that failed. */
   fsImportEntries(sources: string[], destDir: string, mode: 'copy' | 'move', workspaceId?: string): Promise<{ created: string[]; failed: number }>
-  shellShowInFolder(filePath: string): Promise<void>
+  shellShowInFolder(filePath: string, workspaceId?: string): Promise<void>
 
   // ---------------------------------------------------------------------------
   // Notifications
@@ -656,30 +660,15 @@ export interface ElectronAPI {
   // Panel transfer (cross-window)
   // ---------------------------------------------------------------------------
 
-  /** Initiate a cross-window panel transfer. Returns new window ID if a window was created. */
-  panelTransfer(snapshot: PanelTransferSnapshot, targetWindowId?: number, workspaceId?: string): Promise<number | void>
-
   /** Acknowledge receipt of a panel transfer (flushes buffered terminal data). */
   panelTransferAck(ptyId?: string): Promise<void>
 
   /** Subscribe to incoming panel transfers (main -> renderer). */
   onPanelReceive(callback: (snapshot: PanelTransferSnapshot) => void): () => void
 
-  /** Request this panel window to dock back into the main window. Passing the
-   *  panel's full transfer snapshot lets the main window reconstruct the panel
-   *  (its record was removed there on detach) and arms the PTY transfer home. */
-  panelWindowDockBack(snapshot?: PanelTransferSnapshot): Promise<void>
-
-  /** Subscribe to dock-back requests from panel windows (main -> renderer). The
-   *  snapshot carries the panel + canvas/terminal state to re-integrate. */
-  onPanelWindowDockBack(callback: (payload: { panelWindowId: number; snapshot?: PanelTransferSnapshot }) => void): () => void
-
   // ---------------------------------------------------------------------------
   // Cross-window drag-and-drop
   // ---------------------------------------------------------------------------
-
-  /** Start an OS-level drag with a panel transfer snapshot. */
-  dragStart(snapshot: PanelTransferSnapshot): Promise<void>
 
   /** Panel was dropped on desktop — create a new dock window. Resolves to
    *  `null` when the main window is in macOS native fullscreen; the caller
@@ -691,10 +680,8 @@ export interface ElectronAPI {
    *  without an IPC round-trip per mousemove. */
   isMainWindowFullscreen(): boolean
 
-  /** Subscribe to drag end events (main -> renderer). The optional `dragId`
-   *  identifies which cross-window drag ended; a remote-drag listener ignores
-   *  an end whose id doesn't match its own active drag. */
-  onDragEnd(callback: (dragId?: string) => void): () => void
+  /** Subscribe to drag end events (main -> renderer), targeted to one drag session. */
+  onDragEnd(callback: (dragId: string) => void): () => void
 
   /** Subscribe to native-fullscreen state changes. Fires with the new boolean
    *  whenever any Cate window enters or leaves macOS native fullscreen. */
@@ -760,7 +747,7 @@ export interface ElectronAPI {
   /** Subscribe to cross-window drag cursor updates (main -> renderer). The
    *  `dragId` identifies the drag session so a window can match a later
    *  targeted DRAG_END against the drag it's tracking. */
-  onCrossWindowDragUpdate(callback: (screenPos: Point, snapshot: PanelTransferSnapshot, dragId?: string) => void): () => void
+  onCrossWindowDragUpdate(callback: (screenPos: Point, snapshot: PanelTransferSnapshot, dragId: string) => void): () => void
 
   /** Claim the in-flight cross-window drop. Main is the arbiter: `accepted` is
    *  false when the drag already resolved unclaimed (the source has fallen back
@@ -1064,7 +1051,7 @@ export interface ElectronAPI {
    *  mirrored into live sessions. Renderers re-fetch provider status + models. */
   onAuthChanged(callback: () => void): () => void
 
-  /** Save an API key for a built-in keyed provider (encrypted via safeStorage). */
+  /** Save an API key for a built-in keyed provider in the shared pi auth config. */
   authSaveApiKey(providerId: string, apiKey: string): Promise<void>
 
   /** Disconnect a provider (clears stored credentials). */

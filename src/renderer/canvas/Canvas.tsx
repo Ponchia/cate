@@ -11,7 +11,7 @@ import { useCanvasInteraction } from '../hooks/useCanvasInteraction'
 import { useAutoFocusLargestVisible } from '../hooks/useAutoFocusLargestVisible'
 import { useUIStore } from '../stores/uiStore'
 import { useSettingsStore } from '../stores/settingsStore'
-import { canvasToView, viewToCanvas } from '../lib/canvas/coordinates'
+import { viewToCanvas } from '../lib/canvas/coordinates'
 import CanvasGrid from './CanvasGrid'
 import CanvasBackgroundImage from './CanvasBackgroundImage'
 import SnapGuides from './SnapGuides'
@@ -482,7 +482,7 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
       let gitWorktrees: Array<{ path: string; branch: string; isCurrent: boolean }> = []
       if (rootPath) {
         try {
-          gitWorktrees = await window.electronAPI.gitWorktreeList(rootPath)
+          gitWorktrees = await window.electronAPI.gitWorktreeList(rootPath, wsId ?? '')
         } catch { /* single-root fallback */ }
       }
 

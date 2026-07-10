@@ -30,8 +30,8 @@ vi.mock('electron', () => ({
 import { fetchCatalog } from './catalog'
 import { provisionCatalogToRuntime } from './install'
 import { buildDaemonRuntime } from '../../runtime/capabilities'
+import { loopbackRuntime } from '../runtime/testHarness'
 import { LOCAL_RUNTIME_ID } from '../runtime/locator'
-import { addAllowedRoot, removeAllowedRoot } from '../ipc/pathValidation'
 import type { Runtime } from '../runtime/types'
 
 // Repo root = three levels up from src/main/extensions/.
@@ -61,12 +61,10 @@ beforeEach(() => {
   // real ~/.cate. id LOCAL so host path joins use the native separator.
   hostRoot = path.join(tmp, 'host-extensions')
   process.env.CATE_EXTENSIONS_ROOT = hostRoot
-  addAllowedRoot(hostRoot)
-  runtime = buildDaemonRuntime({ id: LOCAL_RUNTIME_ID }).runtime
+  runtime = loopbackRuntime(buildDaemonRuntime({ id: LOCAL_RUNTIME_ID }).runtime, LOCAL_RUNTIME_ID)
 })
 
 afterEach(() => {
-  removeAllowedRoot(hostRoot)
   delete process.env.CATE_EXTENSIONS_ROOT
   rmSync(tmp, { recursive: true, force: true })
 })

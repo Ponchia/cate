@@ -39,7 +39,7 @@ import { flushAllPendingWritesSync } from './storage'
 // Real storage now routes through the workspace's runtime (local is just another
 // daemon), so register the in-process LOCAL runtime; its file ops hit the real fs
 // under the temp project root (os.tmpdir() is always an allowed root).
-import { registerTestLocalRuntime } from '../runtime/testLocalRuntime'
+import { registerTestDaemonRuntime } from '../runtime/testHarness'
 
 const EXT = 'cate.kitchensink'
 let projectRoot: string
@@ -48,9 +48,23 @@ let projectRoot: string
 // write is still in flight (Windows refuses rmdir on a dir with an open write
 // handle -> ENOTEMPTY/EPERM), and let rmSync retry to ride out any handle that
 // is still settling (a no-op on posix, which unlinks open handles lazily).
+//
+// Best-effort AND time-bounded by design. On Windows an AV/indexer scan or a
+// not-yet-released handle can hold a just-written file open, and rmSync's retry
+// backoff is synchronous — with maxRetries:20/retryDelay:50 the linear backoff
+// (50+100+…+1000ms) blocks ~10s and trips vitest's 10s hook timeout. So we keep
+// the retry budget small (4 attempts ≈ 0.5s worst case) and swallow a still-
+// locked dir: it only lives under os.tmpdir() (the OS reaps it regardless), and
+// the assertions — not the teardown — are what this test exercises. Leaving the
+// dir cannot corrupt other tests: each seeds its own keys and asserts on those,
+// and the sole exact-key assertion runs first against a freshly-created root.
 function removeStorageDir(dir: string): void {
   flushAllPendingWritesSync()
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 })
+  } catch {
+    // Handle still locked after the bounded retries — leave it for the OS to reap.
+  }
 }
 
 function scope(workspaceId: string, panelId: string | undefined = 'panel-1'): InvokeScope {
@@ -59,7 +73,7 @@ function scope(workspaceId: string, panelId: string | undefined = 'panel-1'): In
 
 beforeAll(() => {
   projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cate-ks-storage-')))
-  registerTestLocalRuntime()
+  registerTestDaemonRuntime()
 })
 
 afterAll(() => {

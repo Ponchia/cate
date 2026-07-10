@@ -63,12 +63,12 @@ describe('daemon FileHost extension install', () => {
 
   beforeEach(async () => {
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cate-ext-install-')))
-    addAllowedRoot(root)
+    addAllowedRoot(root, 'test')
     runtime = buildDaemonRuntime({ id: 'test' }).runtime
   })
 
   afterEach(async () => {
-    removeAllowedRoot(root)
+    removeAllowedRoot(root, 'test')
     await fs.rm(root, { recursive: true, force: true })
   })
 
@@ -102,7 +102,7 @@ describe('daemon FileHost extension install', () => {
     // The tgz is consumed.
     expect(existsSync(tgz)).toBe(false)
     // The extracted bytes are readable back through the runtime file host.
-    expect(await runtime.file.readFile(path.join(dest, 'index.html'))).toContain('<title>hi</title>')
+    expect(await runtime.file.readFile(path.join(dest, 'index.html'), { scopeId: 'test' })).toContain('<title>hi</title>')
   })
 
   test('extractArtifact rejects a tarball missing manifest.json', async () => {
