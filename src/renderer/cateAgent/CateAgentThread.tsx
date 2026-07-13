@@ -1,24 +1,3 @@
-// =============================================================================
-// CateAgentChat — the Cate Agent's floating window, docked above the toolbar.
-//
-// The FRONT DOOR is the OBSERVER: opening the agent shows a compact, read-only
-// timeline of what it has watched — a single accent rail, one dot + relative time
-// per remark, newest at the bottom. The window is only as tall as that content
-// needs. Which view is shown (observer, or a specific chat) is chosen from the
-// picker in the toolbar bar — there is no tab strip here.
-//
-// Selecting a CHAT clears the observer view and GROWS the window into that chat's
-// transcript: a stream of TYPED blocks on one flat surface — a markdown answer
-// (`text`), a code task's plan (`plan`), its parallel-attempts grid (`attempts`),
-// its land actions (`result`), or a delegated canvas task (`canvas`). Tool blocks
-// are calm left-accent RAILS, not boxed cards, so the thread reads as one
-// conversation. Live blocks bind to the chat's `run` while it goes, then freeze to
-// a snapshot so the transcript survives a reload.
-//
-// The card's height is measured from its content, so opening, closing, and the
-// observer↔chat switch all animate purely as a grow/shrink (no fade or scale).
-// =============================================================================
-
 import React from 'react'
 import {
   X,
@@ -40,9 +19,13 @@ import {
 import { useShallow } from 'zustand/react/shallow'
 import { useChatsStore } from '../stores/chatsStore'
 import { useAppStore } from '../stores/appStore'
-import { useCateAgentWs, useCateAgentStore, type CateAgentFeedItem, type CateAgentFeedKind } from './cateAgentStore'
+import {
+  useCateAgentWs,
+  useCateAgentStore,
+  type CateAgentFeedItem,
+  type CateAgentFeedKind,
+} from './cateAgentStore'
 import { cateAgentController } from './cateAgentController'
-import { deriveTopic } from './cateAgentTools'
 import { mergeChat, openPrChat, discardChat, type ReviewResult } from './cateAgentReviewActions'
 import { revealPanel } from '../lib/workspace/panelReveal'
 import { useWorktrees, type JoinedWorktree } from '../stores/useWorktrees'
@@ -62,12 +45,15 @@ import type {
   Iteration,
   IterationStatus,
 } from '../../shared/types'
+import { sendCateAgentMessage } from './cateAgentSend'
 
 // How many observer feed lines to keep visible (a transient FYI, not a transcript).
-const MAX_VISIBLE_FEED = 6
+// Exported so the card's height-measuring signature slices the same window this
+// body renders — a single source keeps the grow/shrink animation in step.
+export const MAX_VISIBLE_FEED = 6
 
 // The small label that titles each tool rail.
-const LBL = 'text-[10px] font-semibold tracking-[0.04em] text-muted'
+const LBL = 'text-[10px] font-medium tracking-[0.03em] text-muted/80'
 
 const FEED_KIND_CLASS: Record<CateAgentFeedKind, string> = {
   user: 'text-primary',
@@ -227,7 +213,10 @@ const IterationRow: React.FC<{ it: Iteration; index: number; multi: boolean; win
 const TextBlock: React.FC<{ msg: ChatTextMessage }> = ({ msg }) => {
   if (msg.role === 'user') {
     return (
-      <div className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-surface-3 px-3 py-1.5 text-[13px] leading-snug text-primary break-words">
+      <div
+        data-cate-user-msg={msg.id}
+        className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-surface-2 px-3 py-1.5 text-[13px] leading-snug text-secondary break-words"
+      >
         {msg.text}
       </div>
     )
@@ -613,10 +602,16 @@ const EmptyState: React.FC = () => (
   </div>
 )
 
-// --- main --------------------------------------------------------------------
+// =============================================================================
+// CateAgentThread — the host-agnostic Cate Agent body. Given a workspace + root
+// it renders the OBSERVER feed (the default front door), the active CHAT's typed
+// transcript + run controls, or the empty state — reading cateAgentStore +
+// chatsStore. It owns NO scroll container, NO height measuring, and does NOT gate
+// on inputOpen: the host (floating card or sidebar) wraps it in whatever scroll /
+// sizing surface it needs. Both homes render this, so they never drift.
+// =============================================================================
 
-export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> = ({ workspaceId, rootPath }) => {
-  const wsId = workspaceId
+export const CateAgentThread: React.FC<{ wsId: string; rootPath: string; emptyState?: React.ReactNode }> = ({ wsId, rootPath, emptyState }) => {
   const cateAgent = useCateAgentWs(wsId)
   const chats = useChatsStore((s) => s.chatsByRoot[rootPath])
   const loadChats = useChatsStore((s) => s.loadChats)
@@ -630,133 +625,26 @@ export const CateAgentChat: React.FC<{ workspaceId: string; rootPath: string }> 
   const activeChat = cateAgent.activeChatId ? list.find((c) => c.id === cateAgent.activeChatId) : undefined
   const working = cateAgent.activity === 'working' && !!activeChat && !activeChat.run
 
-  // The shimmer rides the active work, like the agent panel. While a tool call is
-  // live — a running loop iteration (one, or several in parallel) or a canvas being
-  // laid out — that block shimmers, and the bottom status line drops its own
-  // shimmer (just the Stop control remains). Only in the gap, when nothing is live,
-  // does the status line itself shimmer ("Thinking"/"Working"). Never both at once.
   const liveIters = activeChat?.run?.status === 'running' ? (activeChat.run.iterations ?? []) : []
   const hasActiveWork =
     liveIters.some((i) => i.status === 'running' || i.status === 'verifying') ||
     (activeChat?.messages.some((m) => m.kind === 'canvas' && m.working) ?? false)
-
-  // Run an observer suggestion: like a first message from the front door, it always
-  // starts a NEW chat (titled from the prompt), which clears the observer view and
-  // grows the window into that chat's transcript.
-  const runPrompt = (prompt: string) => {
-    const store = useChatsStore.getState()
-    const chatId = store.createChat(rootPath, deriveTopic(prompt)).id
-    useCateAgentStore.getState().setActiveChat(wsId, chatId)
-    void cateAgentController.sendMessage(wsId, rootPath, chatId, prompt)
-  }
 
   // Observer feed tail: the latest turn (since the last user line), capped.
   const feed = cateAgent.feed
   const lastUserIdx = feed.map((f) => f.kind).lastIndexOf('user')
   const visibleFeed = (lastUserIdx >= 0 ? feed.slice(lastUserIdx) : feed).slice(-MAX_VISIBLE_FEED)
 
-  // The window shows the observer (the default front door) or the selected chat.
-  // Which one is chosen from the picker in the toolbar bar, not a tab strip here.
-  const observerView = cateAgent.observerView
-
-  // The window is shown only while the input bar is open; it simply appears and
-  // disappears with it — no open/close fade or grow animation.
-  const inputOpen = cateAgent.inputOpen
-
-  const msgCount = activeChat?.messages.length ?? 0
-  // Live iteration count also grows the transcript without a new message; track it so
-  // an active run stays pinned to the bottom.
-  const runTick = activeChat?.run?.iterations?.length ?? 0
-
-  // The card is only as tall as its content (each view clamps itself to a max and
-  // scrolls past that). We mirror the measured content height onto the card so that
-  // *switching* views (observer↔chat, chat↔chat) animates the grow/shrink. The
-  // transition is armed one frame after the first measurement, so the window still
-  // appears instantly at full size on open instead of growing from zero.
-  const contentRef = React.useRef<HTMLDivElement | null>(null)
-  const [naturalH, setNaturalH] = React.useState(0)
-  const [animate, setAnimate] = React.useState(false)
-  const measure = React.useCallback(() => {
-    const el = contentRef.current
-    if (el) setNaturalH(el.scrollHeight)
-  }, [])
-  // A signature of everything that changes the content's height. Measuring in a
-  // layout effect keyed on this applies the new height in the SAME commit as the
-  // content swap — so the grow/shrink always transitions, instead of waiting for
-  // the ResizeObserver to fire a frame later (which sometimes skipped the animation).
-  const contentSig = observerView
-    ? 'obs:' + visibleFeed.map((f) => `${f.id}${f.resolved ?? (f.action ? 'a' : '')}`).join('|')
-    : `chat:${cateAgent.activeChatId}:${msgCount}:${runTick}:${!!activeChat}`
-  React.useLayoutEffect(() => {
-    measure()
-  }, [measure, contentSig])
-  // Async settle (text wrap, images, late-loading data) that no state change captures.
-  React.useLayoutEffect(() => {
-    const el = contentRef.current
-    if (!el) return
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [measure])
-  React.useEffect(() => {
-    if (naturalH > 0 && !animate) {
-      const r = requestAnimationFrame(() => setAnimate(true))
-      return () => cancelAnimationFrame(r)
-    }
-  }, [naturalH, animate])
-
-  // Stick to the bottom (newest, nearest the input) as the transcript grows, unless
-  // the user has scrolled up to read.
-  const scrollRef = React.useRef<HTMLDivElement | null>(null)
-  const atBottomRef = React.useRef(true)
-
-  const onScroll = () => {
-    const el = scrollRef.current
-    if (!el) return
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+  if (cateAgent.observerView) {
+    return <ObserverTimeline wsId={wsId} items={visibleFeed} onRun={(prompt) => sendCateAgentMessage(wsId, rootPath, prompt)} />
   }
-  React.useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight
-  }, [msgCount, runTick, visibleFeed.length, cateAgent.activeChatId, observerView])
-
-  if (!wsId || !inputOpen) return null
-
+  if (!activeChat) return <>{emptyState ?? <EmptyState />}</>
   return (
-    // Same width as the toolbar bar below it: the relative parent is sized by the
-    // pill, so inset-x-0 pins the card to exactly the bar's width.
-    <div className="absolute bottom-full inset-x-0 mb-2">
-      <div
-        className="overflow-hidden rounded-2xl border border-subtle bg-surface-0 shadow-[0_8px_24px_-6px_var(--shadow-node)]"
-        style={{
-          height: naturalH || undefined,
-          transition: animate ? 'height 240ms cubic-bezier(0.16,1,0.3,1)' : undefined,
-        }}
-      >
-        <div ref={contentRef}>
-          {observerView ? (
-            // Observer: only as tall as its content needs (a floor so the empty state
-            // has room, a ceiling before it scrolls).
-            <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar max-h-[min(420px,55vh)] overflow-y-auto">
-              <ObserverTimeline wsId={wsId} items={visibleFeed} onRun={runPrompt} />
-            </div>
-          ) : (
-            // Chat: as tall as the transcript, capped before it scrolls internally.
-            <div ref={scrollRef} onScroll={onScroll} className="no-scrollbar max-h-[min(420px,55vh)] overflow-y-auto">
-              {activeChat ? (
-                <div className="flex flex-col gap-3.5 px-3 py-3">
-                  {activeChat.messages.map((msg) => (
-                    <MessageBlock key={msg.id} chat={activeChat} msg={msg} wsId={wsId} rootPath={rootPath} worktrees={worktrees} />
-                  ))}
-                  <RunControls chat={activeChat} wsId={wsId} rootPath={rootPath} working={working} activeWork={hasActiveWork} />
-                </div>
-              ) : (
-                <EmptyState />
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+    <div className="flex flex-col gap-3.5 px-4 py-3 pr-5">
+      {activeChat.messages.map((msg) => (
+        <MessageBlock key={msg.id} chat={activeChat} msg={msg} wsId={wsId} rootPath={rootPath} worktrees={worktrees} />
+      ))}
+      <RunControls chat={activeChat} wsId={wsId} rootPath={rootPath} working={working} activeWork={hasActiveWork} />
     </div>
   )
 }
