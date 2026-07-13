@@ -155,7 +155,7 @@ const TerminalSpawnButton: React.FC<{ onClick: () => void; canvasPanelId: string
             <div style={{ height: 22, background: 'rgba(74, 158, 255, 0.22)',
               display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px',
               color: 'rgba(255,255,255,0.9)', fontSize: 11, fontWeight: 600,
-              fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+              fontFamily: 'var(--font-sans)' }}>
               <Terminal size={12} /> Terminal
             </div>
           </div>,

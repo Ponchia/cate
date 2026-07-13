@@ -25,7 +25,6 @@ import {
   GraduationCap,
   PuzzlePiece,
   X,
-  MapTrifold,
   Selection,
   ArrowUUpLeft,
   ArrowUUpRight,
@@ -80,7 +79,6 @@ const SkillsIcon = () => <PuzzlePiece size={ICON_SIZE} />
 const AgentIcon = () => <ChatCircle size={ICON_SIZE} />
 const ObserveIcon = () => <Eye size={ICON_SIZE} />
 const CloseIcon = () => <X size={ICON_SIZE} />
-const MinimapIcon = () => <MapTrifold size={ICON_SIZE} />
 const UndoIcon = () => <ArrowUUpLeft size={ICON_SIZE} />
 const RedoIcon = () => <ArrowUUpRight size={ICON_SIZE} />
 
@@ -188,7 +186,6 @@ export const CommandPalette: React.FC = () => {
             { id: 'toggleSearch', title: shortcutTitle('toggleSearch'), icon: <SearchIcon />, action: run('toggleSearch') },
           ]
         : []),
-      { id: 'toggleMinimap', title: shortcutTitle('toggleMinimap'), icon: <MinimapIcon />, action: run('toggleMinimap') },
       { id: 'zoomReset', title: shortcutTitle('zoomReset'), icon: <ZoomResetIcon />, action: run('zoomReset') },
       { id: 'zoomToFit', title: shortcutTitle('zoomToFit'), icon: <ZoomToFitIcon />, action: run('zoomToFit') },
       { id: 'zoomToSelection', title: shortcutTitle('zoomToSelection'), icon: <ZoomSelectionIcon />, action: run('zoomToSelection') },

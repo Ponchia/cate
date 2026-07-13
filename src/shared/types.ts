@@ -653,6 +653,9 @@ export interface BrowserTab {
   id: string
   url: string
   title: string
+  /** Favicon URL captured from the page (page-favicon-updated). Absent until the
+   *  page reports one; the UI falls back to a globe glyph. */
+  favicon?: string
   /** Pinned ("fixed") tabs sort left, render compact, and resist accidental close. */
   pinned?: boolean
 }

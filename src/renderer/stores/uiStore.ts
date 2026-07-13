@@ -60,8 +60,11 @@ interface UIStoreState {
   activeLeftSidebarView: SidebarView | null
   /** Active view on the right sidebar, null = collapsed */
   activeRightSidebarView: SidebarView | null
-  /** The view currently being dragged between/within sidebars, null when idle */
-  draggingView: SidebarView | null
+  /** When true the right sidebar (activity rail + content) is fully hidden
+   *  (width 0), reopened via the floating top-right toggle. Distinct from
+   *  activeRightSidebarView === null, which only collapses the content and
+   *  keeps the rail visible. */
+  rightSidebarHidden: boolean
   /** Worktree being hovered (chip or sidebar row) — transiently highlights all
    *  its member nodes + sludge. Null when nothing is hovered. */
   hoveredWorktreeId: string | null
@@ -84,8 +87,10 @@ interface UIStoreActions {
   setActiveTool: (tool: CanvasTool) => void
   setActiveLeftSidebarView: (view: SidebarView | null) => void
   setActiveRightSidebarView: (view: SidebarView | null) => void
-  moveSidebarView: (view: SidebarView, targetSide: SidebarSide, targetIndex: number) => void
-  setDraggingView: (view: SidebarView | null) => void
+  /** Show/hide the entire right sidebar (rail + content). */
+  setRightSidebarHidden: (hidden: boolean) => void
+  /** Flip the right sidebar between fully hidden and shown. */
+  toggleRightSidebar: () => void
   /** Highlight (hover) a worktree's member nodes; pass null to clear. */
   setHoveredWorktree: (id: string | null) => void
   /** Lock the focus lens onto a worktree (caller frames the camera separately). */
@@ -113,7 +118,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   activeTool: 'select',
   activeLeftSidebarView: 'workspaces',
   activeRightSidebarView: null,
-  draggingView: null,
+  rightSidebarHidden: false,
   hoveredWorktreeId: null,
   focusedWorktreeId: null,
 
@@ -178,53 +183,14 @@ export const useUIStore = create<UIStore>((set, get) => ({
     set({ activeRightSidebarView: view })
   },
 
-  moveSidebarView(view, targetSide, targetIndex) {
-    const state = get()
-    // The layout's single home is settingsStore; read + write it there.
-    const current = getSidebarLayout()
-    const layout: SidebarLayout = {
-      left: current.left.slice(),
-      right: current.right.slice(),
-    }
-    // Determine source side and index
-    let sourceSide: SidebarSide | null = null
-    let sourceIndex = -1
-    if ((sourceIndex = layout.left.indexOf(view)) >= 0) sourceSide = 'left'
-    else if ((sourceIndex = layout.right.indexOf(view)) >= 0) sourceSide = 'right'
-    if (sourceSide === null) return
-
-    // Remove from source
-    layout[sourceSide].splice(sourceIndex, 1)
-
-    // Adjust targetIndex if removing from the same array shifted items
-    let insertAt = targetIndex
-    if (sourceSide === targetSide && sourceIndex < targetIndex) insertAt -= 1
-    insertAt = Math.max(0, Math.min(insertAt, layout[targetSide].length))
-    layout[targetSide].splice(insertAt, 0, view)
-
-    // Persist to settingsStore (the single source of truth). The broadcast funnel
-    // projects it back to every window; components read it via useSidebarLayout.
-    useSettingsStore.getState().setSetting('sidebarLayout', layout)
-
-    // Update active views (transient, uiStore-owned): if the moved view was
-    // active on the source, clear it; focus it on the target side so the user
-    // sees where it landed.
-    const patch: Partial<UIStoreState> = {}
-    if (sourceSide === 'left' && state.activeLeftSidebarView === view) {
-      patch.activeLeftSidebarView = null
-    }
-    if (sourceSide === 'right' && state.activeRightSidebarView === view) {
-      patch.activeRightSidebarView = null
-    }
-    if (targetSide === 'left') patch.activeLeftSidebarView = view
-    else patch.activeRightSidebarView = view
-
-    set(patch)
+  setRightSidebarHidden(hidden) {
+    set({ rightSidebarHidden: hidden })
   },
 
-  setDraggingView(view) {
-    set({ draggingView: view })
+  toggleRightSidebar() {
+    set((s) => ({ rightSidebarHidden: !s.rightSidebarHidden }))
   },
+
 
   setHoveredWorktree(id) {
     if (get().hoveredWorktreeId === id) return
