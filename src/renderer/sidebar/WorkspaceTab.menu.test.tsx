@@ -217,6 +217,15 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('workspace context menu', () => {
+  it('does not offer the removed duplicate-workspace action', async () => {
+    const ws = seed(makeWorkspace([panel('t1', 'terminal')]))
+    await renderTab(ws)
+
+    await rightClick(byText('Alpha'))
+
+    expect(lastMenuItems().some((item) => item.id === 'duplicate')).toBe(false)
+  })
+
   it("'select' calls selectWorkspace", async () => {
     const selectWorkspace = vi.fn()
     const ws = seed(makeWorkspace([panel('t1', 'terminal')]))

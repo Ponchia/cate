@@ -584,10 +584,9 @@ export default function TerminalPanel({
     const adjustCoords = (e: MouseEvent) => {
       // Whether to rewrite this event's clientX/Y lives in a pure helper so the
       // middle-click-pan regression it prevents can be unit-tested. It skips the
-      // rewrite when a canvas gesture owns the pointer (canvas-interacting), when
-      // this is a pan's opening non-left mousedown (rewriting it would jump the
-      // camera on the first delta — see shouldAdjustTerminalCoords), and when the
-      // canvas isn't zoomed. See terminalCoordAdjust.ts for the full rationale.
+      // rewrite when a canvas gesture owns the pointer (canvas-interacting), for
+      // every event in a non-left-button gesture, and when the canvas isn't
+      // zoomed. See terminalCoordAdjust.ts for the full rationale.
       const effective = zoomLevel / renderScale
       if (
         !shouldAdjustTerminalCoords(
@@ -595,6 +594,7 @@ export default function TerminalPanel({
           e.button,
           document.body.classList.contains('canvas-interacting'),
           effective,
+          e.buttons,
         )
       )
         return

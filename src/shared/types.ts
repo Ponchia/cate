@@ -247,6 +247,8 @@ export interface RuntimeStatus {
 export interface WorkspaceMutationError {
   code: 'INVALID_ROOT_PATH' | 'INVALID_WORKSPACE_ID' | 'WORKSPACE_NOT_FOUND' | 'DUPLICATE_ROOT'
   message: string
+  /** Present for DUPLICATE_ROOT so the renderer can focus the existing workspace. */
+  conflictingWorkspaceId?: string
 }
 
 export type WorkspaceMutationResult =

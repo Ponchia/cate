@@ -48,6 +48,7 @@ vi.mock('../skills/main/seedCateCliSkill', () => ({ seedCateCliSkill: vi.fn(asyn
 const { WORKSPACE_CREATE, WORKSPACE_UPDATE } = await import('../shared/ipc-channels')
 const { registerWorkspaceHandlers } = await import('./workspaceManager')
 const { seedCateCliSkill } = await import('../skills/main/seedCateCliSkill')
+const { resolveTrustedWorkspaceRoot } = await import('./workspaceRoots')
 
 describe('remote workspace root scopes', () => {
   it('registers roots by workspace id and replays them after connection and reconnect', async () => {
@@ -129,5 +130,36 @@ describe('remote workspace root scopes', () => {
     seed.mockClear()
     fireConnected('srv_other')
     expect(seed).not.toHaveBeenCalled()
+  })
+
+  it('rejects workspace creation when path aliases resolve to an open root', async () => {
+    registerWorkspaceHandlers()
+    const create = handlers.get(WORKSPACE_CREATE)!
+    const resolveRoot = vi.mocked(resolveTrustedWorkspaceRoot)
+    resolveRoot.mockResolvedValue('/canonical/project')
+
+    const first = await create({}, {
+      id: 'workspace-canonical-a',
+      name: 'A',
+      rootPath: '/alias/a',
+    }) as { ok: boolean }
+    const duplicate = await create({}, {
+      id: 'workspace-canonical-b',
+      name: 'B',
+      rootPath: '/alias/b',
+    }) as {
+      ok: boolean
+      error?: { code: string; conflictingWorkspaceId?: string }
+    }
+
+    expect(first.ok).toBe(true)
+    expect(duplicate).toEqual({
+      ok: false,
+      error: {
+        code: 'DUPLICATE_ROOT',
+        message: 'This folder is already open in another workspace: /canonical/project',
+        conflictingWorkspaceId: 'workspace-canonical-a',
+      },
+    })
   })
 })

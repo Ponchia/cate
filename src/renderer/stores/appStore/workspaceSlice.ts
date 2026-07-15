@@ -3,9 +3,7 @@
 // =============================================================================
 
 import log from '../../lib/logger'
-import type { WorkspaceState } from '../../../shared/types'
 import { ALL_ZONES } from '../../../shared/types'
-import { generateId } from '../canvas/helpers'
 import type { AppSet, AppGet, AppStoreActions } from './types'
 import {
   createDefaultWorkspace,
@@ -36,7 +34,6 @@ type WorkspaceSliceActions = Pick<
   | 'ensureCenterCanvas'
   | 'setWorkspaceColor'
   | 'renameWorkspace'
-  | 'duplicateWorkspace'
   | 'reorderWorkspaces'
   | 'addAdditionalRoot'
   | 'removeAdditionalRoot'
@@ -91,8 +88,23 @@ export function createWorkspaceSlice(set: AppSet, get: AppGet): WorkspaceSliceAc
       }))
       // Sync to main process
       syncCreateToMain(ws).then((result) => {
-        if (!result?.ok) {
-          log.warn('[workspace-sync] Create rejected:', result?.error?.message)
+        if (!result) return
+        if (!result.ok) {
+          log.warn('[workspace-sync] Create rejected:', result.error.message)
+          const conflictingId = result.error.conflictingWorkspaceId
+          if (ws.rootPath) {
+            window.electronAPI.recentProjectsRemove(ws.rootPath).catch((err) =>
+              log.warn('[workspace] Failed to remove rejected project from recents:', err),
+            )
+          }
+          // Never leave an optimistic workspace that main refused to register:
+          // it has no allowed-root grant and cannot safely own panels or saves.
+          if (get().workspaces.some((candidate) => candidate.id === ws.id)) {
+            get().removeWorkspace(ws.id)
+          }
+          if (conflictingId && get().workspaces.some((candidate) => candidate.id === conflictingId)) {
+            void get().selectWorkspace(conflictingId)
+          }
           return
         }
         set((state) => ({
@@ -367,29 +379,6 @@ export function createWorkspaceSlice(set: AppSet, get: AppGet): WorkspaceSliceAc
         ),
       }))
       syncUpdateToMain(wsId, { name: trimmed })
-    },
-
-    duplicateWorkspace(wsId) {
-      const ws = get().workspaces.find((w) => w.id === wsId)
-      if (!ws) return wsId
-      // Carry the fields that make the workspace point at the same project: a
-      // remote workspace must stay reconnectable (connection), and the extra repos
-      // (additionalRoots) + managed worktrees must come along — otherwise a remote
-      // duplicate degrades to a broken non-reconnectable local one and a
-      // multi-root/worktree workspace loses everything but its primary root.
-      const copy: WorkspaceState = {
-        id: generateId(),
-        name: `${ws.name} Copy`,
-        color: ws.color,
-        rootPath: ws.rootPath,
-        connection: ws.connection,
-        additionalRoots: ws.additionalRoots ? [...ws.additionalRoots] : undefined,
-        worktrees: ws.worktrees ? ws.worktrees.map((wt) => ({ ...wt })) : undefined,
-        panels: {},
-      }
-      set((state) => ({ workspaces: [...state.workspaces, copy] }))
-      syncCreateToMain(copy)
-      return copy.id
     },
 
     reorderWorkspaces(fromIndex, toIndex) {

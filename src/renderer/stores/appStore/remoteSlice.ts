@@ -67,11 +67,21 @@ export function createRemoteSlice(set: AppSet, get: AppGet): RemoteSliceActions 
           const message = errorMessage(result?.error, 'Failed to update workspace root')
           set((state) => ({
             workspaces: state.workspaces.map((candidate) => (
-              candidate.id === wsId
-                ? { ...candidate, isRootPathPending: false, rootPathError: message }
+              candidate.id === wsId && candidate.rootPath === rootPath
+                ? {
+                    ...candidate,
+                    rootPath: ws.rootPath,
+                    name: ws.name,
+                    isRootPathPending: false,
+                    rootPathError: message,
+                  }
                 : candidate
             )),
           }))
+          const conflictingId = result?.error?.conflictingWorkspaceId
+          if (conflictingId && get().workspaces.some((candidate) => candidate.id === conflictingId)) {
+            void get().selectWorkspace(conflictingId)
+          }
           log.warn('[workspace-sync] Update rejected:', message)
           return false
         }
@@ -133,6 +143,17 @@ export function createRemoteSlice(set: AppSet, get: AppGet): RemoteSliceActions 
         connection: res.connection,
       })
       if (!result?.ok) {
+        set((state) => ({
+          workspaces: state.workspaces.map((candidate) => (
+            candidate.id === wsId && candidate.rootPath === res.rootPath
+              ? { ...candidate, rootPath: ws.rootPath, name: ws.name }
+              : candidate
+          )),
+        }))
+        const conflictingId = result?.error?.conflictingWorkspaceId
+        if (conflictingId && get().workspaces.some((candidate) => candidate.id === conflictingId)) {
+          void get().selectWorkspace(conflictingId)
+        }
         log.warn('[runtime] register failed:', result?.error?.message ?? 'unknown')
         return false
       }
