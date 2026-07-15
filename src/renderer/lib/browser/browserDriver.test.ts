@@ -55,6 +55,11 @@ vi.mock('../activePanel', () => ({
   getActivePanelId: () => h.activePanelId,
 }))
 
+const BACKGROUND_PLACEMENT = { target: 'canvas', canvasPanelId: 'canvas-1', focus: false }
+vi.mock('../workspace/canvasAccess', () => ({
+  placementForBackgroundPanel: () => BACKGROUND_PLACEMENT,
+}))
+
 vi.mock('../portalRegistry', () => ({
   portalRegistry: {
     get: (panelId: string) => h.webviews.get(panelId) ?? null,
@@ -143,8 +148,11 @@ describe('target resolution', () => {
 describe('open', () => {
   it('creates a browser panel when the workspace has none', async () => {
     h.workspaces[0].panels = { term: { id: 'term', type: 'terminal', title: 'Term' } }
+    const webview = makeWebview()
+    setTimeout(() => h.webviews.set('created-browser-id', webview), 10)
     const out = await handleBrowserMethod(WS, M('open'), { url: 'https://new/' })
-    expect(h.createBrowser).toHaveBeenCalledWith(WS, 'https://new/')
+    expect(h.createBrowser).toHaveBeenCalledWith(WS, 'https://new/', undefined, BACKGROUND_PLACEMENT)
+    expect(webview.loadURL).toHaveBeenCalledWith('https://new/')
     expect(out).toEqual({ ok: true, result: { panelId: 'created-browser-id', url: 'https://new/' } })
   })
 
@@ -157,9 +165,12 @@ describe('open', () => {
     expect(out).toEqual({ ok: true, result: { panelId: 'b1', url: 'https://go/' } })
   })
 
-  it('updates the active tab when the webview is not attached yet (succeeds)', async () => {
+  it('waits for an unattached webview before reporting success', async () => {
+    const webview = makeWebview()
+    setTimeout(() => h.webviews.set('b1', webview), 10)
     const out = await handleBrowserMethod(WS, M('open'), { url: 'https://later/' })
     expect(h.updateBrowserActiveTabUrl).toHaveBeenCalledWith(WS, 'b1', 'https://later/')
+    expect(webview.loadURL).toHaveBeenCalledWith('https://later/')
     expect(out).toEqual({ ok: true, result: { panelId: 'b1', url: 'https://later/' } })
   })
 
@@ -177,13 +188,15 @@ describe('open', () => {
     const loaded = await handleBrowserMethod(WS, M('open'), { url: 'https://go/' })
     expect(loaded).toEqual({ ok: true, result: { panelId: 'b1', url: 'https://go/' } })
 
-    // Branch 2: existing browser panel whose webview is not attached yet.
+    // Branch 2: existing browser panel whose webview attaches on the next render.
     h.webviews = new Map()
+    setTimeout(() => h.webviews.set('b1', makeWebview()), 10)
     const pending = await handleBrowserMethod(WS, M('open'), { url: 'https://later/' })
     expect(pending).toEqual({ ok: true, result: { panelId: 'b1', url: 'https://later/' } })
 
     // Branch 3: no browser panel — the driver creates one.
     h.workspaces[0].panels = { term: { id: 'term', type: 'terminal', title: 'Term' } }
+    setTimeout(() => h.webviews.set('created-browser-id', makeWebview()), 10)
     const created = await handleBrowserMethod(WS, M('open'), { url: 'https://new/' })
     expect(created).toEqual({ ok: true, result: { panelId: 'created-browser-id', url: 'https://new/' } })
   })

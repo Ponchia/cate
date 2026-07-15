@@ -280,6 +280,11 @@ export interface WindowPanelReport {
   type: PanelType
   title: string
   workspaceId: string
+  /** File/browser identity used by the cross-window cate.panel.list surface. */
+  filePath?: string
+  url?: string
+  /** Canonical active-panel marker from the owning window. */
+  focused?: boolean
   /** Set when this panel lives inside a canvas panel in its window. */
   parentCanvasId?: string
   /** The panel's worktree tag (if any), so the overview can tint a detached

@@ -61,8 +61,9 @@ This is the **complete** surface today. It is intentionally small; new methods a
 cate.version()                                 // API version (int), for feature detection
 cate.panel.id                                  // this panel instance's id
 cate.panel.setTitle(title)
-cate.panel.list() => [{ panelId, type, title, focused, filePath?, url? }]  // this window's panels (`panel` scope)
+cate.panel.list() => [{ panelId, type, title, focused, filePath?, url? }]  // workspace panels across windows (`panel` scope)
 cate.panel.focus(panelId)                      // reveal/focus a panel (`panel` scope)
+cate.panel.close(panelId)                      // close without revealing first (`panel` scope)
 cate.workspace.get()                           // { rootPath, branch, worktree }  (branch/worktree null for now)
 cate.theme.get()                               // { id, type, app, terminal } theme tokens
 cate.editor.openFile(path, { line?, column? }) // path is confined to the workspace root
@@ -88,13 +89,22 @@ cate.browser.wait({ panelId?, timeoutMs? }) => { url, title, loading: false }  /
 cate.browser.press({ key, ref?, panelId? }) => { ok: true }     // TRUSTED key input (Enter submits forms)
 ```
 
-`panel.setTitle` (self-identity) needs no scope; `panel.list` and `panel.focus`
+`panel.setTitle` (self-identity) needs no scope; `panel.list`, `panel.focus`, and `panel.close`
 read/steer other panels and require the `panel` scope. `panel.list` is the
 single enumeration surface — browser panels carry their `url` there, editors
 their `filePath`, and the `focused` entry answers "what is the user looking
 at" (there is no `browser.list` or `editor.active`). `press` accepts Enter,
 Tab, Escape, Backspace, Delete, Space, the arrows, PageUp/PageDown, Home, End;
 with `ref` the element is focused first.
+
+Panel creation through this API is deliberately non-disruptive for both
+extensions and `CATE_API` callers: `editor.openFile`, `canvas.createPanel`, and
+the create branch of `browser.open` use automatic background placement. They do
+not open the placement picker, switch tabs, change canvas selection/focus, or
+move the camera. `panel.focus` is the explicit opt-in operation for changing the
+user's view. A newly created browser stays mounted off-screen, and `browser.open`
+does not resolve until its webview is registered, so an automation loop can
+immediately continue with `wait` and `snapshot`.
 
 `cateApi` scopes in the manifest declare which namespaces an extension uses; the host enforces them (default-deny) and Cate surfaces them as the extension's permissions in Settings → Extensions.
 

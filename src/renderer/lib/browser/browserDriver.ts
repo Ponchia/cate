@@ -23,6 +23,7 @@
 import { useAppStore } from '../../stores/appStore'
 import { getActivePanelId } from '../activePanel'
 import { portalRegistry, type PortalWebview } from '../portalRegistry'
+import { placementForBackgroundPanel } from '../workspace/canvasAccess'
 
 export type BrowserOutcome = { ok: true; result?: unknown } | { ok: false; error: string }
 
@@ -66,6 +67,19 @@ function getWebview(panelId: string): { webview: PortalWebview } | { error: stri
   const webview = portalRegistry.get(panelId)
   if (!webview) return { error: 'webview-not-ready' }
   return { webview }
+}
+
+/** A background-created browser mounts on the next React commit. Wait for its
+ * portal registration before reporting `open` success so an autonomous caller
+ * can immediately follow with `wait`/`snapshot` instead of racing the render. */
+async function waitForWebview(panelId: string, timeoutMs = 3_000): Promise<PortalWebview | null> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const webview = portalRegistry.get(panelId)
+    if (webview) return webview
+    if (Date.now() >= deadline) return null
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
 }
 
 // --- Injected DOM scripts ----------------------------------------------------
@@ -208,24 +222,28 @@ export async function handleBrowserMethod(
     const url = typeof args.url === 'string' ? args.url : undefined
     if (!url) return { ok: false, error: 'url-required' }
     const target = resolveTargetPanelId(workspaceId, args)
+    let panelId: string
     if ('error' in target) {
       if (target.error === 'no-browser') {
-        const panelId = useAppStore.getState().createBrowser(workspaceId, url)
-        return { ok: true, result: { panelId, url } }
+        panelId = useAppStore.getState().createBrowser(
+          workspaceId,
+          url,
+          undefined,
+          placementForBackgroundPanel(workspaceId),
+        )
+      } else {
+        return { ok: false, error: target.error }
       }
-      return { ok: false, error: target.error }
+    } else {
+      panelId = target.panelId
     }
-    const webview = portalRegistry.get(target.panelId)
-    // Mirror terminalUrlOpen: if the webview isn't attached yet, still update the
-    // stored URL so the panel navigates there on mount — a real success.
-    if (!webview) {
-      useAppStore.getState().updateBrowserActiveTabUrl(workspaceId, target.panelId, url)
-      return { ok: true, result: { panelId: target.panelId, url } }
-    }
+
+    useAppStore.getState().updateBrowserActiveTabUrl(workspaceId, panelId, url)
+    const webview = portalRegistry.get(panelId) ?? (await waitForWebview(panelId))
+    if (!webview) return { ok: false, error: 'webview-not-ready' }
     try {
       webview.loadURL(url)
-      useAppStore.getState().updateBrowserActiveTabUrl(workspaceId, target.panelId, url)
-      return { ok: true, result: { panelId: target.panelId, url } }
+      return { ok: true, result: { panelId, url } }
     } catch {
       return { ok: false, error: 'webview-not-ready' }
     }

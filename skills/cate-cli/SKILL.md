@@ -98,8 +98,10 @@ cate editor open src/app.ts       # open a file; prints the new panel's short id
 cate editor open src/app.ts:42    # ...and jump to line 42 (or :42:7 for a column)
 cate panel list                   # ALL panels: id, type, path/url/title; * = focused
 cate panel focus 1a2b3c4d         # reveal/focus a panel (short ids from `list` ok)
-cate canvas create terminal       # open a new empty panel of the given type
-cate panel set-title My Panel     # rename the calling panel
+cate panel close 1a2b3c4d         # close a panel without revealing it first
+cate canvas create terminal       # auto-place a new panel in the background
+cate panel set-title My Panel     # rename this Cate terminal panel
+cate panel set-title My Panel --panel 1a2b3c4d  # agent shells target explicitly
 cate version                      # host API version (for feature detection)
 ```
 
@@ -109,6 +111,13 @@ the focused panel marked `*`. Its short ids feed `panel focus` and `--panel`.
 So "what is the user looking at?" is the `*` row, and there is no separate
 browser or editor list. To open a file (any type — a PDF becomes a document
 panel), use `cate editor open`; `canvas create` is for empty panels.
+
+Panel/file/browser creation is deliberately non-disruptive: it uses automatic
+background placement and does not open the placement picker, change focus or
+selection, switch tabs, or move the canvas camera. `panel focus` is the explicit
+opt-in command for changing the user's view. A new browser is kept mounted even
+off-screen, and `browser open` waits for its webview before returning, so the
+next `wait`/`snapshot` is safe to run immediately.
 
 Each group maps to a host scope that a Cate terminal is granted. Two host scopes
 are **not** available from a terminal: `agent` (a terminal must not drive the
@@ -126,7 +135,7 @@ verbs above are the complete surface.
 - `--max <n>` — `snapshot` only: max ref lines to print (default 150; 0 = all).
 - `--timeout <ms>` — request timeout (default 30000).
 - `-h`, `--help` — usage.
-- `--version` — the CLI's own version.
+- `--version` — the CLI's own version (prints `cate cli <version>`).
 
 ## Output and exit codes
 
