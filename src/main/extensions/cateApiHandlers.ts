@@ -56,7 +56,7 @@ import { agentManager } from '../../agent/main/agentManager'
 import { getExtensionStorage } from './storage'
 import { getWorkspaceInfo } from '../workspaceManager'
 import { getActiveMainWindow, getWindow } from '../windowRegistry'
-import { getWindowPanels } from '../windowPanels'
+import { getWindowPanels, revealWindowPanel, upsertWindowPanel } from '../windowPanels'
 import { parseLocator, LOCAL_RUNTIME_ID } from '../runtime/locator'
 import { getAllSettings, getSetting } from '../settingsFile'
 import { resolveActiveTheme } from '../themeBootCache'
@@ -189,17 +189,17 @@ export function forwardToActiveWindow(payload: InvokePayload): Promise<InvokeRes
  */
 function resolveBrowserTargetWindow(
   panelId: string | undefined,
-): { wc: WebContents } | { error: string } {
+): { wc: WebContents; ownerWindowId: number } | { error: string } {
   if (panelId) {
     const info = getWindowPanels().find((p) => p.panelId === panelId)
     if (!info || info.type !== 'browser') return { error: 'no-such-browser' }
     const win = getWindow(info.ownerWindowId)
     if (!win || win.isDestroyed()) return { error: 'no-host-window' }
-    return { wc: win.webContents }
+    return { wc: win.webContents, ownerWindowId: info.ownerWindowId }
   }
   const win = getActiveMainWindow()
   if (!win || win.isDestroyed()) return { error: 'no-host-window' }
-  return { wc: win.webContents }
+  return { wc: win.webContents, ownerWindowId: win.id }
 }
 
 // ---------------------------------------------------------------------------
@@ -209,9 +209,6 @@ function resolveBrowserTargetWindow(
 const FORWARDED_METHODS = new Set([
   'editor.openFile',
   'canvas.createPanel',
-  'panel.setTitle',
-  'panel.list',
-  'panel.focus',
 ])
 
 function unsupported(method: string): InvokeResult {
@@ -243,6 +240,7 @@ export function requiredScopeFor(method: string): string | null | undefined {
     // panels — they need an explicit `panel` grant.
     case 'cate.panel.list':
     case 'cate.panel.focus':
+    case 'cate.panel.close':
       return 'panel'
     default:
       // A panel controlling its own identity (id / title / badge) needs no scope.
@@ -403,6 +401,14 @@ export async function dispatchCateInvoke(
   if (required !== null && !scopeGranted(declared, required)) {
     return { error: 'scope-denied', method }
   }
+  // panel.setTitle is scope-free only for a panel changing its own identity.
+  // Addressing another panel (the CLI's --panel form) requires the panel scope.
+  if (method === 'cate.panel.setTitle') {
+    const target = (args as { panelId?: unknown } | null)?.panelId
+    if (typeof target === 'string' && target !== panelId && !scopeGranted(declared, 'panel')) {
+      return { error: 'scope-denied', method }
+    }
+  }
 
   // Storage (handled in main, backed by storage.ts). Routed by prefix — mirrors
   // requiredScopeFor's storage.* branch — so dispatchStorage's switch is the sole
@@ -423,7 +429,21 @@ export async function dispatchCateInvoke(
     if (scope.caller !== 'first-party' && !(await ensureConsent(extensionId, 'browser'))) {
       return { error: 'consent-denied', method }
     }
-    return forwardToOwner(target.wc, { extensionId, workspaceId, panelId: panelId ?? '', method, args })
+    const result = await forwardToOwner(target.wc, { extensionId, workspaceId, panelId: panelId ?? '', method, args })
+    if (method === 'cate.browser.open' && !a.panelId && result && typeof result === 'object') {
+      const opened = result as { panelId?: unknown; url?: unknown }
+      if (typeof opened.panelId === 'string') {
+        upsertWindowPanel(target.ownerWindowId, {
+          panelId: opened.panelId,
+          type: 'browser',
+          title: typeof opened.url === 'string' ? opened.url : 'Browser',
+          workspaceId,
+          url: typeof opened.url === 'string' ? opened.url : '',
+          focused: false,
+        })
+      }
+    }
+    return result
   }
 
   switch (method) {
@@ -456,6 +476,62 @@ export async function dispatchCateInvoke(
       }
       log.info('[extensions] %s notify (%s): %s', extensionId, a.level ?? 'info', message)
       return { ok: true }
+    }
+
+    case 'cate.panel.list': {
+      // Read the active renderer synchronously so a just-created panel is
+      // visible before the 200ms cross-window discovery report lands, then add
+      // panels owned by detached/other windows from main's authoritative union.
+      const local = await scope.forward({ extensionId, workspaceId, panelId: panelId ?? '', method, args })
+      if (!Array.isArray(local)) return local
+      const rows = [...local] as Array<Record<string, unknown>>
+      const seen = new Set(rows.map((row) => row.panelId).filter((id): id is string => typeof id === 'string'))
+      for (const panel of getWindowPanels()) {
+        if (panel.workspaceId !== workspaceId || seen.has(panel.panelId)) continue
+        rows.push({
+          panelId: panel.panelId,
+          type: panel.type,
+          title: panel.title,
+          focused: panel.focused === true,
+          ...(panel.filePath ? { filePath: panel.filePath } : {}),
+          ...(panel.type === 'browser' ? { url: panel.url ?? '' } : {}),
+        })
+        seen.add(panel.panelId)
+      }
+      return rows
+    }
+
+    case 'cate.panel.focus': {
+      const a = (args ?? {}) as { panelId?: unknown }
+      const targetPanelId = typeof a.panelId === 'string' ? a.panelId : ''
+      if (!targetPanelId) return { error: 'bad-args', method }
+      const owner = getWindowPanels().find((p) => p.panelId === targetPanelId && p.workspaceId === workspaceId)
+      if (owner) {
+        return revealWindowPanel(targetPanelId) ? { ok: true } : { error: 'panel-not-revealable', method }
+      }
+      // Fresh local panels can beat the debounced cross-window report.
+      return scope.forward({ extensionId, workspaceId, panelId: panelId ?? '', method, args })
+    }
+
+    case 'cate.panel.setTitle':
+    case 'cate.panel.close': {
+      const a = (args ?? {}) as { panelId?: unknown }
+      const targetPanelId = typeof a.panelId === 'string' && a.panelId ? a.panelId : panelId ?? ''
+      if (!targetPanelId) return { error: 'bad-args', method }
+      const routedArgs = { ...((args ?? {}) as Record<string, unknown>), panelId: targetPanelId }
+      const owner = getWindowPanels().find((p) => p.panelId === targetPanelId && p.workspaceId === workspaceId)
+      const win = owner ? getWindow(owner.ownerWindowId) : undefined
+      if (win && !win.isDestroyed()) {
+        return forwardToOwner(win.webContents, {
+          extensionId,
+          workspaceId,
+          panelId: panelId ?? '',
+          method,
+          args: routedArgs,
+        })
+      }
+      // Same fresh-panel race as list/focus: try the active workspace renderer.
+      return scope.forward({ extensionId, workspaceId, panelId: panelId ?? '', method, args: routedArgs })
     }
 
     // --- Agent: drive a pi session through the bundled pi --------------------

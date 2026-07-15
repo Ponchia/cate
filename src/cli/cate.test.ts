@@ -286,7 +286,7 @@ describe('run — exit codes', () => {
     const fetchMock = vi.fn()
     const deps = makeDeps({ fetch: fetchMock as unknown as typeof fetch })
     expect(await run(['--version'], deps)).toBe(0)
-    expect(deps.out).toEqual([CLI_VERSION])
+    expect(deps.out).toEqual([`cate cli ${CLI_VERSION}`])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -573,5 +573,69 @@ describe('--max validation', () => {
     const deps = makeDeps()
     expect(await run(['browser', 'snapshot', '--max', 'lots'], deps)).toBe(2)
     expect(deps.err.join('\n')).toMatch(/invalid --max/)
+  })
+})
+
+describe('strict command contracts', () => {
+  it('rejects unexpected positional arguments instead of silently ignoring them', () => {
+    expect(() => buildRequest(['panel', 'list', 'extra'], noFlags)).toThrow(/unexpected argument/)
+    expect(() => buildRequest(['browser', 'open', 'https://x', 'extra'], noFlags)).toThrow(/unexpected argument/)
+    expect(() => buildRequest(['browser', 'press', '@e1', 'Enter', 'extra'], noFlags)).toThrow(/unexpected argument/)
+  })
+
+  it('rejects command-specific flags on unrelated commands', () => {
+    expect(() => buildRequest(['version'], { ...noFlags, max: '1' })).toThrow(/--max is only valid/)
+    expect(() => buildRequest(['editor', 'open', 'x.ts'], { ...noFlags, panel: 'p1' })).toThrow(/--panel is not valid/)
+  })
+
+  it('maps panel close and resolves its short id', () => {
+    expect(buildRequest(['panel', 'close', 'abcd1234'], noFlags)).toEqual({
+      method: 'cate.panel.close',
+      args: { panelId: 'abcd1234' },
+      resolvePanel: 'panel',
+    })
+  })
+
+  it('resolves --panel for set-title against all panel types', () => {
+    expect(buildRequest(['panel', 'set-title', 'Renamed'], { ...noFlags, panel: 'abcd1234' })).toEqual({
+      method: 'cate.panel.setTitle',
+      args: { title: 'Renamed', panelId: 'abcd1234' },
+      resolvePanel: 'panel',
+    })
+  })
+})
+
+describe('terminal panel identity', () => {
+  it('uses CATE_PANEL_ID for an unaddressed set-title', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ result: null }))
+    const deps = makeDeps({
+      fetch: fetchMock as unknown as typeof fetch,
+      env: { CATE_API: 'http://127.0.0.1:1', CATE_TOKEN: 't', CATE_PANEL_ID: 'full-panel-id' },
+    })
+    expect(await run(['panel', 'set-title', 'My', 'Terminal'], deps)).toBe(0)
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body).toEqual({ method: 'cate.panel.setTitle', args: { title: 'My Terminal', panelId: 'full-panel-id' } })
+    expect(deps.out).toEqual(['ok'])
+  })
+
+  it('requires --panel when the shell has no panel identity', async () => {
+    const fetchMock = vi.fn()
+    const deps = makeDeps({ fetch: fetchMock as unknown as typeof fetch })
+    expect(await run(['panel', 'set-title', 'x'], deps)).toBe(2)
+    expect(deps.err.join('\n')).toMatch(/requires --panel/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('human-facing output and help', () => {
+  it('formats ui.notify as ok', () => {
+    expect(formatHuman('cate.ui.notify', { ok: true })).toBe('ok')
+  })
+
+  it('shows group-specific help', async () => {
+    const deps = makeDeps()
+    expect(await run(['browser', '--help'], deps)).toBe(0)
+    expect(deps.out.join('\n')).toMatch(/^Usage: cate browser/)
+    expect(deps.out.join('\n')).not.toContain('Groups:')
   })
 })

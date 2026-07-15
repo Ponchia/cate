@@ -61,16 +61,31 @@ vi.mock('./ExtensionManager', () => ({
 // importing cateApiHandlers doesn't drag in the proxy/server/IPC machinery.
 vi.mock('./proxyServer', () => ({ getProxyUrlFor: vi.fn() }))
 vi.mock('./ExtensionServerManager', () => ({ extensionServerManager: {} }))
-const { activeWindow, windowsById, windowPanelList } = vi.hoisted(() => ({
+const { activeWindow, windowsById, windowPanelList, revealWindowPanel, upsertWindowPanel } = vi.hoisted(() => ({
   activeWindow: { value: undefined as unknown },
   windowsById: new Map<number, unknown>(),
-  windowPanelList: { value: [] as Array<{ panelId: string; type: string; ownerWindowId: number }> },
+  windowPanelList: { value: [] as Array<{
+    panelId: string
+    type: string
+    title?: string
+    workspaceId?: string
+    ownerWindowId: number
+    filePath?: string
+    url?: string
+    focused?: boolean
+  }> },
+  revealWindowPanel: vi.fn(() => true),
+  upsertWindowPanel: vi.fn(),
 }))
 vi.mock('../windowRegistry', () => ({
   getActiveMainWindow: () => activeWindow.value,
   getWindow: (id: number) => windowsById.get(id),
 }))
-vi.mock('../windowPanels', () => ({ getWindowPanels: () => windowPanelList.value }))
+vi.mock('../windowPanels', () => ({
+  getWindowPanels: () => windowPanelList.value,
+  revealWindowPanel,
+  upsertWindowPanel,
+}))
 vi.mock('../runtime/locator', () => ({
   LOCAL_RUNTIME_ID: 'local',
   parseLocator: (raw: string) => ({ runtimeId: 'local', path: raw }),
@@ -122,6 +137,9 @@ beforeEach(() => {
   activeWindow.value = undefined
   windowsById.clear()
   windowPanelList.value = []
+  revealWindowPanel.mockClear()
+  revealWindowPanel.mockReturnValue(true)
+  upsertWindowPanel.mockClear()
   kv.clear()
   panelKv.clear()
   showOsNotification.mockClear()
@@ -188,16 +206,50 @@ describe('dispatchCateInvoke — Kitchen Sink reverse API', () => {
     ['cate.panel.setTitle', { title: 'Renamed' }],
     ['cate.panel.list', {}],
     ['cate.panel.focus', { panelId: 'p1' }],
+    ['cate.panel.close', { panelId: 'p1' }],
   ])('forwards %s to the owning renderer', async (method, args) => {
     const forward = vi.fn(async () => ({ panelId: 'new' }))
     const res = await dispatchCateInvoke(scope(forward), method, args)
     expect(forward).toHaveBeenCalledTimes(1)
-    expect(forward).toHaveBeenCalledWith(expect.objectContaining({ method, args, extensionId: EXT, workspaceId: WS, panelId: PANEL }))
+    expect(forward).toHaveBeenCalledWith(expect.objectContaining({
+      method,
+      args: expect.objectContaining(args),
+      extensionId: EXT,
+      workspaceId: WS,
+      panelId: PANEL,
+    }))
     expect(res).toEqual({ panelId: 'new' })
   })
 
   it('rejects unknown methods as unsupported', async () => {
     expect(await dispatchCateInvoke(scope(), 'cate.bogus.method', undefined)).toEqual({ error: 'unsupported', method: 'cate.bogus.method' })
+  })
+
+  it('panel.list merges immediate local rows with detached-window rows', async () => {
+    windowPanelList.value = [{
+      panelId: 'detached-browser',
+      type: 'browser',
+      title: 'Docs',
+      workspaceId: WS,
+      ownerWindowId: 2,
+      url: 'https://docs.example/',
+      focused: true,
+    }]
+    const forward = vi.fn(async () => [
+      { panelId: 'local-editor', type: 'editor', title: 'a.ts', focused: false, filePath: '/ws/root/a.ts' },
+    ])
+
+    expect(await dispatchCateInvoke(scope(forward), 'cate.panel.list', {})).toEqual([
+      { panelId: 'local-editor', type: 'editor', title: 'a.ts', focused: false, filePath: '/ws/root/a.ts' },
+      { panelId: 'detached-browser', type: 'browser', title: 'Docs', focused: true, url: 'https://docs.example/' },
+    ])
+  })
+
+  it('panel.focus routes a detached panel through the cross-window revealer', async () => {
+    windowPanelList.value = [{ panelId: 'detached', type: 'editor', workspaceId: WS, ownerWindowId: 2 }]
+
+    expect(await dispatchCateInvoke(scope(), 'cate.panel.focus', { panelId: 'detached' })).toEqual({ ok: true })
+    expect(revealWindowPanel).toHaveBeenCalledWith('detached')
   })
 
   it('denies methods whose scope the manifest does not declare', async () => {
@@ -412,9 +464,10 @@ describe('dispatchCateInvoke — cate.browser.* namespace', () => {
     expect(requiredScopeFor('cate.browser.press')).toBe('browser')
   })
 
-  it('panel.list/focus need the `panel` scope; panel self-identity stays scope-free', () => {
+  it('panel.list/focus/close need the `panel` scope; panel self-identity stays scope-free', () => {
     expect(requiredScopeFor('cate.panel.list')).toBe('panel')
     expect(requiredScopeFor('cate.panel.focus')).toBe('panel')
+    expect(requiredScopeFor('cate.panel.close')).toBe('panel')
     expect(requiredScopeFor('cate.panel.setTitle')).toBeNull()
   })
 

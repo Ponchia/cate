@@ -346,6 +346,7 @@ export async function getOrCreate(panelId: string, opts: CreateOpts): Promise<Re
       cwd: resolvedCwd,
       shell: (shell as string) || undefined,
       workspaceId: opts.workspaceId,
+      panelId,
     })
 
     // If the entry was disposed while we were waiting, dispose() couldn't kill

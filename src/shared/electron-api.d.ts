@@ -56,6 +56,8 @@ export interface ElectronAPI {
     cwd?: string
     shell?: string
     workspaceId?: string
+    /** Owning Cate panel, exposed to the spawned shell as CATE_PANEL_ID. */
+    panelId?: string
   }): Promise<string>
 
   /** Write data (keystrokes) to a terminal. */

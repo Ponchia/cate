@@ -93,7 +93,9 @@ export const PANEL_DEFINITIONS: Record<PanelType, SharedPanelDefinition> = {
     minimumSize: { width: 400, height: 300 },
     ghostSvg: ghost('rgb(74,158,255)', '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'),
     canLiveOnCanvas: true,
-    keepMountedOffscreen: false,
+    // Browser automation must remain usable when an API caller creates the
+    // panel in the background without moving the user's camera.
+    keepMountedOffscreen: true,
     keepMountedWhenTabHidden: true,
   },
   editor: {

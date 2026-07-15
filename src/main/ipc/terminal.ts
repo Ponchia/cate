@@ -226,7 +226,7 @@ function cleanupTerminal(id: string): void {
 }
 
 async function spawnTerminal(
-  options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string },
+  options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string; panelId?: string },
   ownerWindowId: number,
 ): Promise<string> {
   const { runtimeId, path: cwdPath } = parseLocator(options.cwd ?? '')
@@ -246,7 +246,11 @@ async function spawnTerminal(
   if (options.workspaceId) {
     const endpoint = await workspaceCateApi.ensureEndpoint(options.workspaceId)
     if (endpoint) {
-      cateApiEnv = { CATE_API: `http://127.0.0.1:${endpoint.port}`, CATE_TOKEN: endpoint.token }
+      cateApiEnv = {
+        CATE_API: `http://127.0.0.1:${endpoint.port}`,
+        CATE_TOKEN: endpoint.token,
+        ...(options.panelId ? { CATE_PANEL_ID: options.panelId } : {}),
+      }
     }
   }
 

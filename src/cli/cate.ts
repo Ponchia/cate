@@ -30,7 +30,7 @@ import { parseArgs } from 'node:util'
 
 /** Version of the CLI tool itself (printed by --version). The API's own version
  *  is reachable via `cate version`. */
-export const CLI_VERSION = '2'
+export const CLI_VERSION = '3'
 
 /** Default request timeout (ms) when --timeout is not given. */
 export const DEFAULT_TIMEOUT_MS = 30_000
@@ -98,6 +98,19 @@ function needPositiveInt(value: string, name: string): number {
   return n
 }
 
+/** Enforce exact positional arity for fixed-shape verbs. Variadic verbs
+ * (notify, type, set-title) validate their own minimum and deliberately skip
+ * this helper. */
+function exact(args: string[], count: number): string[] {
+  if (args.length > count) throw new UsageError(`unexpected argument: ${args[count]}`)
+  return args
+}
+
+function noArgs(args: string[]): Record<string, never> {
+  exact(args, 0)
+  return {}
+}
+
 /** Split a `path[:line[:col]]` target into openFile args. Only a TRAILING
  *  `:<digits>` (or `:<digits>:<digits>`) counts as a position, so Windows drive
  *  prefixes and stray colons inside names stay part of the path. */
@@ -113,13 +126,13 @@ export const GROUPS: Record<string, Group> = {
   browser: {
     // No `list` — `cate panel list` is the single enumeration surface (browser
     // panels carry their url there).
-    open: (a) => ({ method: 'cate.browser.open', args: { url: need(a[0], 'url') } }),
+    open: (a) => ({ method: 'cate.browser.open', args: { url: need(exact(a, 1)[0], 'url') } }),
     // No `current`/`back`/`forward` — `wait` answers "where am I / is it
     // settled" (it returns instantly when idle), and agents navigate by URL.
-    reload: () => ({ method: 'cate.browser.reload', args: {} }),
-    screenshot: () => ({ method: 'cate.browser.screenshot', args: {} }),
-    snapshot: () => ({ method: 'cate.browser.snapshot', args: {} }),
-    click: (a) => ({ method: 'cate.browser.click', args: { ref: need(a[0], 'ref') } }),
+    reload: (a) => ({ method: 'cate.browser.reload', args: noArgs(a) }),
+    screenshot: (a) => ({ method: 'cate.browser.screenshot', args: noArgs(a) }),
+    snapshot: (a) => ({ method: 'cate.browser.snapshot', args: noArgs(a) }),
+    click: (a) => ({ method: 'cate.browser.click', args: { ref: need(exact(a, 1)[0], 'ref') } }),
     type: (a) => ({
       method: 'cate.browser.type',
       // Join the remaining positionals so multi-word text needs no quoting.
@@ -127,12 +140,12 @@ export const GROUPS: Record<string, Group> = {
     }),
     wait: (a) => ({
       method: 'cate.browser.wait',
-      args: a[0] !== undefined ? { timeoutMs: needPositiveInt(a[0], 'ms') } : {},
+      args: exact(a, 1)[0] !== undefined ? { timeoutMs: needPositiveInt(a[0], 'ms') } : {},
     }),
     // `press <key>` sends to whatever the guest has focused; `press <ref> <key>`
     // focuses the element first.
     press: (a) =>
-      a.length >= 2
+      exact(a, 2).length >= 2
         ? { method: 'cate.browser.press', args: { ref: a[0], key: need(a[1], 'key') } }
         : { method: 'cate.browser.press', args: { key: need(a[0], 'key') } },
   },
@@ -146,19 +159,27 @@ export const GROUPS: Record<string, Group> = {
   editor: {
     // openFileAsPanel routes by file type (a PDF opens a document panel), so
     // this one verb covers every file-backed panel — no `canvas create --file`.
-    open: (a) => ({ method: 'cate.editor.openFile', args: parseFileTarget(need(a[0], 'path')) }),
+    open: (a) => ({ method: 'cate.editor.openFile', args: parseFileTarget(need(exact(a, 1)[0], 'path')) }),
   },
   canvas: {
-    create: (a) => ({ method: 'cate.canvas.createPanel', args: { type: need(a[0], 'type') } }),
+    create: (a) => ({ method: 'cate.canvas.createPanel', args: { type: need(exact(a, 1)[0], 'type') } }),
   },
   panel: {
-    list: () => ({ method: 'cate.panel.list', args: {} }),
+    list: (a) => ({ method: 'cate.panel.list', args: noArgs(a) }),
     focus: (a) => ({
       method: 'cate.panel.focus',
-      args: { panelId: need(a[0], 'panelId') },
+      args: { panelId: need(exact(a, 1)[0], 'panelId') },
       resolvePanel: 'panel',
     }),
-    'set-title': (a) => ({ method: 'cate.panel.setTitle', args: { title: needRest(a, 'title') } }),
+    close: (a) => ({
+      method: 'cate.panel.close',
+      args: { panelId: need(exact(a, 1)[0], 'panelId') },
+      resolvePanel: 'panel',
+    }),
+    'set-title': (a) => ({
+      method: 'cate.panel.setTitle',
+      args: { title: needRest(a, 'title') },
+    }),
   },
   // NOTE: no `agent` or `storage` group. Those scopes are never granted to the
   // first-party terminal endpoint this CLI talks to (see workspaceCateApi
@@ -227,12 +248,19 @@ export function buildRequest(positionals: string[], flags: Flags): Request {
     req = builder(positionals.slice(2), flags)
   }
 
-  // --panel addresses a specific target panel (args.panelId). Explicit args win.
-  // Every browser verb targets a panel, so a --panel short prefix on one is
-  // resolved against the browser entries of `panel list`.
-  if (flags.panel !== undefined && req.args.panelId === undefined) {
+  const panelFlagAllowed = req.method.startsWith('cate.browser.') || req.method === 'cate.panel.setTitle'
+  if (flags.panel !== undefined && !panelFlagAllowed) {
+    throw new UsageError(`--panel is not valid for ${positionals.slice(0, 2).join(' ')}`)
+  }
+  if (flags.max !== undefined && req.method !== 'cate.browser.snapshot') {
+    throw new UsageError('--max is only valid for browser snapshot')
+  }
+
+  // --panel addresses a specific target panel (args.panelId). Browser targets
+  // resolve only against browser rows; set-title accepts every panel type.
+  if (flags.panel !== undefined) {
     req.args.panelId = flags.panel
-    if (req.method.startsWith('cate.browser.')) req.resolvePanel = 'browser'
+    req.resolvePanel = req.method.startsWith('cate.browser.') ? 'browser' : 'panel'
   }
   return req
 }
@@ -438,6 +466,11 @@ export function formatHuman(method: string, value: unknown, opts?: { max?: numbe
     case 'cate.browser.press':
       // These resolve to { ok: true } — nothing to print.
       return 'ok'
+    case 'cate.ui.notify':
+    case 'cate.panel.focus':
+    case 'cate.panel.setTitle':
+    case 'cate.panel.close':
+      return 'ok'
     case 'cate.panel.list':
       return formatPanelList(value)
     case 'cate.editor.openFile':
@@ -469,7 +502,7 @@ Groups:
   ui         notify <message...>
   editor     open <path[:line[:col]]>
   canvas     create <type>
-  panel      list | focus <id> | set-title <title...>
+  panel      list | focus <id> | close <id> | set-title <title...>
 
 \`panel list\` enumerates every panel (editors with file paths, browsers with
 urls); its short ids feed \`panel focus\` and \`--panel\`.
@@ -480,10 +513,29 @@ Flags:
   --max <n>        snapshot: max ref lines to print (default ${SNAPSHOT_MAX_DEFAULT}; 0 = all)
   --timeout <ms>   request timeout (default ${DEFAULT_TIMEOUT_MS})
   -h, --help       show this help
-  --version        print the CLI version
+  --version        print the CLI version (distinct from host API version)
 
 Requires CATE_API and CATE_TOKEN in the environment. Cate injects them into new
 terminals while "Command-line control (cate CLI)" is enabled (Settings → Terminal).`
+
+const GROUP_USAGE: Record<string, string> = {
+  browser: `Usage: cate browser open <url> | wait [ms] | reload | screenshot | snapshot\n` +
+    `       cate browser click <ref> | type <ref> <text...> | press [ref] <key>`,
+  ui: 'Usage: cate ui notify <message...>',
+  editor: 'Usage: cate editor open <path[:line[:col]]>',
+  canvas: 'Usage: cate canvas create <type>',
+  panel: 'Usage: cate panel list | focus <id> | close <id> | set-title <title...>',
+}
+
+function helpFor(positionals: string[]): string {
+  return GROUP_USAGE[positionals[0]] ?? USAGE
+}
+
+function writeUsageError(deps: RunDeps, message: string): number {
+  deps.stderr(`cate: ${message}`)
+  deps.stderr("Try 'cate --help' for usage.")
+  return 2
+}
 
 export interface RunDeps {
   fetch: typeof fetch
@@ -498,18 +550,16 @@ export async function run(argv: string[], deps: RunDeps): Promise<number> {
   try {
     parsed = parseCli(argv)
   } catch (err) {
-    deps.stderr(`cate: ${err instanceof Error ? err.message : String(err)}`)
-    deps.stderr(USAGE)
-    return 2
+    return writeUsageError(deps, err instanceof Error ? err.message : String(err))
   }
 
   // Explicit --version / --help win even with no positional command.
   if (parsed.flags.version) {
-    deps.stdout(CLI_VERSION)
+    deps.stdout(`cate cli ${CLI_VERSION}`)
     return 0
   }
   if (parsed.flags.help) {
-    deps.stdout(USAGE)
+    deps.stdout(helpFor(parsed.positionals))
     return 0
   }
   if (parsed.positionals.length === 0) {
@@ -521,21 +571,25 @@ export async function run(argv: string[], deps: RunDeps): Promise<number> {
   try {
     req = buildRequest(parsed.positionals, parsed.flags)
   } catch (err) {
-    deps.stderr(`cate: ${err instanceof Error ? err.message : String(err)}`)
-    deps.stderr(USAGE)
-    return 2
+    return writeUsageError(deps, err instanceof Error ? err.message : String(err))
   }
 
   const timeout = parsed.flags.timeout ? Number(parsed.flags.timeout) : DEFAULT_TIMEOUT_MS
-  if (!Number.isFinite(timeout) || timeout <= 0) {
-    deps.stderr(`cate: invalid --timeout: ${parsed.flags.timeout}`)
-    return 2
+  if (!Number.isInteger(timeout) || timeout <= 0) {
+    return writeUsageError(deps, `invalid --timeout: ${parsed.flags.timeout}`)
   }
 
   const max = parsed.flags.max !== undefined ? Number(parsed.flags.max) : undefined
   if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
-    deps.stderr(`cate: invalid --max: ${parsed.flags.max}`)
-    return 2
+    return writeUsageError(deps, `invalid --max: ${parsed.flags.max}`)
+  }
+
+  // A terminal knows its own panel id; an autonomous agent shell may not. The
+  // latter can still retitle explicitly with --panel <id> from `panel list`.
+  if (req.method === 'cate.panel.setTitle' && req.args.panelId === undefined) {
+    const panelId = deps.env.CATE_PANEL_ID
+    if (!panelId) return writeUsageError(deps, 'panel set-title requires --panel outside a Cate terminal panel')
+    req.args.panelId = panelId
   }
 
   const sendDeps: SendDeps = { fetch: deps.fetch, env: deps.env, timeout }
