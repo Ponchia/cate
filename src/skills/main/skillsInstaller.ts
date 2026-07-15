@@ -23,6 +23,7 @@ import * as savedSkills from './savedSkills'
 import { getToken } from './skillSources'
 import { slugifySkillName, type InstalledSkill, type SkillEntry, type SkillTargetId } from '../../shared/skills'
 import { fetchSkillFiles, type SkillFile } from './githubCrawl'
+import { skillPathSegments } from './skillPath'
 
 // ---------------------------------------------------------------------------
 // Manifest (<workspace>/.cate/skills.json)
@@ -133,10 +134,12 @@ export async function writeSkillToWorkspace(args: WriteSkillArgs): Promise<Write
   let installedHostPath: string
 
   if (info.layout === 'folder') {
+    // Validate the complete bundle before creating directories or writing files,
+    // so a malformed source cannot escape (or partially modify) the skill root.
+    const bundle = files.map((file) => ({ file, segments: skillPathSegments(file.relPath) }))
     const dir = hostJoin(runtimeId, root, slug)
     await mkdirp(runtime, runtimeId, hostCwd, dir)
-    for (const f of files) {
-      const segs = f.relPath.split('/')
+    for (const { file: f, segments: segs } of bundle) {
       const target = hostJoin(runtimeId, dir, ...segs)
       if (segs.length > 1) {
         await mkdirp(runtime, runtimeId, hostCwd, hostJoin(runtimeId, dir, ...segs.slice(0, -1)))
