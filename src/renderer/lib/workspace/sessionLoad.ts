@@ -5,7 +5,7 @@
 
 import log from '../logger'
 import { isLocalLocator } from '../../../main/runtime/locator'
-import { applySidebarSession } from './sidebarSession'
+import { applySidebarSession, dedupeSnapshotsByRoot } from './sidebarSession'
 import { projectFilesToSnapshot } from './sessionSerialize'
 import type {
   SessionSnapshot,
@@ -85,7 +85,10 @@ async function loadFromProjectFiles(): Promise<MultiWorkspaceSession | null> {
   // the active workspace. Falls back to recentProjects order / index 0 when no
   // arrangement is stored yet (first run after upgrade).
   const sidebarSession = await window.electronAPI.sidebarSessionGet().catch(() => null)
-  const { workspaces, selectedWorkspaceIndex } = applySidebarSession(snapshots, sidebarSession)
+  const { workspaces, selectedWorkspaceIndex } = applySidebarSession(
+    dedupeSnapshotsByRoot(snapshots),
+    sidebarSession,
+  )
 
   return {
     version: 2,

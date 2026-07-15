@@ -26,7 +26,6 @@ export default function DockResizeHandle({ direction, onResize, onDoubleClick }:
       unpinCursorRef.current = null
       if (dragging.current) {
         dragging.current = false
-        document.body.classList.remove('canvas-interacting')
         document.body.style.cursor = ''
         document.body.style.userSelect = ''
       }

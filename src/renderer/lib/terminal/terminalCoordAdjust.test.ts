@@ -5,6 +5,8 @@ import { shouldAdjustTerminalCoords } from './terminalCoordAdjust'
 const LEFT = 0
 const MIDDLE = 1
 const RIGHT = 2
+const LEFT_HELD = 1
+const MIDDLE_HELD = 4
 
 // A zoomed-in canvas: .xterm-screen carries a residual scale of 2, so xterm's
 // getBoundingClientRect()-based hit-testing is off by 2x and needs adjusting for
@@ -13,11 +15,11 @@ const ZOOMED = 2
 
 describe('shouldAdjustTerminalCoords', () => {
   it('adjusts a left-button press on a zoomed canvas (xterm selection needs it)', () => {
-    expect(shouldAdjustTerminalCoords('mousedown', LEFT, false, ZOOMED)).toBe(true)
+    expect(shouldAdjustTerminalCoords('mousedown', LEFT, false, ZOOMED, LEFT_HELD)).toBe(true)
   })
 
   it('adjusts left-button moves on a zoomed canvas (drag-select)', () => {
-    expect(shouldAdjustTerminalCoords('mousemove', LEFT, false, ZOOMED)).toBe(true)
+    expect(shouldAdjustTerminalCoords('mousemove', LEFT, false, ZOOMED, LEFT_HELD)).toBe(true)
   })
 
   // --- The middle-click-pan regression guard -------------------------------
@@ -28,23 +30,30 @@ describe('shouldAdjustTerminalCoords', () => {
   // guard that, when removed, reintroduces the "middle-click drag offsets the
   // pan at the beginning" bug.
   it('does NOT adjust a middle-button press on a zoomed canvas (pan start)', () => {
-    expect(shouldAdjustTerminalCoords('mousedown', MIDDLE, false, ZOOMED)).toBe(false)
+    expect(shouldAdjustTerminalCoords('mousedown', MIDDLE, false, ZOOMED, MIDDLE_HELD)).toBe(false)
   })
 
   it('does NOT adjust a right-button press on a zoomed canvas (pan start)', () => {
-    expect(shouldAdjustTerminalCoords('mousedown', RIGHT, false, ZOOMED)).toBe(false)
+    expect(shouldAdjustTerminalCoords('mousedown', RIGHT, false, ZOOMED, 2)).toBe(false)
+  })
+
+  it('does NOT adjust a move while the middle button is held, even if the body class is absent', () => {
+    // Mousemove.button is 0 in Chromium; MouseEvent.buttons is what identifies
+    // the still-held middle button. The body class is a second guard, not the
+    // only way to keep a canvas pan out of xterm's coordinate rewrite.
+    expect(shouldAdjustTerminalCoords('mousemove', LEFT, false, ZOOMED, MIDDLE_HELD)).toBe(false)
   })
 
   it('never adjusts while a canvas gesture owns the pointer (canvas-interacting)', () => {
     // Every event type stays raw once a pan/resize holds the body class.
-    expect(shouldAdjustTerminalCoords('mousedown', LEFT, true, ZOOMED)).toBe(false)
-    expect(shouldAdjustTerminalCoords('mousemove', LEFT, true, ZOOMED)).toBe(false)
-    expect(shouldAdjustTerminalCoords('mouseup', LEFT, true, ZOOMED)).toBe(false)
+    expect(shouldAdjustTerminalCoords('mousedown', LEFT, true, ZOOMED, LEFT_HELD)).toBe(false)
+    expect(shouldAdjustTerminalCoords('mousemove', LEFT, true, ZOOMED, LEFT_HELD)).toBe(false)
+    expect(shouldAdjustTerminalCoords('mouseup', LEFT, true, ZOOMED, 0)).toBe(false)
   })
 
   it('does not adjust when the canvas is not zoomed (effective ~= 1)', () => {
-    expect(shouldAdjustTerminalCoords('mousedown', LEFT, false, 1)).toBe(false)
-    expect(shouldAdjustTerminalCoords('mousemove', LEFT, false, 1.0005)).toBe(false)
+    expect(shouldAdjustTerminalCoords('mousedown', LEFT, false, 1, LEFT_HELD)).toBe(false)
+    expect(shouldAdjustTerminalCoords('mousemove', LEFT, false, 1.0005, 0)).toBe(false)
   })
 })
 
@@ -61,8 +70,9 @@ function terminalRewrite(
   interacting: boolean,
   clientX: number,
   effective: number,
+  buttons: number,
 ): number {
-  if (!shouldAdjustTerminalCoords(type, button, interacting, effective)) return clientX
+  if (!shouldAdjustTerminalCoords(type, button, interacting, effective, buttons)) return clientX
   return clientX / effective // rect.left = 0
 }
 
@@ -73,12 +83,13 @@ describe('middle-click drag over a terminal does not offset the pan at the start
     // 1. Middle-button mousedown at raw client x = 400. canvas-interacting is
     //    NOT set yet (the canvas sets it in the bubble phase, after this capture
     //    handler). The pan records this as its origin (lastPanPos).
-    const panOrigin = terminalRewrite('mousedown', MIDDLE, false, 400, effective)
+    const panOrigin = terminalRewrite('mousedown', MIDDLE, false, 400, effective, MIDDLE_HELD)
     expect(panOrigin).toBe(400) // left RAW by the guard — not 200
 
-    // 2. Pan is now active -> canvas-interacting is held. The pointer moves to
-    //    raw client x = 410 (10px right). The move stays raw too.
-    const firstMove = terminalRewrite('mousemove', LEFT, true, 410, effective)
+    // 2. The pointer moves to raw client x = 410 (10px right). Even if the
+    //    shared body class is missing, buttons=4 identifies the middle drag and
+    //    keeps the move raw instead of feeding adjusted coordinates to canvas.
+    const firstMove = terminalRewrite('mousemove', LEFT, false, 410, effective, MIDDLE_HELD)
     expect(firstMove).toBe(410)
 
     // 3. The canvas pan applies (move - origin) straight to the viewport offset.

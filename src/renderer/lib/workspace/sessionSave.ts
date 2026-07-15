@@ -156,6 +156,17 @@ export async function saveSession(): Promise<void> {
     log.warn('[session] Dock window listing failed:', err)
   }
 
+  // One owner workspace per root. Legacy state may still contain duplicates;
+  // the selected workspace owns persistence, otherwise the first one does.
+  const workspacesByRoot = new Map<string, typeof persistableWorkspaces[number]>()
+  for (const w of persistableWorkspaces) {
+    if (!w.rootPath) continue
+    const existing = workspacesByRoot.get(w.rootPath)
+    if (!existing || w.id === updatedState.selectedWorkspaceId) {
+      workspacesByRoot.set(w.rootPath, w)
+    }
+  }
+
   // Remote (cate-runtime://) workspaces can't use the local .cate/ files —
   // their tree lives on a runtime. Collect their full snapshots + reconnect
   // info into the electron-store remoteProjects list so restart can rebuild and
@@ -165,6 +176,7 @@ export async function saveSession(): Promise<void> {
   for (const snapshot of snapshots) {
     if (!snapshot.rootPath || isLocalLocator(snapshot.rootPath)) continue
     if (!snapshot.connection || snapshot.connection.kind === 'local') continue
+    if (workspacesByRoot.get(snapshot.rootPath)?.id !== snapshot.workspaceId) continue
     remoteEntries.push({
       locator: snapshot.rootPath,
       connection: snapshot.connection,
@@ -184,17 +196,6 @@ export async function saveSession(): Promise<void> {
   // workspace. Local writes to local disk; remote routes through the runtime to
   // the remote repo's .cate/ (projectStateSave is locator-aware). This is what
   // lets a closed remote workspace restore on reopen, exactly like local.
-  // One owner workspace per root. When two share a root (a duplicated workspace),
-  // the SELECTED one owns the write so the live/active layout is what persists;
-  // otherwise the first in order owns it, deterministically.
-  const workspacesByRoot = new Map<string, typeof persistableWorkspaces[number]>()
-  for (const w of persistableWorkspaces) {
-    if (!w.rootPath) continue
-    const existing = workspacesByRoot.get(w.rootPath)
-    if (!existing || w.id === updatedState.selectedWorkspaceId) {
-      workspacesByRoot.set(w.rootPath, w)
-    }
-  }
   for (const snapshot of snapshots) {
     if (!snapshot.rootPath) continue
 

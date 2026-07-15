@@ -140,7 +140,6 @@ export interface AppStoreActions {
   setLocalRuntimePhase: (phase: RuntimePhase) => void
   setWorkspaceColor: (wsId: string, color: string) => void
   renameWorkspace: (wsId: string, name: string) => void
-  duplicateWorkspace: (wsId: string) => string
   closeAllPanels: (wsId: string) => void
   /** Increment a workspace's reload epoch so the main shell remounts and
    *  respawns its terminals after a from-disk layout rebuild. */

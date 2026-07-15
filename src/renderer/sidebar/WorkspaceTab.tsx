@@ -368,7 +368,6 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
       { id: 'select-folder', label: 'Select Project Folder' },
       { id: 'copy-cwd', label: 'Copy Working Directory', enabled: hasCwd },
       { type: 'separator' },
-      { id: 'duplicate', label: 'Duplicate Workspace' },
       {
         id: 'close-panels',
         // Panels living in detached windows are NOT closed by this — say so.
@@ -410,7 +409,6 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         if (dir) navigator.clipboard.writeText(dir)
         break
       }
-      case 'duplicate': app.duplicateWorkspace(workspace.id); break
       case 'close-panels': void closeAllPanelsWithConfirm(workspace.id); break
       case 'remove': void removeWorkspacesWithConfirm([workspace.id]); break
     }

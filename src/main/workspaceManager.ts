@@ -48,13 +48,17 @@ function generateId(): string {
 // it's opened here, so a second Cate (dev vs installed) won't autosave over us.
 // -----------------------------------------------------------------------------
 
-/** True if any workspace other than `exceptId` is rooted at `rootPath`. */
-function rootInUse(rootPath: string, exceptId?: string): boolean {
+/** Workspace other than `exceptId` rooted at `rootPath`, if one exists. */
+function workspaceUsingRoot(rootPath: string, exceptId?: string): WorkspaceInfo | undefined {
   for (const [id, w] of workspaces) {
     if (id === exceptId) continue
-    if (w.rootPath === rootPath) return true
+    if (w.rootPath === rootPath) return w
   }
-  return false
+  return undefined
+}
+
+function rootInUse(rootPath: string, exceptId?: string): boolean {
+  return workspaceUsingRoot(rootPath, exceptId) !== undefined
 }
 
 /** Claim the lock for a root; if a live instance already owns it, warn that
@@ -167,6 +171,18 @@ async function createWorkspace(
     }
   }
 
+  const duplicate = trustedRoot ? workspaceUsingRoot(trustedRoot, resolvedId) : undefined
+  if (duplicate) {
+    return {
+      ok: false,
+      error: {
+        code: 'DUPLICATE_ROOT',
+        message: `This folder is already open in another workspace: ${trustedRoot}`,
+        conflictingWorkspaceId: duplicate.id,
+      },
+    }
+  }
+
   const info: WorkspaceInfo = {
     id: resolvedId,
     name: name ?? 'Workspace',
@@ -237,12 +253,16 @@ async function updateWorkspace(id: string, changes: Partial<Omit<WorkspaceInfo, 
   // duplicate. The renderer redirects to the existing tab before reaching this,
   // but the resolved path is the authority — it catches symlink/trailing-slash
   // aliases the renderer's raw string compare misses.
-  if (nextRootPath && existing.rootPath !== nextRootPath && rootInUse(nextRootPath, id)) {
+  const duplicate = nextRootPath && existing.rootPath !== nextRootPath
+    ? workspaceUsingRoot(nextRootPath, id)
+    : undefined
+  if (duplicate) {
     return {
       ok: false,
       error: {
         code: 'DUPLICATE_ROOT',
         message: `This folder is already open in another workspace: ${nextRootPath}`,
+        conflictingWorkspaceId: duplicate.id,
       },
     }
   }
