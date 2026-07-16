@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  An infinite canvas for your code, terminals, browsers, docs, and AI agents.
+  Mission control for your coding agents: an infinite canvas for terminals, editors, browsers, and docs.
 </p>
 
 <p align="center">
@@ -25,7 +25,9 @@
   <img src="assets/demo-canvas.gif" alt="Cate demo" width="900" />
 </p>
 
-Cate is a desktop IDE built on an infinite canvas. Spread editors, terminals, browsers, docs, and AI agents across freeform space instead of stacking windows and tabs. Float them, dock them into tabs and splits, or detach them into their own OS windows, and Cate restores the whole layout when you reopen the folder.
+Cate is a desktop IDE built on an infinite canvas, made for running many terminals and coding agents at once. Run Claude Code, Codex, or any agent CLI in a Cate terminal and the canvas becomes mission control: every terminal shows whether its agent is working, finished, or waiting on you, and Cate sends a notification the moment one needs input. Spin up parallel git worktrees with one click and each gets its own colored territory on the canvas, so five agents on five branches stay five visibly separate workstreams instead of a pile of tabs.
+
+Around that core is a full IDE: Monaco editors, embedded browsers, document viewers, git tooling, and an in-app agent chat. Float panels anywhere on the canvas, dock them into tabs and splits, or detach them into their own OS windows. Cate restores the whole layout when you reopen the folder.
 
 **Getting started:** open a folder and it becomes a workspace. Right-click to add panels, press `Cmd+K` for the command palette, drag panels onto the dock to build tabs and splits. No config files.
 
@@ -41,10 +43,14 @@ Download a prebuilt release. Don't build from source for daily use.
 
 ## What's inside
 
+- **Agent-aware terminals:** Cate detects coding agents (Claude Code, Codex, and others) running in any terminal. Tabs show live agent state: running, finished, or waiting for input, with an OS notification when an agent needs you. Terminals survive restarts and window moves with scrollback, colors, and full-screen TUIs intact.
+- **Parallel work:** describe what you're working on and Cate creates a git worktree with its own branch, color, and territory on the canvas. Check out a PR straight into a worktree, and symlink `.env` or `node_modules` into every new one automatically.
+- **Agent-drivable browser:** built-in browser panels that agents can control from the shell via the `cate` CLI: open pages, take screenshots, read accessibility snapshots, click and type.
+- **In-app agent chat:** an embedded coding agent (Pi) with chat threads and per-chat model memory. Connect Anthropic, OpenAI Codex, GitHub Copilot, Gemini, OpenRouter, Groq, Mistral, DeepSeek, and more via OAuth or API key.
 - **Canvas & layout:** infinite zoom and pan, docking into tabs and splits across four zones, detachable windows, saved layouts, and multi-project session restore.
-- **Editors & terminals:** Monaco editors with syntax highlighting, multi-cursor, diffs, and Markdown preview; native xterm.js terminals via `node-pty`; document panels for PDFs, DOCX, and images.
+- **Editors & docs:** Monaco editors with syntax highlighting, multi-cursor, diffs, and Markdown preview; document panels for PDFs, DOCX, and images.
 - **Git:** git-aware file tree with live watching, plus a source-control sidebar for staging, branches, worktrees, history, and inline diffs. Full-text search.
-- **AI agents:** in-app coding agent (Pi) with chat threads and per-chat model memory. Connect Anthropic, OpenAI Codex, GitHub Copilot, Gemini, OpenRouter, Groq, Mistral, DeepSeek, and more via OAuth or API key.
+- **Remote workspaces:** connect to a machine over SSH and work on it like a local folder. Terminals, agents, and search run remotely through a lightweight runtime daemon.
 - **Navigation:** canvas-wide search across files, terminal scrollback, and panel titles; command palette; panel-to-panel keyboard navigation.
 
 ## Extensions
@@ -116,15 +122,17 @@ Packaged binaries land in `release/`. The runtime daemon is rebuilt by `bun run 
 ```text
 src/
 ├── agent/      # Embedded Pi coding-agent: process manager, auth, marketplace, panel UI
+├── cli/        # The `cate` CLI available inside Cate terminals (browser control, panels, editor)
 ├── main/       # Electron main process: IPC, workspaces, windows, updater, security
 ├── preload/    # Context-isolated IPC bridge
 ├── renderer/   # React 18 app: canvas, docking, panels, sidebar, stores, hooks
+├── runtime/    # Runtime daemon for remote (SSH) workspaces: terminals, agents, search
 └── shared/     # IPC channels and shared types
 ```
 
 Cate runs all IPC through a context-isolated preload bridge. Filesystem access is scoped to registered workspace roots, browser panels disable node integration, and terminals can't spawn outside approved directories.
 
-**Stack:** Electron 41, React 18, Zustand 5, Monaco 0.52, xterm.js 5.5 + node-pty 1.0, Tailwind 3.4, electron-vite, electron-builder, electron-updater, Sentry. PDFs and DOCX via pdf.js and mammoth, git via simple-git, file watching via chokidar. The agent runtime is `@earendil-works/pi`.
+**Stack:** Electron 41, React 18, Zustand 5, Monaco 0.52, xterm.js 5.5 + node-pty 1.0, Tailwind 3.4, electron-vite, electron-builder, electron-updater, Sentry. PDFs and DOCX via pdf.js and mammoth, git via simple-git, file watching via `@parcel/watcher` and chokidar. The embedded coding agent is built on `@earendil-works/pi`, shipped as an on-demand runtime alongside the app.
 
 ## Contributing
 
