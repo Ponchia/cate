@@ -56,7 +56,7 @@ import { agentManager } from '../../agent/main/agentManager'
 import { getExtensionStorage } from './storage'
 import { getWorkspaceInfo } from '../workspaceManager'
 import { getActiveMainWindow, getWindow } from '../windowRegistry'
-import { getWindowPanels, revealWindowPanel, upsertWindowPanel } from '../windowPanels'
+import { getWindowPanels, removeWindowPanel, revealWindowPanel, upsertWindowPanel } from '../windowPanels'
 import { parseLocator, LOCAL_RUNTIME_ID } from '../runtime/locator'
 import { getAllSettings, getSetting } from '../settingsFile'
 import { resolveActiveTheme } from '../themeBootCache'
@@ -521,17 +521,24 @@ export async function dispatchCateInvoke(
       const routedArgs = { ...((args ?? {}) as Record<string, unknown>), panelId: targetPanelId }
       const owner = getWindowPanels().find((p) => p.panelId === targetPanelId && p.workspaceId === workspaceId)
       const win = owner ? getWindow(owner.ownerWindowId) : undefined
-      if (win && !win.isDestroyed()) {
-        return forwardToOwner(win.webContents, {
-          extensionId,
-          workspaceId,
-          panelId: panelId ?? '',
-          method,
-          args: routedArgs,
-        })
+      const result = await (win && !win.isDestroyed()
+        ? forwardToOwner(win.webContents, {
+            extensionId,
+            workspaceId,
+            panelId: panelId ?? '',
+            method,
+            args: routedArgs,
+          })
+        // Same fresh-panel race as list/focus: try the active workspace renderer.
+        : scope.forward({ extensionId, workspaceId, panelId: panelId ?? '', method, args: routedArgs }))
+      // Evict a successfully closed panel from the cross-window union right
+      // away — the owner's debounced report would otherwise keep serving the
+      // stale row to panel.list, so a close-then-verify caller reads the panel
+      // as still open (the eviction mirror of upsertWindowPanel on create).
+      if (method === 'cate.panel.close' && !(result && typeof result === 'object' && 'error' in result)) {
+        removeWindowPanel(targetPanelId)
       }
-      // Same fresh-panel race as list/focus: try the active workspace renderer.
-      return scope.forward({ extensionId, workspaceId, panelId: panelId ?? '', method, args: routedArgs })
+      return result
     }
 
     // --- Agent: drive a pi session through the bundled pi --------------------

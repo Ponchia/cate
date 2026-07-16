@@ -84,6 +84,21 @@ export function upsertWindowPanel(windowId: number, panel: WindowPanelReport): v
   broadcastWindowPanels()
 }
 
+/** Drop one panel from the union immediately, before the owning renderer's next
+ * debounced report confirms the removal. The close-side mirror of
+ * upsertWindowPanel: without it, a close-then-list caller sees the stale row
+ * merged back in from here for the report interval and reads it as "still
+ * open". The next full report remains authoritative either way. */
+export function removeWindowPanel(panelId: string): void {
+  for (const [windowId, panels] of windowPanels.entries()) {
+    const next = panels.filter((p) => p.panelId !== panelId)
+    if (next.length === panels.length) continue
+    windowPanels.set(windowId, next)
+    broadcastWindowPanels()
+    return
+  }
+}
+
 /**
  * The union of panels across ALL live windows (main + detached), as a shadow
  * list every window can read to discover panels it doesn't host. Each entry

@@ -162,7 +162,16 @@ export const GROUPS: Record<string, Group> = {
     open: (a) => ({ method: 'cate.editor.openFile', args: parseFileTarget(need(exact(a, 1)[0], 'path')) }),
   },
   canvas: {
-    create: (a) => ({ method: 'cate.canvas.createPanel', args: { type: need(exact(a, 1)[0], 'type') } }),
+    // `create browser <url>` seeds the new panel with a page. Without one a
+    // browser panel sits on its start page, which `browser open` can still
+    // navigate later — but seeding up front saves that round trip.
+    create: (a) => {
+      const type = need(exact(a, 2)[0], 'type')
+      if (a[1] !== undefined && type !== 'browser') {
+        throw new UsageError(`unexpected argument: ${a[1]} (only 'canvas create browser' takes a url)`)
+      }
+      return { method: 'cate.canvas.createPanel', args: { type, ...(a[1] !== undefined ? { url: a[1] } : {}) } }
+    },
   },
   panel: {
     list: (a) => ({ method: 'cate.panel.list', args: noArgs(a) }),
@@ -501,7 +510,7 @@ Groups:
              | press [ref] <key>       (Enter, Tab, Escape, arrows, PageDown, ...)
   ui         notify <message...>
   editor     open <path[:line[:col]]>
-  canvas     create <type>
+  canvas     create <type> [url]     (url: browser panels only)
   panel      list | focus <id> | close <id> | set-title <title...>
 
 \`panel list\` enumerates every panel (editors with file paths, browsers with
@@ -523,7 +532,7 @@ const GROUP_USAGE: Record<string, string> = {
     `       cate browser click <ref> | type <ref> <text...> | press [ref] <key>`,
   ui: 'Usage: cate ui notify <message...>',
   editor: 'Usage: cate editor open <path[:line[:col]]>',
-  canvas: 'Usage: cate canvas create <type>',
+  canvas: 'Usage: cate canvas create <type> [url]   (url: browser panels only)',
   panel: 'Usage: cate panel list | focus <id> | close <id> | set-title <title...>',
 }
 

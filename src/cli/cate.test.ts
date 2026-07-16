@@ -99,6 +99,17 @@ describe('buildRequest — per-scope groups', () => {
     })
   })
 
+  it('canvas create browser accepts an optional url', () => {
+    expect(buildRequest(['canvas', 'create', 'browser', 'https://x.com'], noFlags)).toEqual({
+      method: 'cate.canvas.createPanel',
+      args: { type: 'browser', url: 'https://x.com' },
+    })
+  })
+
+  it('canvas create rejects a url for non-browser types', () => {
+    expect(() => buildRequest(['canvas', 'create', 'terminal', 'https://x.com'], noFlags)).toThrow(/browser/)
+  })
+
   it('panel set-title joins the title', () => {
     expect(buildRequest(['panel', 'set-title', 'My', 'Panel'], noFlags)).toEqual({
       method: 'cate.panel.setTitle',

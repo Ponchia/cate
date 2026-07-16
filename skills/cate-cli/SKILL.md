@@ -47,8 +47,10 @@ Home, End — case-insensitive.
 
 ### Reading a screenshot
 
-`cate browser screenshot` prints a single line: the path to a PNG on disk.
-Nothing else goes to stdout. Read that file to see the page:
+`cate browser screenshot` prints a single line: the path to a PNG in the OS
+temp dir (a `cate-screenshots/` folder — take as many as you like, nothing
+lands in the user's Desktop or workspace). Nothing else goes to stdout. Read
+that file to see the page:
 
 ```bash
 shot=$(cate browser screenshot)
@@ -65,9 +67,14 @@ value after `=`:
 url: https://example.com
 title: Example
 [@e12] link "Home"
-[@e13] button "Sign in"
-[@e14] textbox "Search" = "mechanical keyboards"
+[@e13] input:submit "Sign in"
+[@e14] input:search "Search" = "mechanical keyboards"
 ```
+
+Bare `<input>` elements expose their type (`input:search` vs `input:submit`) so
+a field and its submit button never read alike; names come from the aria-label,
+an associated `<label>`, visible text, or the placeholder — whichever exists
+first.
 
 The bracketed token (`@e12`) is the element's **ref**. Feed it back to `click`,
 `type`, or `press`:
@@ -87,6 +94,12 @@ navigation; re-snapshot after one. There is no back/forward/current: navigate
 by URL with `open`, and `wait` doubles as "where am I" since it returns the
 url instantly when the page is idle.
 
+One timing caveat: `wait` polls the page's loading flag, so calling it right
+after an action that *triggers* a navigation (`press Enter`, a `click` on a
+link) can return before loading has even started. When you expect a navigation,
+confirm it from the url `wait` prints (or re-snapshot) instead of treating a
+fast return as "already loaded".
+
 ## Host API groups
 
 Every `cate.*` scope has its own command group with named verbs, so common calls
@@ -100,6 +113,7 @@ cate panel list                   # ALL panels: id, type, path/url/title; * = fo
 cate panel focus 1a2b3c4d         # reveal/focus a panel (short ids from `list` ok)
 cate panel close 1a2b3c4d         # close a panel without revealing it first
 cate canvas create terminal       # auto-place a new panel in the background
+cate canvas create browser https://x.com  # browser panels can seed a url
 cate panel set-title My Panel     # rename this Cate terminal panel
 cate panel set-title My Panel --panel 1a2b3c4d  # agent shells target explicitly
 cate version                      # host API version (for feature detection)
@@ -110,7 +124,10 @@ one line per panel — editors show their file path, browsers their url — with
 the focused panel marked `*`. Its short ids feed `panel focus` and `--panel`.
 So "what is the user looking at?" is the `*` row, and there is no separate
 browser or editor list. To open a file (any type — a PDF becomes a document
-panel), use `cate editor open`; `canvas create` is for empty panels.
+panel), use `cate editor open`; the file must exist (`file-not-found`
+otherwise — the verb never creates files). `canvas create` is for empty panels,
+except `create browser`, which accepts an optional url to open with (without
+one the panel sits on its start page until a `browser open` navigates it).
 
 Panel/file/browser creation is deliberately non-disruptive: it uses automatic
 background placement and does not open the placement picker, change focus or

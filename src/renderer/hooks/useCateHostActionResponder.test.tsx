@@ -91,6 +91,9 @@ import { useCateHostActionResponder } from './useCateHostActionResponder'
 let actionCb: ((payload: unknown) => unknown) | null = null
 const replies: Array<{ requestId: string; ok: boolean; result?: unknown; error?: string }> = []
 
+// openFile stats its target before opening; default to "exists, is a file".
+const fsStat = vi.fn(async (_path: string, _workspaceId?: string) => ({ isDirectory: false, isFile: true }))
+
 function installElectronAPI(): void {
   ;(window as unknown as { electronAPI: unknown }).electronAPI = {
     onCateHostAction: (cb: (payload: unknown) => unknown) => {
@@ -100,6 +103,7 @@ function installElectronAPI(): void {
     cateHostActionReply: (payload: { requestId: string; ok: boolean; result?: unknown; error?: string }) => {
       replies.push(payload)
     },
+    fsStat,
   }
 }
 
@@ -129,6 +133,7 @@ const BACKGROUND_PLACEMENT = { target: 'canvas', canvasPanelId: 'canvas-1', focu
 
 beforeEach(() => {
   vi.clearAllMocks()
+  fsStat.mockResolvedValue({ isDirectory: false, isFile: true })
   h.placementForBackgroundPanel.mockReturnValue(BACKGROUND_PLACEMENT)
   h.activePanelId = null
   actionCb = null
@@ -173,6 +178,20 @@ describe('useCateHostActionResponder', () => {
     h.placementForBackgroundPanel.mockReturnValue({ target: 'canvas', focus: false })
     await fire('cate.editor.openFile', { path: 'package.json' })
     expect(h.openFileAsPanel).toHaveBeenCalledWith(WS, `${ROOT}/package.json`, undefined, { target: 'canvas', focus: false })
+  })
+
+  it('rejects openFile for a nonexistent path instead of opening an empty panel', async () => {
+    fsStat.mockRejectedValueOnce(new Error('ENOENT'))
+    await fire('cate.editor.openFile', { path: 'missing-file.txt' })
+    expect(h.openFileAsPanel).not.toHaveBeenCalled()
+    expect(replies).toContainEqual({ requestId: 'req-cate.editor.openFile', ok: false, error: 'file-not-found' })
+  })
+
+  it('rejects openFile for a directory', async () => {
+    fsStat.mockResolvedValueOnce({ isDirectory: true, isFile: false })
+    await fire('cate.editor.openFile', { path: 'src' })
+    expect(h.openFileAsPanel).not.toHaveBeenCalled()
+    expect(replies).toContainEqual({ requestId: 'req-cate.editor.openFile', ok: false, error: 'path is a directory' })
   })
 
   it('rejects an absolute openFile path that escapes the workspace root', async () => {

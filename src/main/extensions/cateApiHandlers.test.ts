@@ -61,7 +61,7 @@ vi.mock('./ExtensionManager', () => ({
 // importing cateApiHandlers doesn't drag in the proxy/server/IPC machinery.
 vi.mock('./proxyServer', () => ({ getProxyUrlFor: vi.fn() }))
 vi.mock('./ExtensionServerManager', () => ({ extensionServerManager: {} }))
-const { activeWindow, windowsById, windowPanelList, revealWindowPanel, upsertWindowPanel } = vi.hoisted(() => ({
+const { activeWindow, windowsById, windowPanelList, revealWindowPanel, upsertWindowPanel, removeWindowPanel } = vi.hoisted(() => ({
   activeWindow: { value: undefined as unknown },
   windowsById: new Map<number, unknown>(),
   windowPanelList: { value: [] as Array<{
@@ -76,6 +76,7 @@ const { activeWindow, windowsById, windowPanelList, revealWindowPanel, upsertWin
   }> },
   revealWindowPanel: vi.fn(() => true),
   upsertWindowPanel: vi.fn(),
+  removeWindowPanel: vi.fn(),
 }))
 vi.mock('../windowRegistry', () => ({
   getActiveMainWindow: () => activeWindow.value,
@@ -85,6 +86,7 @@ vi.mock('../windowPanels', () => ({
   getWindowPanels: () => windowPanelList.value,
   revealWindowPanel,
   upsertWindowPanel,
+  removeWindowPanel,
 }))
 vi.mock('../runtime/locator', () => ({
   LOCAL_RUNTIME_ID: 'local',
@@ -139,6 +141,7 @@ beforeEach(() => {
   windowPanelList.value = []
   revealWindowPanel.mockClear()
   revealWindowPanel.mockReturnValue(true)
+  removeWindowPanel.mockClear()
   upsertWindowPanel.mockClear()
   kv.clear()
   panelKv.clear()
@@ -223,6 +226,20 @@ describe('dispatchCateInvoke — Kitchen Sink reverse API', () => {
 
   it('rejects unknown methods as unsupported', async () => {
     expect(await dispatchCateInvoke(scope(), 'cate.bogus.method', undefined)).toEqual({ error: 'unsupported', method: 'cate.bogus.method' })
+  })
+
+  it('evicts a successfully closed panel from the cross-window union immediately', async () => {
+    // Without eviction the debounced report keeps serving the stale row to
+    // panel.list, so a close-then-verify caller reads the panel as still open.
+    const forward = vi.fn(async () => ({ ok: true }))
+    await dispatchCateInvoke(scope(forward), 'cate.panel.close', { panelId: 'p1' })
+    expect(removeWindowPanel).toHaveBeenCalledWith('p1')
+  })
+
+  it('does not evict when the close is rejected (dirty-gate cancel)', async () => {
+    const forward = vi.fn(async () => ({ error: 'close-cancelled' }))
+    await dispatchCateInvoke(scope(forward), 'cate.panel.close', { panelId: 'p1' })
+    expect(removeWindowPanel).not.toHaveBeenCalled()
   })
 
   it('panel.list merges immediate local rows with detached-window rows', async () => {

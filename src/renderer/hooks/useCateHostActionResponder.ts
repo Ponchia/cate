@@ -133,6 +133,15 @@ export function useCateHostActionResponder(): void {
             // escapes it (absolute or traversal).
             const resolved = resolveWorkspacePath(workspaceId, filePath)
             if (!resolved) return reply(false, { error: 'path outside workspace' })
+            // Reject a nonexistent target instead of opening a healthy-looking
+            // panel on it — that silence hides typos from agent callers. (This
+            // verb opens existing files; it has no new-file semantics.)
+            try {
+              const stat = await window.electronAPI.fsStat(resolved, workspaceId)
+              if (stat.isDirectory) return reply(false, { error: 'path is a directory' })
+            } catch {
+              return reply(false, { error: 'file-not-found' })
+            }
             const newPanelId = openFileAsPanel(workspaceId, resolved, undefined, placementForBackgroundPanel(workspaceId))
             if (!newPanelId) return reply(false, { error: 'open failed' })
             // Honor an optional { line } (and column) by stashing a one-shot
