@@ -59,6 +59,59 @@ export function createKeyedDispatcher<TValue>(
 }
 
 /**
+ * Adaptive string dispatcher for interactive streams (terminal output).
+ *
+ * The plain string dispatcher is a trailing-edge debounce armed on the FIRST
+ * push — so a lone keystroke echo always waits the full `delayMs` before it
+ * renders. This variant keeps the coalescing for floods but gives interactive
+ * chunks a zero-latency fast path: a push is emitted SYNCHRONOUSLY when the
+ * stream is idle (no emit within the last `delayMs`) and the pending payload
+ * is small (≤ `interactiveMaxBytes` — a keystroke echo plus prompt redraw,
+ * not a screenful). Anything else — bursts, large chunks — falls back to the
+ * trailing-edge timer, so `cat bigfile` still coalesces into ~`delayMs`
+ * batches instead of one IPC per PTY read.
+ */
+export function createAdaptiveStringDispatcher(
+  delayMs: number,
+  interactiveMaxBytes: number,
+  onBatch: (data: string) => void,
+): BatchedDispatcher<string> {
+  let buffer = ''
+  let flushTimer: ReturnType<typeof setTimeout> | null = null
+  let lastEmit = 0
+
+  const push = (data: string): void => {
+    buffer += data
+    const now = Date.now()
+    if (!flushTimer && buffer.length <= interactiveMaxBytes && now - lastEmit >= delayMs) {
+      lastEmit = now
+      const out = buffer
+      buffer = ''
+      onBatch(out)
+      return
+    }
+    if (!flushTimer) {
+      flushTimer = setTimeout(() => {
+        flushTimer = null
+        lastEmit = Date.now()
+        if (buffer) onBatch(buffer)
+        buffer = ''
+      }, delayMs)
+    }
+  }
+
+  const cancel = (options?: { resetPending?: boolean }): void => {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    if (options?.resetPending) buffer = ''
+  }
+
+  return { push, cancel }
+}
+
+/**
  * String-accumulation dispatcher. Items are concatenated; `onBatch` receives
  * the accumulated string (only invoked when non-empty, matching the original
  * terminal skeleton) and owns the emit and its error handling.

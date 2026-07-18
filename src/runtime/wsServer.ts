@@ -104,6 +104,11 @@ export function startWsServer(opts: WsServerOptions): WsServerHandle {
   const live = new Map<WebSocket, { server: RpcServer; alive: boolean }>()
 
   wss.on('connection', (ws, req) => {
+    // Interactive terminal echo rides this socket as a stream of tiny frames.
+    // With Nagle enabled the kernel holds each one until the previous segment
+    // is ACKed — up to a full extra RTT of typing latency on a WAN link. ssh
+    // sets TCP_NODELAY for interactive sessions for exactly this reason.
+    req.socket.setNoDelay(true)
     const url = new URL(req.url ?? '/', 'http://localhost')
     const presented = url.searchParams.get('token') ?? (req.headers['x-cate-token'] as string | undefined)
     if (!tokenMatches(presented ?? undefined, opts.token)) {

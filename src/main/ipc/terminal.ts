@@ -42,7 +42,7 @@ import { countTerminalData } from '../perf/perfMonitor'
 import { formatLocator, parseLocator, LOCAL_RUNTIME_ID, type RuntimeId } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import type { Runtime } from '../runtime/types'
-import { createStringDispatcher } from './batchedDispatcher'
+import { createAdaptiveStringDispatcher } from './batchedDispatcher'
 import { workspaceCateApi } from '../extensions/workspaceCateApi'
 import { getWorkspaceInfo } from '../workspaceManager'
 
@@ -326,12 +326,15 @@ async function spawnTerminal(
   let sawData = false
   let resolvedShell = ''
 
-  // Per-terminal output coalescing (16ms) → owner window. Owner is read at flush
+  // Per-terminal output coalescing → owner window. Adaptive: a lone keystroke
+  // echo (idle stream, tiny payload) is forwarded synchronously — the fixed
+  // 16ms debounce added a full frame of typing latency on top of the network —
+  // while bursts still coalesce into 16ms batches. Owner is read at flush
   // time so a cross-window transfer reroutes in-flight output. The PTY only ever
   // invokes onData with this terminal's own id, so the id captured on first data
   // is the one used at flush.
   let terminalId = ''
-  const dispatcher = createStringDispatcher(16, (dataBuffer) => {
+  const dispatcher = createAdaptiveStringDispatcher(16, 2048, (dataBuffer) => {
     const windowId = terminalOwners.get(terminalId)
     if (windowId != null) {
       try { sendToWindow(windowId, TERMINAL_DATA, terminalId, dataBuffer) } catch { /* window gone */ }
