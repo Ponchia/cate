@@ -20,6 +20,7 @@ import { AppearanceSettings } from './AppearanceSettings'
 import { CanvasSettings } from './CanvasSettings'
 import { TerminalSettings } from './TerminalSettings'
 import { BrowserSettings } from './BrowserSettings'
+import { CliSettings } from './CliSettings'
 import { SidebarSettings } from './SidebarSettings'
 import { FileExplorerSettings } from './FileExplorerSettings'
 import { WorktreeSettings } from './WorktreeSettings'
@@ -39,6 +40,7 @@ const SECTIONS = [
   { title: 'Canvas', component: CanvasSettings },
   { title: 'Terminal', component: TerminalSettings },
   { title: 'Browser', component: BrowserSettings },
+  { title: 'CLI', component: CliSettings },
   { title: 'Sidebar', component: SidebarSettings },
   { title: 'File Explorer', component: FileExplorerSettings },
   { title: 'Worktrees', component: WorktreeSettings },

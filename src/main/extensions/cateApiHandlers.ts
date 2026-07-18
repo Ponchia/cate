@@ -14,6 +14,9 @@
 //     panel.focus
 //   - cate.browser.*: forwarded to the OWNER window of the target browser panel
 //     (args.panelId), or the active main window when unaddressed.
+//   - cate.terminal.*: same owner-window routing for terminal panels;
+//     first-party (CLI) callers only, with read and type/press each gated by
+//     their Settings → CLI toggle.
 //   - Anything else: { error: 'unsupported', method }
 //
 // Every invoke validates the extension is enabled before serving, EXCEPT
@@ -56,7 +59,7 @@ import { agentManager } from '../../agent/main/agentManager'
 import { getExtensionStorage } from './storage'
 import { getWorkspaceInfo } from '../workspaceManager'
 import { getActiveMainWindow, getWindow } from '../windowRegistry'
-import { getWindowPanels, revealWindowPanel, upsertWindowPanel } from '../windowPanels'
+import { getWindowPanels, removeWindowPanel, revealWindowPanel, upsertWindowPanel } from '../windowPanels'
 import { parseLocator, LOCAL_RUNTIME_ID } from '../runtime/locator'
 import { getAllSettings, getSetting } from '../settingsFile'
 import { resolveActiveTheme } from '../themeBootCache'
@@ -72,6 +75,16 @@ import { showOsNotification } from '../ipc/notifications'
 const CATE_API_VERSION = 3
 
 const FORWARD_TIMEOUT_MS = 10_000
+
+/** Stable errors for CLI feature groups whose per-feature toggle (Settings →
+ *  CLI) is off. Each tells the caller how to get the feature enabled, not just
+ *  that it is denied. */
+export const TERMINAL_INPUT_DISABLED =
+  'terminal-input-disabled: enable "Terminal input" in Cate Settings → CLI'
+export const TERMINAL_READ_DISABLED =
+  'terminal-read-disabled: enable "Terminal read" in Cate Settings → CLI'
+export const BROWSER_CONTROL_DISABLED =
+  'browser-control-disabled: enable "Browser control" in Cate Settings → CLI'
 
 interface InvokePayload {
   extensionId: string
@@ -181,18 +194,19 @@ export function forwardToActiveWindow(payload: InvokePayload): Promise<InvokeRes
 }
 
 /**
- * Resolve the webContents that should receive a cate.browser.* method: the
- * window that OWNS the addressed browser panel, or the active main window when
- * the caller doesn't address a specific panel. Unlike the state-mutating
- * forwards above, a browser method must reach the exact window hosting that
- * panel's webview, not just any active window.
+ * Resolve the webContents that should receive a cate.browser.* / cate.terminal.*
+ * method: the window that OWNS the addressed panel (of the required type), or
+ * the active main window when the caller doesn't address a specific panel.
+ * Unlike the state-mutating forwards above, these methods must reach the exact
+ * window hosting that panel's webview/xterm, not just any active window.
  */
-function resolveBrowserTargetWindow(
+function resolvePanelTargetWindow(
   panelId: string | undefined,
+  type: 'browser' | 'terminal',
 ): { wc: WebContents; ownerWindowId: number } | { error: string } {
   if (panelId) {
     const info = getWindowPanels().find((p) => p.panelId === panelId)
-    if (!info || info.type !== 'browser') return { error: 'no-such-browser' }
+    if (!info || info.type !== type) return { error: `no-such-${type}` }
     const win = getWindow(info.ownerWindowId)
     if (!win || win.isDestroyed()) return { error: 'no-host-window' }
     return { wc: win.webContents, ownerWindowId: info.ownerWindowId }
@@ -250,6 +264,7 @@ export function requiredScopeFor(method: string): string | null | undefined {
       if (method.startsWith('cate.agent.')) return 'agent'
       if (method.startsWith('cate.editor.')) return 'editor.read'
       if (method.startsWith('cate.browser.')) return 'browser'
+      if (method.startsWith('cate.terminal.')) return 'terminal'
       return undefined
   }
 }
@@ -422,11 +437,16 @@ export async function dispatchCateInvoke(
   // forwarded payload stays the caller's own origin panel (empty for terminals).
   if (method.startsWith('cate.browser.')) {
     const a = (args ?? {}) as { panelId?: string }
-    const target = resolveBrowserTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined)
+    const target = resolvePanelTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined, 'browser')
     if ('error' in target) return { error: target.error, method }
-    // Consent (extension callers only) gates the forward, mirroring the agent
-    // one-time-per-session prompt. First-party callers are trusted.
-    if (scope.caller !== 'first-party' && !(await ensureConsent(extensionId, 'browser'))) {
+    // Two flavors of the same gate: extensions get a one-time-per-session
+    // consent prompt (mirroring agent); the first-party CLI is governed by its
+    // per-feature toggle (Settings → CLI) instead of a prompt.
+    if (scope.caller === 'first-party') {
+      if (getSetting('cliBrowserControlEnabled') !== true) {
+        return { error: BROWSER_CONTROL_DISABLED, method }
+      }
+    } else if (!(await ensureConsent(extensionId, 'browser'))) {
       return { error: 'consent-denied', method }
     }
     const result = await forwardToOwner(target.wc, { extensionId, workspaceId, panelId: panelId ?? '', method, args })
@@ -444,6 +464,32 @@ export async function dispatchCateInvoke(
       }
     }
     return result
+  }
+
+  // Terminal control: route to the OWNER window of the addressed terminal panel
+  // (args.panelId), or the active main window when unaddressed (`read` resolves
+  // the focused terminal renderer-side). Both halves carry a per-feature toggle
+  // (Settings → CLI): read (on by default — scrollback may hold printed
+  // secrets) and type/press (OFF by default — keystrokes into a live shell).
+  if (method.startsWith('cate.terminal.')) {
+    // First-party (CLI) only for now: an extension's manifest scopes are
+    // self-declared, and the terminal consent story (prompt vs toggle) is
+    // deferred until a real extension consumer exists. Revisit alongside
+    // ConsentCapability if one appears.
+    if (scope.caller !== 'first-party') {
+      return { error: 'terminal-first-party-only', method }
+    }
+    if (method === 'cate.terminal.type' || method === 'cate.terminal.press') {
+      if (getSetting('cliTerminalInputEnabled') !== true) {
+        return { error: TERMINAL_INPUT_DISABLED, method }
+      }
+    } else if (getSetting('cliTerminalReadEnabled') !== true) {
+      return { error: TERMINAL_READ_DISABLED, method }
+    }
+    const a = (args ?? {}) as { panelId?: string }
+    const target = resolvePanelTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined, 'terminal')
+    if ('error' in target) return { error: target.error, method }
+    return forwardToOwner(target.wc, { extensionId, workspaceId, panelId: panelId ?? '', method, args })
   }
 
   switch (method) {
@@ -521,17 +567,24 @@ export async function dispatchCateInvoke(
       const routedArgs = { ...((args ?? {}) as Record<string, unknown>), panelId: targetPanelId }
       const owner = getWindowPanels().find((p) => p.panelId === targetPanelId && p.workspaceId === workspaceId)
       const win = owner ? getWindow(owner.ownerWindowId) : undefined
-      if (win && !win.isDestroyed()) {
-        return forwardToOwner(win.webContents, {
-          extensionId,
-          workspaceId,
-          panelId: panelId ?? '',
-          method,
-          args: routedArgs,
-        })
+      const result = await (win && !win.isDestroyed()
+        ? forwardToOwner(win.webContents, {
+            extensionId,
+            workspaceId,
+            panelId: panelId ?? '',
+            method,
+            args: routedArgs,
+          })
+        // Same fresh-panel race as list/focus: try the active workspace renderer.
+        : scope.forward({ extensionId, workspaceId, panelId: panelId ?? '', method, args: routedArgs }))
+      // Evict a successfully closed panel from the cross-window union right
+      // away — the owner's debounced report would otherwise keep serving the
+      // stale row to panel.list, so a close-then-verify caller reads the panel
+      // as still open (the eviction mirror of upsertWindowPanel on create).
+      if (method === 'cate.panel.close' && !(result && typeof result === 'object' && 'error' in result)) {
+        removeWindowPanel(targetPanelId)
       }
-      // Same fresh-panel race as list/focus: try the active workspace renderer.
-      return scope.forward({ extensionId, workspaceId, panelId: panelId ?? '', method, args: routedArgs })
+      return result
     }
 
     // --- Agent: drive a pi session through the bundled pi --------------------

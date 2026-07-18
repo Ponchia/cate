@@ -40,7 +40,12 @@ vi.mock('../../agent/main/agentManager', () => ({
 // cate.ui.notify reuses the shared OS-notification path; spy on it + the setting.
 const { showOsNotification, settings } = vi.hoisted(() => ({
   showOsNotification: vi.fn(),
-  settings: { notificationsEnabled: true },
+  settings: {
+    notificationsEnabled: true,
+    cliBrowserControlEnabled: true,
+    cliTerminalReadEnabled: true,
+    cliTerminalInputEnabled: false,
+  },
 }))
 vi.mock('../ipc/notifications', () => ({ showOsNotification }))
 
@@ -61,7 +66,7 @@ vi.mock('./ExtensionManager', () => ({
 // importing cateApiHandlers doesn't drag in the proxy/server/IPC machinery.
 vi.mock('./proxyServer', () => ({ getProxyUrlFor: vi.fn() }))
 vi.mock('./ExtensionServerManager', () => ({ extensionServerManager: {} }))
-const { activeWindow, windowsById, windowPanelList, revealWindowPanel, upsertWindowPanel } = vi.hoisted(() => ({
+const { activeWindow, windowsById, windowPanelList, revealWindowPanel, upsertWindowPanel, removeWindowPanel } = vi.hoisted(() => ({
   activeWindow: { value: undefined as unknown },
   windowsById: new Map<number, unknown>(),
   windowPanelList: { value: [] as Array<{
@@ -76,6 +81,7 @@ const { activeWindow, windowsById, windowPanelList, revealWindowPanel, upsertWin
   }> },
   revealWindowPanel: vi.fn(() => true),
   upsertWindowPanel: vi.fn(),
+  removeWindowPanel: vi.fn(),
 }))
 vi.mock('../windowRegistry', () => ({
   getActiveMainWindow: () => activeWindow.value,
@@ -85,6 +91,7 @@ vi.mock('../windowPanels', () => ({
   getWindowPanels: () => windowPanelList.value,
   revealWindowPanel,
   upsertWindowPanel,
+  removeWindowPanel,
 }))
 vi.mock('../runtime/locator', () => ({
   LOCAL_RUNTIME_ID: 'local',
@@ -120,7 +127,14 @@ vi.mock('./storage', () => ({
   }),
 }))
 
-import { dispatchCateInvoke, requiredScopeFor, type InvokeScope } from './cateApiHandlers'
+import {
+  dispatchCateInvoke,
+  requiredScopeFor,
+  TERMINAL_INPUT_DISABLED,
+  TERMINAL_READ_DISABLED,
+  BROWSER_CONTROL_DISABLED,
+  type InvokeScope,
+} from './cateApiHandlers'
 
 const EXT = 'cate.kitchensink'
 const WS = 'ws-1'
@@ -134,11 +148,15 @@ beforeEach(() => {
   state.enabled = true
   state.scopes = ['storage', 'editor', 'canvas', 'theme', 'ui', 'workspace.read', 'panel']
   settings.notificationsEnabled = true
+  settings.cliBrowserControlEnabled = true
+  settings.cliTerminalReadEnabled = true
+  settings.cliTerminalInputEnabled = false
   activeWindow.value = undefined
   windowsById.clear()
   windowPanelList.value = []
   revealWindowPanel.mockClear()
   revealWindowPanel.mockReturnValue(true)
+  removeWindowPanel.mockClear()
   upsertWindowPanel.mockClear()
   kv.clear()
   panelKv.clear()
@@ -223,6 +241,20 @@ describe('dispatchCateInvoke — Kitchen Sink reverse API', () => {
 
   it('rejects unknown methods as unsupported', async () => {
     expect(await dispatchCateInvoke(scope(), 'cate.bogus.method', undefined)).toEqual({ error: 'unsupported', method: 'cate.bogus.method' })
+  })
+
+  it('evicts a successfully closed panel from the cross-window union immediately', async () => {
+    // Without eviction the debounced report keeps serving the stale row to
+    // panel.list, so a close-then-verify caller reads the panel as still open.
+    const forward = vi.fn(async () => ({ ok: true }))
+    await dispatchCateInvoke(scope(forward), 'cate.panel.close', { panelId: 'p1' })
+    expect(removeWindowPanel).toHaveBeenCalledWith('p1')
+  })
+
+  it('does not evict when the close is rejected (dirty-gate cancel)', async () => {
+    const forward = vi.fn(async () => ({ error: 'close-cancelled' }))
+    await dispatchCateInvoke(scope(forward), 'cate.panel.close', { panelId: 'p1' })
+    expect(removeWindowPanel).not.toHaveBeenCalled()
   })
 
   it('panel.list merges immediate local rows with detached-window rows', async () => {
@@ -615,6 +647,142 @@ describe('dispatchCateInvoke — cate.browser.* namespace', () => {
   })
 })
 
+describe('dispatchCateInvoke — cate.terminal.* namespace', () => {
+  function makeWin() {
+    const send = vi.fn((..._args: unknown[]) => { throw new Error('no-reply') })
+    return { win: { isDestroyed: () => false, webContents: { send } }, send }
+  }
+
+  const firstParty = (forward: InvokeScope['forward'] = vi.fn()): InvokeScope => ({
+    extensionId: 'cate.terminal', workspaceId: WS, panelId: '', forward,
+    caller: 'first-party', grantedScopes: ['terminal'],
+  })
+
+  it('maps every cate.terminal.* method to the single `terminal` scope', () => {
+    expect(requiredScopeFor('cate.terminal.read')).toBe('terminal')
+    expect(requiredScopeFor('cate.terminal.type')).toBe('terminal')
+    expect(requiredScopeFor('cate.terminal.press')).toBe('terminal')
+  })
+
+  it('denies a caller without the terminal scope', async () => {
+    state.scopes = ['browser'] // no terminal
+    activeWindow.value = makeWin().win
+    expect(await dispatchCateInvoke(scope(), 'cate.terminal.read', {})).toEqual({
+      error: 'scope-denied',
+      method: 'cate.terminal.read',
+    })
+  })
+
+  it('forwards read to the active window when unaddressed (focused-terminal resolution is renderer-side)', async () => {
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    const res = await dispatchCateInvoke(firstParty(), 'cate.terminal.read', {})
+    expect(res).not.toEqual({ error: 'scope-denied', method: 'cate.terminal.read' })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]![1]).toEqual(expect.objectContaining({ method: 'cate.terminal.read' }))
+  })
+
+  it('routes an explicit terminal panelId to that panel’s owner window', async () => {
+    settings.cliTerminalInputEnabled = true
+    const send = vi.fn((..._args: unknown[]) => { throw new Error('no-reply') })
+    const ownerWin = { isDestroyed: () => false, webContents: { id: 7, send } }
+    windowPanelList.value = [{ panelId: 'term-7', type: 'terminal', ownerWindowId: 42 }]
+    windowsById.set(42, ownerWin)
+    // Active window is a DIFFERENT window — the panelId must win over it.
+    activeWindow.value = makeWin().win
+    await dispatchCateInvoke(firstParty(), 'cate.terminal.press', { panelId: 'term-7', key: 'enter' })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]![1]).toEqual(
+      expect.objectContaining({ method: 'cate.terminal.press', args: { panelId: 'term-7', key: 'enter' } }),
+    )
+  })
+
+  it('returns no-such-terminal for an unknown or non-terminal panelId without forwarding', async () => {
+    windowPanelList.value = [{ panelId: 'browser-7', type: 'browser', ownerWindowId: 42 }]
+    const forward = vi.fn()
+    expect(await dispatchCateInvoke(firstParty(forward), 'cate.terminal.read', { panelId: 'ghost' }))
+      .toEqual({ error: 'no-such-terminal', method: 'cate.terminal.read' })
+    expect(await dispatchCateInvoke(firstParty(forward), 'cate.terminal.read', { panelId: 'browser-7' }))
+      .toEqual({ error: 'no-such-terminal', method: 'cate.terminal.read' })
+    expect(forward).not.toHaveBeenCalled()
+  })
+
+  // --- The cliTerminalInputEnabled gate (main-side, default off) ---------------
+
+  it('refuses type/press while cliTerminalInputEnabled is off, saying how to enable it', async () => {
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    windowPanelList.value = [{ panelId: 'term-7', type: 'terminal', ownerWindowId: 42 }]
+    windowsById.set(42, win)
+    for (const [method, args] of [
+      ['cate.terminal.type', { panelId: 'term-7', text: 'ls' }],
+      ['cate.terminal.press', { panelId: 'term-7', key: 'enter' }],
+    ] as const) {
+      expect(await dispatchCateInvoke(firstParty(), method, args)).toEqual({
+        error: TERMINAL_INPUT_DISABLED,
+        method,
+      })
+    }
+    // Refused at dispatch — the owner window is never touched.
+    expect(send).not.toHaveBeenCalled()
+    expect(TERMINAL_INPUT_DISABLED).toMatch(/Settings → CLI/)
+  })
+
+  it('read is NOT gated by the input setting', async () => {
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    expect(settings.cliTerminalInputEnabled).toBe(false)
+    await dispatchCateInvoke(firstParty(), 'cate.terminal.read', {})
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses read while cliTerminalReadEnabled is off, saying how to enable it', async () => {
+    settings.cliTerminalReadEnabled = false
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    expect(await dispatchCateInvoke(firstParty(), 'cate.terminal.read', {})).toEqual({
+      error: TERMINAL_READ_DISABLED,
+      method: 'cate.terminal.read',
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(TERMINAL_READ_DISABLED).toMatch(/Settings → CLI/)
+  })
+
+  it('rejects extension callers outright — the terminal surface is first-party only', async () => {
+    // Everything else is in the extension's favor: enabled, terminal scope
+    // declared, both toggles on. The caller check alone must refuse it.
+    state.scopes = ['terminal']
+    settings.cliTerminalReadEnabled = true
+    settings.cliTerminalInputEnabled = true
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    for (const [method, args] of [
+      ['cate.terminal.read', {}],
+      ['cate.terminal.type', { panelId: 'term-7', text: 'ls' }],
+      ['cate.terminal.press', { panelId: 'term-7', key: 'enter' }],
+    ] as const) {
+      expect(await dispatchCateInvoke(scope(), method, args)).toEqual({
+        error: 'terminal-first-party-only',
+        method,
+      })
+    }
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('forwards type once the setting is on', async () => {
+    settings.cliTerminalInputEnabled = true
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    windowPanelList.value = [{ panelId: 'term-7', type: 'terminal', ownerWindowId: 42 }]
+    windowsById.set(42, win)
+    await dispatchCateInvoke(firstParty(), 'cate.terminal.type', { panelId: 'term-7', text: 'ls' })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]![1]).toEqual(
+      expect.objectContaining({ method: 'cate.terminal.type', args: { panelId: 'term-7', text: 'ls' } }),
+    )
+  })
+})
+
 // =============================================================================
 // TRUST-BOUNDARY CHARACTERIZATION
 //
@@ -679,5 +847,41 @@ describe('dispatchCateInvoke — first-party trust boundary (characterization)',
     // The prompt WAS shown (unlike first-party) and the browser was never touched.
     expect(showMessageBox).toHaveBeenCalledTimes(1)
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('the Browser control toggle (Settings → CLI) gates first-party browser calls', async () => {
+    settings.cliBrowserControlEnabled = false
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    const s: InvokeScope = {
+      extensionId: 'cate.terminal', workspaceId: WS, panelId: '', forward: vi.fn(),
+      caller: 'first-party', grantedScopes: ['browser'],
+    }
+    expect(await dispatchCateInvoke(s, 'cate.browser.snapshot', {})).toEqual({
+      error: BROWSER_CONTROL_DISABLED,
+      method: 'cate.browser.snapshot',
+    })
+    // Refused by the toggle, not a prompt — and the browser was never touched.
+    expect(showMessageBox).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
+    expect(BROWSER_CONTROL_DISABLED).toMatch(/Settings → CLI/)
+  })
+
+  it('CLI toggles do NOT affect extensions: a consented extension browses with Browser control off', async () => {
+    settings.cliBrowserControlEnabled = false
+    state.enabled = true
+    state.scopes = ['browser']
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    showMessageBox.mockResolvedValue({ response: 0 }) // user clicks Allow
+    const extScope: InvokeScope = {
+      extensionId: 'cate.cli-toggle-boundary-ext', workspaceId: WS, panelId: PANEL, forward: vi.fn(),
+    }
+    const res = await dispatchCateInvoke(extScope, 'cate.browser.snapshot', {})
+    // Consent (the extension gate) ran and the forward was reached — the CLI
+    // toggle never came into play for a non-first-party caller.
+    expect(res).not.toEqual({ error: BROWSER_CONTROL_DISABLED, method: 'cate.browser.snapshot' })
+    expect(showMessageBox).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledTimes(1)
   })
 })
