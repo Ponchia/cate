@@ -536,12 +536,19 @@ export default function BrowserPanel({
     } | null
     if (!webview || !hasCanvas) return
     let cancelled = false
+    // insertCSS/removeInsertedCSS throw SYNCHRONOUSLY (not just reject) when
+    // the webview is detached or its dom-ready hasn't fired yet — a bare
+    // `.catch()` doesn't cover that and the throw would take down the whole
+    // panel via its error boundary. Every call goes through this wrapper.
+    const safeRemove = (key: string): void => {
+      try { void webview.removeInsertedCSS(key).catch(() => {}) } catch { /* webview detached / pre-dom-ready */ }
+    }
     const applyDim = async (): Promise<void> => {
       if (dimKeyRef.current) return
       try {
         const key = await webview.insertCSS('html { filter: brightness(0.78) saturate(0.85) !important; }')
         if (cancelled || isFocusedRef.current) {
-          void webview.removeInsertedCSS(key).catch(() => {})
+          safeRemove(key)
           return
         }
         dimKeyRef.current = key
@@ -550,7 +557,7 @@ export default function BrowserPanel({
     const clearDim = (): void => {
       const key = dimKeyRef.current
       dimKeyRef.current = null
-      if (key) void webview.removeInsertedCSS(key).catch(() => { /* navigated away */ })
+      if (key) safeRemove(key)
     }
     if (isFocused) clearDim()
     else void applyDim()
