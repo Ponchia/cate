@@ -14,8 +14,9 @@
 //     panel.focus
 //   - cate.browser.*: forwarded to the OWNER window of the target browser panel
 //     (args.panelId), or the active main window when unaddressed.
-//   - cate.terminal.*: same owner-window routing for terminal panels; type/press
-//     are additionally gated by the cliTerminalInputEnabled setting.
+//   - cate.terminal.*: same owner-window routing for terminal panels;
+//     first-party (CLI) callers only, with read and type/press each gated by
+//     their Settings → CLI toggle.
 //   - Anything else: { error: 'unsupported', method }
 //
 // Every invoke validates the extension is enabled before serving, EXCEPT
@@ -75,10 +76,15 @@ const CATE_API_VERSION = 3
 
 const FORWARD_TIMEOUT_MS = 10_000
 
-/** Stable error for cate.terminal.type/press while the user setting is off.
- *  Tells the caller how to get input enabled, not just that it is denied. */
+/** Stable errors for CLI feature groups whose per-feature toggle (Settings →
+ *  CLI) is off. Each tells the caller how to get the feature enabled, not just
+ *  that it is denied. */
 export const TERMINAL_INPUT_DISABLED =
-  'terminal-input-disabled: enable "CLI terminal input" in Cate Settings → Terminal'
+  'terminal-input-disabled: enable "Terminal input" in Cate Settings → CLI'
+export const TERMINAL_READ_DISABLED =
+  'terminal-read-disabled: enable "Terminal read" in Cate Settings → CLI'
+export const BROWSER_CONTROL_DISABLED =
+  'browser-control-disabled: enable "Browser control" in Cate Settings → CLI'
 
 interface InvokePayload {
   extensionId: string
@@ -433,9 +439,14 @@ export async function dispatchCateInvoke(
     const a = (args ?? {}) as { panelId?: string }
     const target = resolvePanelTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined, 'browser')
     if ('error' in target) return { error: target.error, method }
-    // Consent (extension callers only) gates the forward, mirroring the agent
-    // one-time-per-session prompt. First-party callers are trusted.
-    if (scope.caller !== 'first-party' && !(await ensureConsent(extensionId, 'browser'))) {
+    // Two flavors of the same gate: extensions get a one-time-per-session
+    // consent prompt (mirroring agent); the first-party CLI is governed by its
+    // per-feature toggle (Settings → CLI) instead of a prompt.
+    if (scope.caller === 'first-party') {
+      if (getSetting('cliBrowserControlEnabled') !== true) {
+        return { error: BROWSER_CONTROL_DISABLED, method }
+      }
+    } else if (!(await ensureConsent(extensionId, 'browser'))) {
       return { error: 'consent-denied', method }
     }
     const result = await forwardToOwner(target.wc, { extensionId, workspaceId, panelId: panelId ?? '', method, args })
@@ -457,15 +468,23 @@ export async function dispatchCateInvoke(
 
   // Terminal control: route to the OWNER window of the addressed terminal panel
   // (args.panelId), or the active main window when unaddressed (`read` resolves
-  // the focused terminal renderer-side). Input (type/press) is additionally
-  // gated by the cliTerminalInputEnabled setting — OFF by default; reads stay
-  // available whenever the endpoint itself is up.
+  // the focused terminal renderer-side). Both halves carry a per-feature toggle
+  // (Settings → CLI): read (on by default — scrollback may hold printed
+  // secrets) and type/press (OFF by default — keystrokes into a live shell).
   if (method.startsWith('cate.terminal.')) {
-    if (
-      (method === 'cate.terminal.type' || method === 'cate.terminal.press') &&
-      getSetting('cliTerminalInputEnabled') !== true
-    ) {
-      return { error: TERMINAL_INPUT_DISABLED, method }
+    // First-party (CLI) only for now: an extension's manifest scopes are
+    // self-declared, and the terminal consent story (prompt vs toggle) is
+    // deferred until a real extension consumer exists. Revisit alongside
+    // ConsentCapability if one appears.
+    if (scope.caller !== 'first-party') {
+      return { error: 'terminal-first-party-only', method }
+    }
+    if (method === 'cate.terminal.type' || method === 'cate.terminal.press') {
+      if (getSetting('cliTerminalInputEnabled') !== true) {
+        return { error: TERMINAL_INPUT_DISABLED, method }
+      }
+    } else if (getSetting('cliTerminalReadEnabled') !== true) {
+      return { error: TERMINAL_READ_DISABLED, method }
     }
     const a = (args ?? {}) as { panelId?: string }
     const target = resolvePanelTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined, 'terminal')

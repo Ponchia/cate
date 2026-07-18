@@ -40,7 +40,12 @@ vi.mock('../../agent/main/agentManager', () => ({
 // cate.ui.notify reuses the shared OS-notification path; spy on it + the setting.
 const { showOsNotification, settings } = vi.hoisted(() => ({
   showOsNotification: vi.fn(),
-  settings: { notificationsEnabled: true, cliTerminalInputEnabled: false },
+  settings: {
+    notificationsEnabled: true,
+    cliBrowserControlEnabled: true,
+    cliTerminalReadEnabled: true,
+    cliTerminalInputEnabled: false,
+  },
 }))
 vi.mock('../ipc/notifications', () => ({ showOsNotification }))
 
@@ -122,7 +127,14 @@ vi.mock('./storage', () => ({
   }),
 }))
 
-import { dispatchCateInvoke, requiredScopeFor, TERMINAL_INPUT_DISABLED, type InvokeScope } from './cateApiHandlers'
+import {
+  dispatchCateInvoke,
+  requiredScopeFor,
+  TERMINAL_INPUT_DISABLED,
+  TERMINAL_READ_DISABLED,
+  BROWSER_CONTROL_DISABLED,
+  type InvokeScope,
+} from './cateApiHandlers'
 
 const EXT = 'cate.kitchensink'
 const WS = 'ws-1'
@@ -136,6 +148,8 @@ beforeEach(() => {
   state.enabled = true
   state.scopes = ['storage', 'editor', 'canvas', 'theme', 'ui', 'workspace.read', 'panel']
   settings.notificationsEnabled = true
+  settings.cliBrowserControlEnabled = true
+  settings.cliTerminalReadEnabled = true
   settings.cliTerminalInputEnabled = false
   activeWindow.value = undefined
   windowsById.clear()
@@ -711,7 +725,7 @@ describe('dispatchCateInvoke — cate.terminal.* namespace', () => {
     }
     // Refused at dispatch — the owner window is never touched.
     expect(send).not.toHaveBeenCalled()
-    expect(TERMINAL_INPUT_DISABLED).toMatch(/Settings → Terminal/)
+    expect(TERMINAL_INPUT_DISABLED).toMatch(/Settings → CLI/)
   })
 
   it('read is NOT gated by the input setting', async () => {
@@ -720,6 +734,39 @@ describe('dispatchCateInvoke — cate.terminal.* namespace', () => {
     expect(settings.cliTerminalInputEnabled).toBe(false)
     await dispatchCateInvoke(firstParty(), 'cate.terminal.read', {})
     expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses read while cliTerminalReadEnabled is off, saying how to enable it', async () => {
+    settings.cliTerminalReadEnabled = false
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    expect(await dispatchCateInvoke(firstParty(), 'cate.terminal.read', {})).toEqual({
+      error: TERMINAL_READ_DISABLED,
+      method: 'cate.terminal.read',
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(TERMINAL_READ_DISABLED).toMatch(/Settings → CLI/)
+  })
+
+  it('rejects extension callers outright — the terminal surface is first-party only', async () => {
+    // Everything else is in the extension's favor: enabled, terminal scope
+    // declared, both toggles on. The caller check alone must refuse it.
+    state.scopes = ['terminal']
+    settings.cliTerminalReadEnabled = true
+    settings.cliTerminalInputEnabled = true
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    for (const [method, args] of [
+      ['cate.terminal.read', {}],
+      ['cate.terminal.type', { panelId: 'term-7', text: 'ls' }],
+      ['cate.terminal.press', { panelId: 'term-7', key: 'enter' }],
+    ] as const) {
+      expect(await dispatchCateInvoke(scope(), method, args)).toEqual({
+        error: 'terminal-first-party-only',
+        method,
+      })
+    }
+    expect(send).not.toHaveBeenCalled()
   })
 
   it('forwards type once the setting is on', async () => {
@@ -800,5 +847,41 @@ describe('dispatchCateInvoke — first-party trust boundary (characterization)',
     // The prompt WAS shown (unlike first-party) and the browser was never touched.
     expect(showMessageBox).toHaveBeenCalledTimes(1)
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('the Browser control toggle (Settings → CLI) gates first-party browser calls', async () => {
+    settings.cliBrowserControlEnabled = false
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    const s: InvokeScope = {
+      extensionId: 'cate.terminal', workspaceId: WS, panelId: '', forward: vi.fn(),
+      caller: 'first-party', grantedScopes: ['browser'],
+    }
+    expect(await dispatchCateInvoke(s, 'cate.browser.snapshot', {})).toEqual({
+      error: BROWSER_CONTROL_DISABLED,
+      method: 'cate.browser.snapshot',
+    })
+    // Refused by the toggle, not a prompt — and the browser was never touched.
+    expect(showMessageBox).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
+    expect(BROWSER_CONTROL_DISABLED).toMatch(/Settings → CLI/)
+  })
+
+  it('CLI toggles do NOT affect extensions: a consented extension browses with Browser control off', async () => {
+    settings.cliBrowserControlEnabled = false
+    state.enabled = true
+    state.scopes = ['browser']
+    const { win, send } = makeWin()
+    activeWindow.value = win
+    showMessageBox.mockResolvedValue({ response: 0 }) // user clicks Allow
+    const extScope: InvokeScope = {
+      extensionId: 'cate.cli-toggle-boundary-ext', workspaceId: WS, panelId: PANEL, forward: vi.fn(),
+    }
+    const res = await dispatchCateInvoke(extScope, 'cate.browser.snapshot', {})
+    // Consent (the extension gate) ran and the forward was reached — the CLI
+    // toggle never came into play for a non-first-party caller.
+    expect(res).not.toEqual({ error: BROWSER_CONTROL_DISABLED, method: 'cate.browser.snapshot' })
+    expect(showMessageBox).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledTimes(1)
   })
 })

@@ -15,10 +15,12 @@ root, and git knows the branch. It talks to a per-workspace loopback endpoint
 Cate injects as `CATE_API` + `CATE_TOKEN`.
 
 **It only works inside a Cate terminal, and only when command-line control is
-enabled.** It is on by default; the user can turn it off in Settings → Terminal
+enabled.** It is on by default; the user can turn it off in Settings → CLI
 ("Command-line control"). While it is off — or outside a Cate terminal — the env
 vars are unset and every command exits `3` with a message explaining how to
-enable the setting. There is nothing to install.
+enable the setting. There is nothing to install. The same Settings → CLI section
+holds per-feature toggles (browser control, terminal read, terminal input) —
+a disabled feature's verbs fail with a stable error naming the toggle.
 
 ## Browser control
 
@@ -166,11 +168,11 @@ about to run. Keys for `press` (case-insensitive): `enter`/`return`, `tab`,
 `ctrl-d`, ...).
 
 Input goes to **whatever runs in the terminal**: a foreground TUI receives the
-keys (arrows move its cursor, `q` is its quit), not the shell. Two gates apply:
-reading works whenever command-line control is on, but `type`/`press` also
-require "CLI terminal input" (Settings → Terminal), which is **off by
-default** — while off they fail with `terminal-input-disabled` and how to
-enable it. Terminals the Cate Agent is actively driving refuse input
+keys (arrows move its cursor, `q` is its quit), not the shell. Each half has its
+own toggle in Settings → CLI: `read` requires "Terminal read" (on by default),
+`type`/`press` require "Terminal input", which is **off by default** — while
+off they fail with `terminal-input-disabled` (or `terminal-read-disabled`) and
+how to enable it. Terminals the Cate Agent is actively driving refuse input
 (`agent-owned-terminal`).
 
 Each group maps to a host scope that a Cate terminal is granted. Two host scopes

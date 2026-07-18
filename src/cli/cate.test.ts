@@ -249,7 +249,7 @@ describe('run — exit codes', () => {
     expect(code).toBe(3)
     const err = deps.err.join('\n')
     expect(err).toMatch(/CATE_API\/CATE_TOKEN unset/)
-    expect(err).toMatch(/Settings → Terminal/)
+    expect(err).toMatch(/Settings → CLI/)
   })
 
   it('happy path -> exit 0, url on stdout', async () => {

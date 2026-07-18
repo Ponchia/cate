@@ -344,7 +344,7 @@ export async function send(method: string, args: Record<string, unknown>, deps: 
     // terminal predates enabling it). Say how to fix it, not just what's wrong.
     throw new EnvError(
       'the cate CLI endpoint is not available in this shell (CATE_API/CATE_TOKEN unset).\n' +
-        'Enable "Command-line control (cate CLI)" in Cate Settings → Terminal, then open a new terminal.',
+        'Enable "Command-line control (cate CLI)" in Cate Settings → CLI, then open a new terminal.',
     )
   }
 
@@ -582,7 +582,8 @@ Flags:
   --version        print the CLI version (distinct from host API version)
 
 Requires CATE_API and CATE_TOKEN in the environment. Cate injects them into new
-terminals while "Command-line control (cate CLI)" is enabled (Settings → Terminal).`
+terminals while "Command-line control (cate CLI)" is enabled (Settings → CLI,
+where per-feature toggles for browser control and terminal read/input live too).`
 
 const GROUP_USAGE: Record<string, string> = {
   browser: `Usage: cate browser open <url> | wait [ms] | reload | screenshot | snapshot\n` +

@@ -9,7 +9,7 @@
 // (updateWorkspace), and when a runtime (re)connects (replaySkillSeeds) — the
 // last one is what makes remote workspaces behave like local ones, since their
 // runtime connects only after create/attach.
-//   - gated by the cliSkillInstallEnabled setting (Settings → Terminal);
+//   - gated by the cliSkillInstallEnabled setting (Settings → CLI);
 //   - `cate-agent` is always seeded — it is Cate's own agent and `.cate/` is
 //     already Cate-managed;
 //   - every other target (claude-code, pi-native, opencode, codex, antigravity)
