@@ -34,7 +34,7 @@
     "sentry:test": "node scripts/sentry-test.mjs",
     "build": "electron-vite build",
     "build:runtime": "node src/runtime/build/esbuild.config.mjs",
-    "build:web": "vite build -c vite.web.config.ts",
+    "build:web": "vite build -c vite.web.config.ts && cp dist-web/web.html dist-web/index.html",
     "dev:web": "vite -c vite.web.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -97,6 +97,9 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^7",
+    "@capacitor/cli": "^7",
+    "@capacitor/core": "^7",
     "@earendil-works/pi-coding-agent": "^0.80.6",
     "@electron/rebuild": "^4.0.3",
     "@eslint/js": "^9.39.0",
