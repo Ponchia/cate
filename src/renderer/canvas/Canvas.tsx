@@ -29,6 +29,19 @@ function injectCanvasInteractingStyle(): void {
   canvasStyleInjected = true
   const style = document.createElement('style')
   style.textContent = `
+    /* Unfocused-node dim for BROWSER panels. A webview's guest content is a
+       separately-composited native layer, so the DOM dim overlay neither
+       paints above it reliably nor intercepts its clicks (worse still inside
+       the canvas's transformed world). Dim and de-interact the webview ITSELF
+       instead — opacity/pointer-events on the element are the two properties
+       the guest layer actually honors — so an unfocused browser behaves like
+       every other panel: dimmed, and the first click focuses the node instead
+       of landing in the page. */
+    [data-node-active="false"] webview {
+      pointer-events: none !important;
+      opacity: 0.75;
+      transition: opacity 150ms ease;
+    }
     .canvas-interacting iframe,
     .canvas-interacting webview,
     .canvas-interacting .monaco-editor,
