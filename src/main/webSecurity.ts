@@ -1,4 +1,4 @@
-import { app, session, shell, type Session, type WebContents } from 'electron'
+import { app, session, type Session, type WebContents } from 'electron'
 import log from './logger'
 import { disableWebviewHardening } from './featureFlags'
 import { BROWSER_SHORTCUT } from '../shared/ipc-channels'
@@ -39,32 +39,29 @@ function browserActionForInput(input: Electron.Input): BrowserShortcutAction | n
   }
 }
 
-// Hosts whose OAuth/sign-in flows are forced into the user's real browser via
-// shell.openExternal (see installWebContentsSecurity below) rather than running
-// inside the webview — Electron's webview is flagged by these providers as an
-// "insecure browser" and blocks the flow.
+// OAuth/sign-in flows (Google, Microsoft, Apple, GitHub) run IN-APP. This
+// replaced the upstream design (issue #220) of shell.openExternal-ing OAuth
+// URLs — completing the login in the system browser could never hand the
+// session back to the webview, so in-app "Sign in with Google" was impossible.
+// Redirect-style flows (Slack's "Continue with Google" and most providers'
+// fallback) navigate the webview itself and are verified working end-to-end.
+// The popup path (window.open) is wired below — allowpopups on the tag, allow
+// in setWindowOpenHandler, popup windows share the guest session — but on
+// Electron 41 the guest's window.open still resolves null before reaching the
+// handler (Page.windowOpen fires, handler never invoked; a minimal repro
+// outside Cate works, root cause unidentified). Known-open item.
+// The providers' "this browser may not be secure" block is UA-sniffing, which
+// the stripAppTokens plumbing below addresses (see also main/index.ts).
 //
-// Note (issue #220): this is by design and independent of the browser panel's
-// persistent session. Even though all browser panels now share a stable
-// persistent partition so cookies/logins survive restarts (see BROWSER_PARTITION
-// in BrowserPanel.tsx), "Sign in with Google/Microsoft/Apple/GitHub" still
-// completes in the system browser, not in-app. In-webview OAuth for these
-// providers is intentionally not supported.
-const OAUTH_HOSTS = new Set([
-  'accounts.google.com',
-  'login.microsoftonline.com',
-  'appleid.apple.com',
-])
+// WebContents ids of live guest-opened popup windows. Popups are exempt from
+// the trusted-app-URL navigation gate that protects real app windows, and get
+// the guest navigation policy (http/https/about:blank only) instead.
+const guestPopupIds = new Set<number>()
 
-function isOAuthUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    if (OAUTH_HOSTS.has(parsed.host)) return true
-    if (parsed.host === 'github.com' && parsed.pathname.startsWith('/login/oauth')) return true
-    return false
-  } catch {
-    return false
-  }
+/** Drop the `Cate/x.y.z` and `Electron/x.y.z` tokens so web content sees a
+ *  plain Chrome user agent. */
+function stripAppTokens(userAgent: string): string {
+  return userAgent.replace(/\s(?:cate|electron)\/\S+/gi, '')
 }
 
 const configuredGuestSessions = new Set<string>()
@@ -96,6 +93,19 @@ function configureGuestSessionPolicies(targetSession: Session, sessionKey: strin
   if (configuredGuestSessions.has(sessionKey)) return
   configuredGuestSessions.add(sessionKey)
 
+  // Present as plain Chrome in request headers. The session-level UA covers
+  // main-frame navigations (what an OAuth provider sees when serving its
+  // sign-in page); the webRequest rewrite is belt-and-braces. Known limit on
+  // this Electron version: navigator.userAgent and renderer-initiated fetch()
+  // headers keep the app tokens — Google's sign-in block keys off the
+  // navigation UA, which is clean (verified live against accounts.google.com).
+  targetSession.setUserAgent(stripAppTokens(targetSession.getUserAgent()))
+  targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const ua = details.requestHeaders['User-Agent']
+    if (typeof ua === 'string') details.requestHeaders['User-Agent'] = stripAppTokens(ua)
+    callback({ requestHeaders: details.requestHeaders })
+  })
+
   const allowedPermissions = new Set(['cookies', 'storage-access'])
 
   targetSession.setPermissionRequestHandler((_wc, permission, callback) => {
@@ -126,19 +136,42 @@ function guestSessionFor(contents: WebContents, partition?: string): Session {
 
 export function installWebContentsSecurity(): void {
   app.on('web-contents-created', (_event, contents) => {
+    // Web content must see a plain Chrome UA — OAuth providers sniff the
+    // `Cate/…`/`Electron/…` tokens and hard-block sign-in ("this browser may
+    // not be secure"). Applied to EVERY webContents because a <webview> guest
+    // re-inherits its embedder's UA at attach time — stripping only the guest
+    // at creation gets overwritten, so the embedder (app window) must be clean
+    // too. The did-attach-webview strip below catches the post-attach reset
+    // directly.
+    contents.setUserAgent(stripAppTokens(contents.getUserAgent()))
+
     if (contents.getType() === 'webview') {
-      contents.on('will-navigate', (event, url) => {
-        if (isOAuthUrl(url)) {
-          event.preventDefault()
-          shell.openExternal(url)
+      // `window.open()` from a guest page opens a native popup window sharing
+      // the guest's session — this is how OAuth/Sign-In popups complete in-app
+      // (the popup writes its cookies into the same persistent partition the
+      // webview reads). Non-web schemes (slack://, itms://, …) are denied; the
+      // page's own fallback handles them.
+      contents.setWindowOpenHandler(({ url }) => {
+        if (!isAllowedGuestUrl(url)) {
+          log.warn('[webview] Denied guest popup to %s', url)
+          return { action: 'deny' }
+        }
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 560,
+            height: 700,
+            autoHideMenuBar: true,
+            webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+          },
         }
       })
 
-      contents.setWindowOpenHandler(({ url }) => {
-        if (isOAuthUrl(url)) {
-          shell.openExternal(url)
-        }
-        return { action: 'deny' }
+      contents.on('did-create-window', (win) => {
+        const popupId = win.webContents.id
+        guestPopupIds.add(popupId)
+        win.webContents.setUserAgent(stripAppTokens(win.webContents.getUserAgent()))
+        win.webContents.once('destroyed', () => guestPopupIds.delete(popupId))
       })
 
       // Capture browser navigation keys (Cmd+R/[/]/L) even when the guest page
@@ -161,12 +194,26 @@ export function installWebContentsSecurity(): void {
 
     if (contents.getType() === 'window') {
       contents.on('will-navigate', (event, url) => {
+        // Guest-opened popups (OAuth flows) navigate freely across the web —
+        // they get the guest URL policy. Real app windows only ever navigate
+        // within the app bundle / dev server.
+        if (guestPopupIds.has(contents.id)) {
+          if (!isAllowedGuestUrl(url)) {
+            log.warn('[webview] Blocked popup navigation to %s', url)
+            event.preventDefault()
+          }
+          return
+        }
         if (!isTrustedAppUrl(url)) {
           log.warn('[security] Blocked app-window navigation to %s', url)
           event.preventDefault()
         }
       })
     }
+
+    contents.on('did-attach-webview', (_e, guest) => {
+      guest.setUserAgent(stripAppTokens(guest.getUserAgent()))
+    })
 
     contents.on('will-attach-webview', (event, webPreferences, params) => {
       if (disableWebviewHardening()) return
@@ -198,11 +245,12 @@ export function installWebContentsSecurity(): void {
       webPreferences.webSecurity = true
       ;(webPreferences as { allowRunningInsecureContent?: boolean }).allowRunningInsecureContent = false
 
-      // Allow `window.open()` from webview content so we can track OAuth /
-      // Sign-In popups via Cate's popup registry. The setWindowOpenHandler
-      // installed when the guest's webContents is created strictly filters
-      // which URLs are actually allowed; this just removes the blanket veto.
-      params.allowpopups = 'true'
+      // Popup capability must be on the <webview> tag itself (see the ref
+      // callback in BrowserPanel.tsx): the guest renderer bakes the popup gate
+      // in at guest creation, BEFORE this hook — mutating params.allowpopups
+      // or webPreferences.disablePopups here is too late (verified live). The
+      // setWindowOpenHandler installed when the guest's webContents is created
+      // strictly filters which popup URLs are actually allowed.
 
       const partition = typeof webPreferences.partition === 'string' ? webPreferences.partition : undefined
       const targetSession = guestSessionFor(contents, partition)

@@ -131,6 +131,14 @@ function registerDeferredHandlers(): void {
 // Set app name before menu and window creation
 app.setName('Cate')
 
+// Present as plain Chrome to web content. The default UA carries `Cate/x.y.z`
+// and `Electron/x.y.z` tokens, which OAuth providers (Google's
+// "disallowed_useragent" / "this browser may not be secure" page, Microsoft,
+// Apple) sniff and hard-block — with them stripped, in-app "Sign in with …"
+// works in browser-panel webviews. Must run before any session is created;
+// every session inherits this fallback.
+app.userAgentFallback = app.userAgentFallback.replace(/\s(?:Cate|cate|Electron)\/\S+/g, '')
+
 // Windows: the toast notification system keys off the AppUserModelID, and it
 // must match the install shortcut's ID (electron-builder uses `appId`) for the
 // notification 'click' event to fire reliably. No-op on macOS/Linux.

@@ -34,6 +34,21 @@ import { Tooltip } from '../ui/Tooltip'
 
 // Electron already declares webview in its types - we use 'as any' on the ref instead
 
+// Every <webview> must carry `allowpopups` BEFORE it is inserted into the DOM:
+// Electron captures the attribute synchronously at insertion when it creates
+// the guest, and without it the guest renderer hard-blocks window.open() —
+// which breaks OAuth sign-in popups (Google/Microsoft/Apple). React cannot put
+// it there (it drops the non-standard attribute from JSX, and callback refs
+// fire only after insertion), so stamp it at element creation. Safe globally:
+// the main-process setWindowOpenHandler (webSecurity.ts) still filters which
+// popup URLs are actually allowed for every guest.
+const originalCreateElement = document.createElement.bind(document)
+document.createElement = ((tagName: string, options?: ElementCreationOptions) => {
+  const el = originalCreateElement(tagName, options)
+  if (String(tagName).toLowerCase() === 'webview') el.setAttribute('allowpopups', 'true')
+  return el
+}) as typeof document.createElement
+
 // Single shared persistent session for all browser panels (issue #220 bug 2).
 // Previously the partition was keyed to the runtime panelId
 // (`persist:browser-${panelId}`), but panelId is regenerated as a fresh UUID on
