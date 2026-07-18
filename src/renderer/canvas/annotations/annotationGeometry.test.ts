@@ -8,6 +8,7 @@ import {
   connectorLine,
   hitTestShape,
   hitTestEndpoint,
+  shapeMembers,
 } from './annotationGeometry'
 import type { CanvasNodeState, CanvasShapeState } from '../../../shared/types'
 
@@ -88,5 +89,41 @@ describe('hit testing', () => {
     expect(hitTestEndpoint(nodes, shapes, { x: 50, y: 40 })).toEqual({ kind: 'node', nodeId: 'n' })
     expect(hitTestEndpoint(nodes, shapes, { x: 250, y: 250 })).toEqual({ kind: 'shape', shapeId: 's' })
     expect(hitTestEndpoint(nodes, shapes, { x: 900, y: 900 })).toBeNull()
+  })
+})
+
+describe('shapeMembers (frame semantics)', () => {
+  const frame = shape('frame', 0, 0, 600, 400)
+
+  it('captures nodes and smaller shapes whose center is inside', () => {
+    const nodes = {
+      inside: node('inside', 50, 50), // center (100, 90) inside
+      straddling: node('straddling', 560, 370), // center (610, 410) past the edge
+      outside: node('outside', 900, 900),
+    }
+    const shapes = {
+      frame,
+      small: shape('small', 100, 100, 120, 80),
+      bigger: shape('bigger', 10, 10, 700, 500), // larger than the frame — never a member
+    }
+    const m = shapeMembers(frame, nodes, shapes)
+    expect(m.nodeIds).toEqual(['inside'])
+    expect(m.shapeIds).toEqual(['small'])
+  })
+
+  it('an equal-size overlapping shape is not captured', () => {
+    const twin = shape('twin', 10, 10, 600, 400)
+    const m = shapeMembers(frame, {}, { frame, twin })
+    expect(m.shapeIds).toEqual([])
+  })
+
+  it('ellipse containers use the ellipse outline, not the bounding rect', () => {
+    const ell = shape('ell', 0, 0, 400, 400, 'ellipse')
+    const nodes = {
+      corner: node('corner', 0, 0, 60, 60), // center (30,30) — inside the rect, outside the ellipse
+      center: node('center', 170, 170, 60, 60),
+    }
+    const m = shapeMembers(ell, nodes, { ell })
+    expect(m.nodeIds).toEqual(['center'])
   })
 })

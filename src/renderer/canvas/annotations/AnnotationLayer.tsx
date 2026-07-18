@@ -11,7 +11,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useCanvasStoreContext, useCanvasStoreApi } from '../../stores/CanvasStoreContext'
-import { connectorLine, arrowheadPoints, rectCenter } from './annotationGeometry'
+import { connectorLine, arrowheadPoints, rectCenter, shapeMembers } from './annotationGeometry'
 import { ANNOTATION_COLORS } from '../../../shared/types'
 import type { CanvasShapeState, CanvasConnectorState, Point } from '../../../shared/types'
 
@@ -25,6 +25,15 @@ type Editing =
 /** Translucent fill derived from the shape's accent color. */
 function fillFor(color: string): string {
   return `color-mix(in srgb, ${color} 14%, transparent)`
+}
+
+/** Where a shape's label anchors: rects read as frames, so their label sits at
+ *  the top inside the border (out of the way of contained panels); ellipses
+ *  keep it centered. */
+function shapeLabelPos(s: CanvasShapeState): Point {
+  return s.kind === 'rect'
+    ? { x: s.origin.x + s.size.width / 2, y: s.origin.y + 18 }
+    : rectCenter({ origin: s.origin, size: s.size })
 }
 
 const AnnotationLayer: React.FC = () => {
@@ -75,7 +84,25 @@ const AnnotationLayer: React.FC = () => {
         ? state.annotationSelection
         : [shape.id]
       ).filter((id) => state.shapes[id])
-      const startOrigins = new Map(movingIds.map((id) => [id, { ...canvasApi.getState().shapes[id].origin }]))
+      // Frame semantics: everything spatially inside a moving shape moves with
+      // it — panel nodes and smaller shapes alike. Membership is captured ONCE
+      // at gesture start so dragging out of/over other content mid-gesture
+      // doesn't re-parent anything.
+      const movingShapeSet = new Set(movingIds)
+      const memberNodeIds = new Set<string>()
+      for (const id of movingIds) {
+        const members = shapeMembers(state.shapes[id], state.nodes, state.shapes)
+        for (const nid of members.nodeIds) memberNodeIds.add(nid)
+        for (const sid of members.shapeIds) movingShapeSet.add(sid)
+      }
+      const startOrigins = new Map(
+        [...movingShapeSet].map((id) => [id, { ...state.shapes[id].origin }]),
+      )
+      const startNodeOrigins = new Map(
+        [...memberNodeIds]
+          .filter((id) => state.nodes[id])
+          .map((id) => [id, { ...state.nodes[id].origin }]),
+      )
       let moved = false
       draggedRef.current = false
 
@@ -86,12 +113,16 @@ const AnnotationLayer: React.FC = () => {
         if (!moved) {
           moved = true
           draggedRef.current = true
-          // One undo step per drag gesture, mirroring node moves.
+          // One undo step per drag gesture, mirroring node moves. The snapshot
+          // carries nodes too, so member-node moves undo with it.
           canvasApi.getState().pushHistory()
         }
         const zoom = canvasApi.getState().zoomLevel
         for (const [id, o] of startOrigins) {
           canvasApi.getState().updateShapeGeometry(id, { x: o.x + dx / zoom, y: o.y + dy / zoom })
+        }
+        for (const [id, o] of startNodeOrigins) {
+          canvasApi.getState().moveNode(id, { x: o.x + dx / zoom, y: o.y + dy / zoom })
         }
       }
       const onUp = () => {
@@ -168,6 +199,10 @@ const AnnotationLayer: React.FC = () => {
           })),
         },
         { type: 'separator' as const },
+        { id: 'duplicate', label: 'Duplicate' },
+        { id: 'front', label: 'Bring to Front' },
+        { id: 'back', label: 'Send to Back' },
+        { type: 'separator' as const },
         { id: 'delete', label: 'Delete' },
       ])
       const state = canvasApi.getState()
@@ -175,6 +210,9 @@ const AnnotationLayer: React.FC = () => {
       if (id === 'label') beginShapeLabelEdit(shape)
       else if (id.startsWith('kind:')) state.setShapeKind(shape.id, id.slice(5) as CanvasShapeState['kind'])
       else if (id.startsWith('color:')) state.setShapeColor(shape.id, id.slice(6))
+      else if (id === 'duplicate') state.duplicateAnnotations([shape.id])
+      else if (id === 'front') state.bringShapeToFront(shape.id)
+      else if (id === 'back') state.sendShapeToBack(shape.id)
       else if (id === 'delete') state.removeAnnotations([shape.id])
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -183,9 +221,19 @@ const AnnotationLayer: React.FC = () => {
 
   const showConnectorMenu = useCallback(
     async (c: CanvasConnectorState) => {
+      const arrows = c.arrows ?? 'end'
       const id = await window.electronAPI?.showContextMenu?.([
         { id: 'label', label: c.label ? 'Edit Label' : 'Add Label' },
         { id: 'dashed', label: c.dashed ? 'Solid Line' : 'Dashed Line' },
+        { id: 'reverse', label: 'Reverse Direction' },
+        {
+          label: 'Arrowheads',
+          submenu: [
+            { id: 'arrows:end', label: `End${arrows === 'end' ? '  ✓' : ''}` },
+            { id: 'arrows:both', label: `Both${arrows === 'both' ? '  ✓' : ''}` },
+            { id: 'arrows:none', label: `None${arrows === 'none' ? '  ✓' : ''}` },
+          ],
+        },
         {
           label: 'Color',
           submenu: ANNOTATION_COLORS.map((col) => ({
@@ -200,6 +248,8 @@ const AnnotationLayer: React.FC = () => {
       if (!id) return
       if (id === 'label') beginConnectorLabelEdit(c)
       else if (id === 'dashed') state.setConnectorDashed(c.id, !c.dashed)
+      else if (id === 'reverse') state.reverseConnector(c.id)
+      else if (id.startsWith('arrows:')) state.setConnectorArrows(c.id, id.slice(7) as 'end' | 'both' | 'none')
       else if (id.startsWith('color:')) state.setConnectorColor(c.id, id.slice(6))
       else if (id === 'delete') state.removeAnnotations([c.id])
     },
@@ -208,11 +258,13 @@ const AnnotationLayer: React.FC = () => {
   )
 
   // --- Label editing ---------------------------------------------------------
+  // Rect labels sit at the top (frame-title style, clear of contained panels);
+  // ellipse labels stay centered. shapeLabelPos mirrors this for rendering.
   const beginShapeLabelEdit = useCallback((shape: CanvasShapeState) => {
     setEditing({
       kind: 'shape',
       id: shape.id,
-      at: rectCenter({ origin: shape.origin, size: shape.size }),
+      at: shapeLabelPos(shape),
       width: Math.max(shape.size.width - 24, 80),
     })
   }, [])
@@ -292,12 +344,12 @@ const AnnotationLayer: React.FC = () => {
               )}
               {s.label && !(editing?.kind === 'shape' && editing.id === s.id) && (
                 <text
-                  x={s.origin.x + s.size.width / 2}
-                  y={s.origin.y + s.size.height / 2}
+                  x={shapeLabelPos(s).x}
+                  y={shapeLabelPos(s).y}
                   textAnchor="middle"
                   dominantBaseline="central"
                   fill="var(--text-primary)"
-                  style={{ fontSize: 13, fontFamily: 'var(--font-sans)', pointerEvents: 'none', userSelect: 'none' }}
+                  style={{ fontSize: 13, fontWeight: s.kind === 'rect' ? 600 : 400, fontFamily: 'var(--font-sans)', pointerEvents: 'none', userSelect: 'none' }}
                 >
                   {s.label}
                 </text>
@@ -336,7 +388,12 @@ const AnnotationLayer: React.FC = () => {
                 strokeDasharray={c.dashed ? '7 5' : undefined}
                 pointerEvents="none"
               />
-              <polygon points={arrowheadPoints(line.from, line.to, ARROW_SIZE)} fill={c.color} pointerEvents="none" />
+              {(c.arrows ?? 'end') !== 'none' && (
+                <polygon points={arrowheadPoints(line.from, line.to, ARROW_SIZE)} fill={c.color} pointerEvents="none" />
+              )}
+              {c.arrows === 'both' && (
+                <polygon points={arrowheadPoints(line.to, line.from, ARROW_SIZE)} fill={c.color} pointerEvents="none" />
+              )}
               {c.label && !(editing?.kind === 'connector' && editing.id === c.id) && (
                 <text
                   x={mid.x}

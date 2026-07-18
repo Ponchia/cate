@@ -271,6 +271,15 @@ export interface CanvasStoreActions {
   setConnectorLabel: (id: string, label: string) => void
   setConnectorColor: (id: string, color: string) => void
   setConnectorDashed: (id: string, dashed: boolean) => void
+  setConnectorArrows: (id: string, arrows: 'end' | 'both' | 'none') => void
+  /** Swap a connector's from/to (flips the arrow direction). */
+  reverseConnector: (id: string) => void
+  /** Reorder a shape within the shape stack (shapes always stay below nodes). */
+  bringShapeToFront: (id: string) => void
+  sendShapeToBack: (id: string) => void
+  /** Clone the given shapes (+ connectors whose endpoints are covered),
+   *  offset slightly; selects and returns the clones' ids. */
+  duplicateAnnotations: (ids: string[]) => string[]
   /** Delete the given shapes/connectors (connectors attached to a deleted shape
    *  go with it). One history step. */
   removeAnnotations: (ids: string[]) => void

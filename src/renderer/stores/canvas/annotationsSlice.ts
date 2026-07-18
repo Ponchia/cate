@@ -29,6 +29,11 @@ type AnnotationsActions = Pick<
   | 'setConnectorLabel'
   | 'setConnectorColor'
   | 'setConnectorDashed'
+  | 'setConnectorArrows'
+  | 'reverseConnector'
+  | 'bringShapeToFront'
+  | 'sendShapeToBack'
+  | 'duplicateAnnotations'
   | 'removeAnnotations'
   | 'selectAnnotations'
   | 'clearAnnotationSelection'
@@ -108,6 +113,7 @@ export function sanitizeLoadedAnnotations(raw: CanvasAnnotations | undefined): C
       color: typeof c.color === 'string' ? c.color : ANNOTATION_COLORS[0].value,
       label: typeof c.label === 'string' ? c.label : undefined,
       dashed: c.dashed === true ? true : undefined,
+      arrows: c.arrows === 'both' || c.arrows === 'none' ? c.arrows : undefined,
       creationIndex: finite(c.creationIndex) ? c.creationIndex : 0,
     }
   }
@@ -252,6 +258,103 @@ export function createAnnotationsSlice(set: CanvasSet, get: CanvasGet): Annotati
       set((state) => ({
         connectors: { ...state.connectors, [id]: { ...c, dashed: dashed || undefined } },
       }))
+    },
+
+    setConnectorArrows(id, arrows) {
+      const c = get().connectors[id]
+      if (!c || (c.arrows ?? 'end') === arrows) return
+      get().pushHistory()
+      set((state) => ({
+        connectors: { ...state.connectors, [id]: { ...c, arrows: arrows === 'end' ? undefined : arrows } },
+      }))
+    },
+
+    reverseConnector(id) {
+      const c = get().connectors[id]
+      if (!c) return
+      get().pushHistory()
+      set((state) => ({
+        connectors: { ...state.connectors, [id]: { ...c, from: c.to, to: c.from } },
+      }))
+    },
+
+    bringShapeToFront(id) {
+      const state = get()
+      const shape = state.shapes[id]
+      if (!shape) return
+      get().pushHistory()
+      set({
+        shapes: { ...state.shapes, [id]: { ...shape, creationIndex: state.nextCreationIndex } },
+        nextCreationIndex: state.nextCreationIndex + 1,
+      })
+    },
+
+    sendShapeToBack(id) {
+      const state = get()
+      const shape = state.shapes[id]
+      if (!shape) return
+      const min = Object.values(state.shapes).reduce((m, s) => Math.min(m, s.creationIndex), Infinity)
+      if (shape.creationIndex === min) return
+      get().pushHistory()
+      set({
+        shapes: { ...state.shapes, [id]: { ...shape, creationIndex: min - 1 } },
+      })
+    },
+
+    duplicateAnnotations(ids) {
+      const state = get()
+      const shapeIds = ids.filter((id) => state.shapes[id])
+      const connectorIds = ids.filter((id) => state.connectors[id])
+      if (shapeIds.length === 0 && connectorIds.length === 0) return []
+      get().pushHistory()
+      const OFFSET = 28
+      let nextIndex = state.nextCreationIndex
+      const idMap = new Map<string, string>()
+      const shapes = { ...state.shapes }
+      for (const id of shapeIds) {
+        const src = state.shapes[id]
+        const cloneId = generateId()
+        idMap.set(id, cloneId)
+        shapes[cloneId] = {
+          ...src,
+          id: cloneId,
+          origin: { x: src.origin.x + OFFSET, y: src.origin.y + OFFSET },
+          creationIndex: nextIndex++,
+        }
+      }
+      // Connectors: explicitly selected ones, plus those running between two
+      // duplicated shapes (duplicating a group keeps its internal wiring).
+      const connectors = { ...state.connectors }
+      const remap = (ep: CanvasConnectorEndpoint): CanvasConnectorEndpoint =>
+        ep.kind === 'shape' && idMap.has(ep.shapeId) ? { kind: 'shape', shapeId: idMap.get(ep.shapeId)! } : ep
+      const coveredEnd = (ep: CanvasConnectorEndpoint): boolean =>
+        ep.kind === 'node' || (ep.kind === 'shape' && idMap.has(ep.shapeId))
+      const wanted = new Set(connectorIds)
+      for (const c of Object.values(state.connectors)) {
+        const internal = c.from.kind === 'shape' && c.to.kind === 'shape'
+          && idMap.has(c.from.shapeId) && idMap.has(c.to.shapeId)
+        if (!wanted.has(c.id) && !internal) continue
+        // A selected connector clones only when each end still resolves after
+        // remapping (a node end stays put; a shape end must be in the set).
+        if (wanted.has(c.id) && !(coveredEnd(c.from) && coveredEnd(c.to))) continue
+        const from = remap(c.from)
+        const to = remap(c.to)
+        // Unmapped both-node clone would duplicate in place invisibly — skip.
+        if (from === c.from && to === c.to) continue
+        const cloneId = generateId()
+        idMap.set(c.id, cloneId)
+        connectors[cloneId] = { ...c, id: cloneId, from, to, creationIndex: nextIndex++ }
+      }
+      const cloneIds = [...idMap.values()]
+      set({
+        shapes,
+        connectors,
+        nextCreationIndex: nextIndex,
+        annotationSelection: cloneIds,
+        selection: [],
+        selectionActive: false,
+      })
+      return cloneIds
     },
 
     removeAnnotations(ids) {

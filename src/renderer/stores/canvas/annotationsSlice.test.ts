@@ -123,4 +123,63 @@ describe('annotations slice', () => {
     store.getState().undo()
     expect(store.getState().shapes[shapeId].label).toBeUndefined()
   })
+
+  it('duplicateAnnotations clones a shape group with its internal wiring remapped', () => {
+    const store = createCanvasStore()
+    const a = store.getState().addShape('rect', { x: 0, y: 0 })
+    const b = store.getState().addShape('ellipse', { x: 400, y: 0 })
+    store.getState().setShapeLabel(a, 'src')
+    const c = store.getState().addConnector({ kind: 'shape', shapeId: a }, { kind: 'shape', shapeId: b })!
+    const clones = store.getState().duplicateAnnotations([a, b])
+    const s = store.getState()
+    // 2 shape clones + the internal connector cloned along.
+    expect(clones.length).toBe(3)
+    expect(Object.keys(s.shapes).length).toBe(4)
+    expect(Object.keys(s.connectors).length).toBe(2)
+    const cloneConn = Object.values(s.connectors).find((x) => x.id !== c)!
+    // Remapped onto the clones, not the originals.
+    expect(cloneConn.from).not.toEqual({ kind: 'shape', shapeId: a })
+    expect(s.shapes[(cloneConn.from as { shapeId: string }).shapeId]).toBeDefined()
+    // Clones are offset and selected; label carried over.
+    const cloneA = Object.values(s.shapes).find((x) => x.label === 'src' && x.id !== a)!
+    expect(cloneA.origin).toEqual({ x: 28, y: 28 })
+    expect(new Set(s.annotationSelection)).toEqual(new Set(clones))
+    // One undo removes the whole duplication.
+    store.getState().undo()
+    expect(Object.keys(store.getState().shapes).length).toBe(2)
+    expect(Object.keys(store.getState().connectors).length).toBe(1)
+  })
+
+  it('duplicating a shape wired to a node keeps the clone attached to that node', () => {
+    const { store, nodeId } = storeWithNode()
+    const a = store.getState().addShape('rect', { x: 400, y: 0 })
+    store.getState().addConnector({ kind: 'shape', shapeId: a }, { kind: 'node', nodeId })
+    const clones = store.getState().duplicateAnnotations([a])
+    const s = store.getState()
+    expect(Object.keys(s.connectors).length).toBe(1) // node-attached connector not auto-cloned
+    expect(clones.length).toBe(1)
+  })
+
+  it('bring/send reorders shapes within the shape stack', () => {
+    const store = createCanvasStore()
+    const a = store.getState().addShape('rect', { x: 0, y: 0 })
+    const b = store.getState().addShape('rect', { x: 10, y: 10 })
+    expect(store.getState().shapes[b].creationIndex).toBeGreaterThan(store.getState().shapes[a].creationIndex)
+    store.getState().bringShapeToFront(a)
+    expect(store.getState().shapes[a].creationIndex).toBeGreaterThan(store.getState().shapes[b].creationIndex)
+    store.getState().sendShapeToBack(a)
+    expect(store.getState().shapes[a].creationIndex).toBeLessThan(store.getState().shapes[b].creationIndex)
+  })
+
+  it('reverseConnector swaps direction and setConnectorArrows round-trips', () => {
+    const { store, nodeId } = storeWithNode()
+    const a = store.getState().addShape('rect', { x: 400, y: 0 })
+    const c = store.getState().addConnector({ kind: 'shape', shapeId: a }, { kind: 'node', nodeId })!
+    store.getState().reverseConnector(c)
+    expect(store.getState().connectors[c].from).toEqual({ kind: 'node', nodeId })
+    store.getState().setConnectorArrows(c, 'both')
+    expect(store.getState().connectors[c].arrows).toBe('both')
+    store.getState().setConnectorArrows(c, 'end')
+    expect(store.getState().connectors[c].arrows).toBeUndefined()
+  })
 })

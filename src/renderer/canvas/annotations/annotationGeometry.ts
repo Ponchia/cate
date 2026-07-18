@@ -133,6 +133,38 @@ export function hitTestNode(nodes: Record<string, CanvasNodeState>, p: Point): C
   return best
 }
 
+export interface ShapeMembers {
+  nodeIds: string[]
+  shapeIds: string[]
+}
+
+/** Everything spatially INSIDE a shape — the members that move with it when it
+ *  is dragged (frame semantics). Membership is purely geometric, evaluated at
+ *  gesture start: a panel node or smaller shape belongs when its center sits
+ *  inside the container's visible outline (the ellipse itself for ellipses).
+ *  Nesting needs no recursion: if B is inside A, B's members' centers are
+ *  inside A too. */
+export function shapeMembers(
+  container: CanvasShapeState,
+  nodes: Record<string, CanvasNodeState>,
+  shapes: Record<string, CanvasShapeState>,
+): ShapeMembers {
+  const area = container.size.width * container.size.height
+  const nodeIds: string[] = []
+  const shapeIds: string[] = []
+  for (const n of Object.values(nodes)) {
+    if (pointInShape(rectCenter({ origin: n.origin, size: n.size }), container)) nodeIds.push(n.id)
+  }
+  for (const s of Object.values(shapes)) {
+    if (s.id === container.id) continue
+    // Strictly smaller only — two same-size overlapping shapes must not
+    // capture each other.
+    if (s.size.width * s.size.height >= area) continue
+    if (pointInShape(rectCenter({ origin: s.origin, size: s.size }), container)) shapeIds.push(s.id)
+  }
+  return { nodeIds, shapeIds }
+}
+
 /** The endpoint (shape preferred over node when both hit — shapes render under
  *  nodes but are the more deliberate annotation target only when NOT covered;
  *  nodes win where they overlap since they're visually on top). */

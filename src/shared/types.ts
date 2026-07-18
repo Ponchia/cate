@@ -387,6 +387,8 @@ export interface CanvasConnectorState {
   color: string
   label?: string
   dashed?: boolean
+  /** Arrowhead placement. Absent = 'end'. */
+  arrows?: 'end' | 'both' | 'none'
   creationIndex: number
 }
 

@@ -166,6 +166,19 @@ export function useShortcuts(windowCanvasStore?: StoreApi<CanvasStore>): void {
         return
       }
 
+      // Cmd+D — duplicate the selected shapes/connectors. Only claimed while an
+      // annotation selection exists, so the chord stays free elsewhere.
+      if (e.metaKey && !e.shiftKey && e.key === 'd') {
+        if (terminalHasFocus) return
+        const state = canvasStore()
+        if (state && state.annotationSelection.length > 0 && !isTextSurfaceFocused()) {
+          e.preventDefault()
+          e.stopPropagation()
+          state.duplicateAnnotations(state.annotationSelection)
+          return
+        }
+      }
+
       // Escape — clear selection and revert to the Select tool (when no overlay
       // is open) so the user is never stuck in the Hand tool.
       if (e.key === 'Escape') {

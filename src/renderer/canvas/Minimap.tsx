@@ -45,6 +45,7 @@ interface MinimapProps {
 
 const Minimap: React.FC<MinimapProps> = ({ mode = 'floating' }) => {
   const nodeList = useCanvasStoreContext((s) => Object.values(s.nodes), shallow)
+  const shapeList = useCanvasStoreContext((s) => Object.values(s.shapes), shallow)
   // NOTE: viewportOffset is intentionally NOT subscribed via React here.
   // The viewport rect div is updated imperatively via canvasApi.subscribe
   // so panning never triggers a Minimap re-render.
@@ -189,13 +190,14 @@ const Minimap: React.FC<MinimapProps> = ({ mode = 'floating' }) => {
   }, [canvasApi])
 
   const contentBounds = useMemo(() => {
-    if (nodeList.length === 0) return null
-    const minX = Math.min(...nodeList.map(n => n.origin.x))
-    const minY = Math.min(...nodeList.map(n => n.origin.y))
-    const maxX = Math.max(...nodeList.map(n => n.origin.x + n.size.width))
-    const maxY = Math.max(...nodeList.map(n => n.origin.y + n.size.height))
+    const all = [...nodeList, ...shapeList]
+    if (all.length === 0) return null
+    const minX = Math.min(...all.map(n => n.origin.x))
+    const minY = Math.min(...all.map(n => n.origin.y))
+    const maxX = Math.max(...all.map(n => n.origin.x + n.size.width))
+    const maxY = Math.max(...all.map(n => n.origin.y + n.size.height))
     return { minX, minY, maxX, maxY }
-  }, [nodeList])
+  }, [nodeList, shapeList])
 
   if (!contentBounds) return null
 
@@ -306,6 +308,25 @@ const Minimap: React.FC<MinimapProps> = ({ mode = 'floating' }) => {
           }}
         >⠿</div>
       )}
+
+      {/* Shape outlines — under the node rectangles, like on the canvas. */}
+      {shapeList.map((s) => (
+        <div
+          key={s.id}
+          style={{
+            position: 'absolute',
+            left: toMiniX(s.origin.x),
+            top: toMiniY(s.origin.y),
+            width: Math.max(s.size.width * scale, 2),
+            height: Math.max(s.size.height * scale, 2),
+            border: `1px solid ${s.color}`,
+            background: `color-mix(in srgb, ${s.color} 12%, transparent)`,
+            borderRadius: s.kind === 'ellipse' ? '50%' : 2,
+            opacity: 0.8,
+            pointerEvents: 'none',
+          }}
+        />
+      ))}
 
       {/* Node rectangles */}
       {nodeList.map((node) => {

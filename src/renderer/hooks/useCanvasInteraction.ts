@@ -558,7 +558,7 @@ export function useCanvasInteraction(
             const mw = Math.abs(endCanvasX - startCanvasX)
             const mh = Math.abs(endCanvasY - startCanvasY)
 
-            const { nodes } = canvasStoreApi.getState()
+            const { nodes, shapes } = canvasStoreApi.getState()
 
             const marqueeRect = { origin: { x: mx, y: my }, size: { width: mw, height: mh } }
             const hitNodeIds = Object.values(nodes)
@@ -567,6 +567,18 @@ export function useCanvasInteraction(
 
             if (!shiftHeld) {
               canvasStoreApi.getState().clearSelection()
+            }
+            // Nodes win the marquee; a marquee that only sweeps shapes selects
+            // those instead (node and annotation selection stay mutually
+            // exclusive, so a mixed sweep can't select both kinds).
+            if (hitNodeIds.length === 0) {
+              const hitShapeIds = Object.values(shapes)
+                .filter((s) => rectsOverlap(marqueeRect, { origin: s.origin, size: s.size }))
+                .map((s) => s.id)
+              if (hitShapeIds.length > 0) {
+                canvasStoreApi.getState().selectAnnotations(hitShapeIds, shiftHeld)
+                return
+              }
             }
             // selectNodes leaves the selection un-activated (no active lead), so
             // the marquee result renders uniformly as selection rings and the
