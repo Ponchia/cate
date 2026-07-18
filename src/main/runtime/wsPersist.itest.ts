@@ -127,4 +127,54 @@ describe.skipIf(!existsSync(BUNDLE))('persistent daemon over ws (live)', () => {
     await mgr2.disposeAll()
     await mgr3.disposeAll()
   })
+
+  test('re-attach on the SAME connection replaces the subscription — output is never duplicated', async () => {
+    // Renderer-reload shape: the client process and its socket survive, and the
+    // restored terminal attaches to a pty this connection is already subscribed
+    // to. The daemon must REPLACE the subscription; before the fix each stale
+    // attach fanned every byte out once more ("jj" duplicated keystroke echo).
+    const url = `ws://127.0.0.1:${PORT}/?token=${TOKEN}`
+    const mgr = new RuntimeManager()
+    const rt = await mgr.connect('srv_dup', new WsRuntimeTransport(url))
+
+    let ptyId = ''
+    let created = ''
+    await new Promise<void>((resolve) => {
+      void rt.process.create(
+        { cols: 80, rows: 24, cwd: workspace, shell: '/bin/bash' },
+        (_id, data) => {
+          created += data
+          if (created.includes('READY-7')) resolve()
+        },
+        () => {},
+      ).then((handle) => {
+        ptyId = handle.id
+        rt.process.write(ptyId, 'echo READY-$((3+4))\n')
+      })
+    })
+
+    // Attach twice more on the SAME connection with fresh callbacks (each a
+    // "reloaded renderer" pipeline). Only the latest may receive output.
+    const cursor = Buffer.byteLength(created, 'utf-8')
+    let outA = ''
+    await rt.sessions!.attachPty(ptyId, (_id, d) => { outA += d }, () => {}, cursor)
+    let outB = ''
+    await rt.sessions!.attachPty(ptyId, (_id, d) => { outB += d }, () => {}, cursor)
+
+    rt.process.write(ptyId, 'echo ONCE-$((5*5))\n')
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('marker never arrived')), 8000)
+      const check = setInterval(() => {
+        if (outB.includes('ONCE-25')) { clearTimeout(timer); clearInterval(check); resolve() }
+      }, 100)
+    })
+    // Settle so a duplicate frame (the bug) would have landed too.
+    await new Promise((r) => setTimeout(r, 500))
+
+    const occurrences = outB.split('ONCE-25').length - 1
+    expect(occurrences).toBe(1)
+
+    rt.process.kill(ptyId)
+    await mgr.disposeAll()
+  })
 })

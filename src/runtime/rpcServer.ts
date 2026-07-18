@@ -216,6 +216,16 @@ export class RpcServer {
       case Methods.sessionsPtyList: return this.requireSessions().listPtys()
       case Methods.sessionsPtyAttach: {
         const sessions = this.requireSessions()
+        // Idempotent per connection: a client re-attaching to a pty it is
+        // already subscribed to (renderer reload — its process and socket
+        // survive) REPLACES the subscription. Without this, the overwritten
+        // map entry orphaned the old hub subscriber and every subsequent byte
+        // fanned out once per stale attach (duplicated keystroke echo).
+        const prev = this.ptySubs.get(s(0))
+        if (prev) {
+          this.ptySubs.delete(s(0))
+          await sessions.detachPty(s(0), prev).catch(() => {})
+        }
         const onData = (id: string, data: string): void =>
           this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'data', data } }))
         const onExit = (id: string, exitCode: number): void => {
@@ -237,6 +247,12 @@ export class RpcServer {
       case Methods.sessionsAgentList: return this.requireSessions().listAgents()
       case Methods.sessionsAgentAttach: {
         const sessions = this.requireSessions()
+        // Same idempotent-reattach rule as sessionsPtyAttach above.
+        const prevLine = this.agentSubs.get(s(0))
+        if (prevLine) {
+          this.agentSubs.delete(s(0))
+          await sessions.detachAgent(s(0), prevLine).catch(() => {})
+        }
         const onLine = (id: string, line: string): void =>
           this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'line', line } }))
         const onExit = (id: string, code: number, stderr?: string): void => {

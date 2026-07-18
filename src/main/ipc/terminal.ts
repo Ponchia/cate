@@ -383,6 +383,16 @@ async function spawnTerminal(
   // daemon restarted — falls through to a normal spawn.
   if (options.attachPtyId && runtime.sessions) {
     try {
+      // A pipeline for this pty may already be live in THIS process: on a
+      // renderer reload the main process (and its daemon connection, and its
+      // attach subscription) survives, and the restored panel attaches again.
+      // Detach the stale subscription first or the daemon fans every byte out
+      // once per stale attach — duplicated keystroke echo and mounting lag.
+      const stale = terminalWiring.get(options.attachPtyId)
+      if (stale) {
+        log.info('[terminal] re-attach of %s: detaching stale subscription first', options.attachPtyId)
+        await runtime.sessions.detachPty(options.attachPtyId, stale.onData).catch(() => {})
+      }
       const res = await runtime.sessions.attachPty(options.attachPtyId, onData, onExit, 0)
       const id = options.attachPtyId
       terminalRuntime.set(id, runtimeId)
