@@ -34,6 +34,7 @@ const PASSTHROUGH_PANEL_FIELDS = [
   'proxyUrl',
   'browserLive',
   'browserDevice',
+  'agentCwd',
   'documentType',
   'extensionId',
   'extensionPanelId',

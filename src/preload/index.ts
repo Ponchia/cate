@@ -30,6 +30,8 @@ import {
   GIT_INIT,
   GIT_LS_FILES,
   GIT_BRANCH_UPDATE,
+  GIT_REPO_STATUS_UPDATE,
+  GIT_MONITOR_SET_REPOS,
   GIT_MONITOR_START,
   GIT_MONITOR_STOP,
   GIT_STATUS,
@@ -698,8 +700,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return createIpcListener(GIT_BRANCH_UPDATE, callback)
   },
 
+  onGitRepoStatusUpdate(
+    callback: (workspaceId: string, repoLocator: string, branch: string, isDirty: boolean) => void,
+  ): () => void {
+    return createIpcListener(GIT_REPO_STATUS_UPDATE, callback)
+  },
+
   gitMonitorStart(workspaceId: string, rootPath: string): void {
     ipcRenderer.send(GIT_MONITOR_START, workspaceId, rootPath)
+  },
+
+  gitMonitorSetRepos(workspaceId: string, repoLocators: string[]): void {
+    ipcRenderer.send(GIT_MONITOR_SET_REPOS, workspaceId, repoLocators)
   },
 
   gitMonitorStop(workspaceId: string): void {

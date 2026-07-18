@@ -382,6 +382,15 @@ export interface ElectronAPI {
   /** Start git monitoring for a workspace. */
   gitMonitorStart(workspaceId: string, rootPath: string): void
 
+  /** Container workspaces: replace the attention set — repo locators that
+   *  currently host open panels; only these are polled for status. */
+  gitMonitorSetRepos(workspaceId: string, repoLocators: string[]): void
+
+  /** Subscribe to per-repo status updates (container workspaces). */
+  onGitRepoStatusUpdate(
+    callback: (workspaceId: string, repoLocator: string, branch: string, isDirty: boolean) => void,
+  ): () => void
+
   /** Stop git monitoring for a workspace. */
   gitMonitorStop(workspaceId: string): void
 

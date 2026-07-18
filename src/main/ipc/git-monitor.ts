@@ -6,11 +6,13 @@ import { app, ipcMain } from 'electron'
 import log from '../logger'
 import {
   GIT_BRANCH_UPDATE,
+  GIT_REPO_STATUS_UPDATE,
   GIT_MONITOR_START,
+  GIT_MONITOR_SET_REPOS,
   GIT_MONITOR_STOP,
 } from '../../shared/ipc-channels'
 import { sendToWindow, windowFromEvent, isAnyWindowFocused } from '../windowRegistry'
-import { parseLocator } from '../runtime/locator'
+import { parseLocator, formatLocator } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import type { Runtime } from '../runtime/types'
 
@@ -25,8 +27,20 @@ interface MonitorEntry {
   ownerWindowId: number
   rootPath: string
   workspaceId: string
+  /** Routing key of the runtime, for re-encoding repo paths into locators. */
+  runtimeId: string
   /** Runtime hosting this workspace (local or remote); polled for status. */
   runtime: Runtime
+  /** Whether rootPath itself is a git repo. `null` until the async probe
+   *  resolves. A CONTAINER workspace (a folder OF repos — e.g. ~/bronto with
+   *  30 checkouts) has a non-repo root: it is never polled, so the monitor no
+   *  longer hammers `git status` against a directory that can't answer. */
+  rootIsRepo: boolean | null
+  /** Attention set for container workspaces: host-absolute repo paths that
+   *  currently deserve live status (repos hosting open panels), fed by the
+   *  renderer via GIT_MONITOR_SET_REPOS. Bounded by open panels — never by
+   *  the container's full inventory (hive holds 94 repos). */
+  attention: Set<string>
   /** Next delay to schedule after the current poll completes (ms). */
   nextDelayMs: number
   /** Incremented on every poll start; a poll whose epoch is stale (a newer
@@ -41,7 +55,11 @@ interface MonitorEntry {
 }
 
 const activeMonitors: Map<string, MonitorEntry> = new Map()
+/** Keyed by `${workspaceId}\0${repoPath}` — one state per polled repo. */
 const lastState: Map<string, { branch: string; isDirty: boolean; branchesKey: string }> = new Map()
+/** Attention sets that arrived before their workspace's monitor started
+ *  (renderer effect ordering) — consumed by GIT_MONITOR_START. */
+const pendingAttention: Map<string, string[]> = new Map()
 
 /** True iff at least one BrowserWindow is currently focused. */
 let anyWindowFocused: boolean = false
@@ -81,53 +99,73 @@ async function tick(entry: MonitorEntry): Promise<void> {
   scheduleNext(entry, entry.nextDelayMs)
 }
 
+/** The repo paths this entry should poll: the root (when it IS a repo) plus
+ *  the container attention set. Empty for a container with no attended repos. */
+function pollTargets(entry: MonitorEntry): string[] {
+  const targets = new Set<string>()
+  if (entry.rootIsRepo) targets.add(entry.rootPath)
+  for (const p of entry.attention) targets.add(p)
+  return [...targets]
+}
+
 /**
  * Run one git poll via the workspace's runtime. For the local runtime this
  * is byte-identical to the old raw-git poll (same `git branch/status/for-each-ref`
  * commands, run by the unified vcs capability); for a remote runtime the
  * commands run on the daemon host, so the sidebar reflects the remote repo.
- * Returns true iff observable state changed (and a GIT_BRANCH_UPDATE was sent),
- * which drives the adaptive interval reset.
+ * Polls EVERY target repo (the root for repo workspaces; the attention set for
+ * containers). Returns true iff any observable state changed, which drives the
+ * adaptive interval reset. Per-repo results broadcast on GIT_REPO_STATUS_UPDATE;
+ * the workspace-root repo additionally keeps the legacy GIT_BRANCH_UPDATE.
  */
 async function pollGitStatus(entry: MonitorEntry): Promise<boolean> {
-  const { ownerWindowId, workspaceId, rootPath, runtime } = entry
+  const { ownerWindowId, workspaceId, rootPath, runtimeId, runtime } = entry
 
   // A newer poll (or teardown) supersedes this one: bump the epoch, and discard
   // our own result if it changes again before we resolve.
   const epoch = ++entry.pollEpoch
+  const targets = pollTargets(entry)
+  if (targets.length === 0) return false
 
-  try {
-    const { branch, dirty: isDirty, branches } = await runtime.vcs.monitorStatus(rootPath, { scopeId: workspaceId })
+  const results = await Promise.all(targets.map(async (repoPath) => {
+    try {
+      const { branch, dirty: isDirty, branches } = await runtime.vcs.monitorStatus(repoPath, { scopeId: workspaceId })
 
-    // Stale: a fresher poll started, or the monitor was torn down/restarted.
-    if (entry.pollEpoch !== epoch || !activeMonitors.has(workspaceId)) return false
+      // Stale: a fresher poll started, or the monitor was torn down/restarted.
+      if (entry.pollEpoch !== epoch || !activeMonitors.has(workspaceId)) return false
+      if (!branch) return false
 
-    if (!branch) return false
+      // Sort so reordering (e.g. committerdate changes) doesn't spuriously
+      // look like a list change; a newline-joined canonical string is
+      // cheaper to diff than the array.
+      const branchesKey = [...branches].sort().join('\n')
 
-    // Sort so reordering (e.g. committerdate changes) doesn't spuriously
-    // look like a list change; a newline-joined canonical string is
-    // cheaper to diff than the array.
-    const branchesKey = [...branches].sort().join('\n')
+      const stateKey = `${workspaceId}\0${repoPath}`
+      const prev = lastState.get(stateKey)
+      if (
+        prev
+        && prev.branch === branch
+        && prev.isDirty === isDirty
+        && prev.branchesKey === branchesKey
+      ) return false
 
-    const prev = lastState.get(workspaceId)
-    if (
-      prev
-      && prev.branch === branch
-      && prev.isDirty === isDirty
-      && prev.branchesKey === branchesKey
-    ) return false
-
-    lastState.set(workspaceId, { branch, isDirty, branchesKey })
-    sendToWindow(ownerWindowId, GIT_BRANCH_UPDATE, workspaceId, branch, isDirty)
-    return true
-  } catch (err) {
-    log.debug(
-      'git monitor poll failed for %s: %s',
-      rootPath,
-      err instanceof Error ? err.message : String(err),
-    )
-    return false
-  }
+      lastState.set(stateKey, { branch, isDirty, branchesKey })
+      const repoLocator = formatLocator({ runtimeId, path: repoPath })
+      sendToWindow(ownerWindowId, GIT_REPO_STATUS_UPDATE, workspaceId, repoLocator, branch, isDirty)
+      if (repoPath === rootPath) {
+        sendToWindow(ownerWindowId, GIT_BRANCH_UPDATE, workspaceId, branch, isDirty)
+      }
+      return true
+    } catch (err) {
+      log.debug(
+        'git monitor poll failed for %s: %s',
+        repoPath,
+        err instanceof Error ? err.message : String(err),
+      )
+      return false
+    }
+  }))
+  return results.some(Boolean)
 }
 
 /** Resume polling for every active monitor (called on focus return). */
@@ -179,7 +217,10 @@ export function stopMonitorsForWindow(windowId: number): void {
       entry.pollEpoch++
       entry.unsubscribeFs?.()
       activeMonitors.delete(workspaceId)
-      lastState.delete(workspaceId)
+      pendingAttention.delete(workspaceId)
+      for (const key of [...lastState.keys()]) {
+        if (key.startsWith(`${workspaceId}\0`)) lastState.delete(key)
+      }
     }
   }
 }
@@ -225,12 +266,18 @@ export function registerHandlers(): void {
       ownerWindowId,
       rootPath: validRoot,
       workspaceId,
+      runtimeId,
       runtime,
+      // Unknown until probed below; polls hold off so a container root is
+      // never hammered with git commands that can only fail.
+      rootIsRepo: null,
+      attention: new Set(pendingAttention.get(workspaceId) ?? []),
       nextDelayMs: POLL_INTERVAL_MIN_MS,
       pollEpoch: 0,
       unsubscribeFs: null,
       fsKickPending: false,
     }
+    pendingAttention.delete(workspaceId)
 
     // Wire fs-watcher events from the runtime file watcher to trigger an
     // immediate poll. The periodic timer becomes a safety net for changes
@@ -252,8 +299,46 @@ export function registerHandlers(): void {
 
     activeMonitors.set(workspaceId, entry)
 
-    // Kick off the first poll immediately, then let tick() schedule.
-    void tick(entry)
+    // Probe whether the root is a repo, then kick the first poll. A container
+    // root (folder of repos) resolves false: nothing polls until the renderer
+    // sends an attention set — but any pending set starts polling right away.
+    void runtime.vcs.isRepo(validRoot, { scopeId: workspaceId })
+      .catch(() => false)
+      .then((isRepo) => {
+        if (!activeMonitors.has(workspaceId) || activeMonitors.get(workspaceId) !== entry) return
+        entry.rootIsRepo = isRepo
+        if (!isRepo) log.debug('[git-monitor] %s is a container root (not a repo); polling attention set only', validRoot)
+        void tick(entry)
+      })
+  })
+
+  // Container workspaces: the renderer's attention set — repos (locators) that
+  // currently host open panels. Replaces the whole set; kicks an immediate poll
+  // so new panels see fresh status. Arriving before the monitor starts is
+  // stashed and consumed by GIT_MONITOR_START.
+  ipcMain.on(GIT_MONITOR_SET_REPOS, (_event, workspaceId: string, repoLocators: string[]) => {
+    const paths = (Array.isArray(repoLocators) ? repoLocators : [])
+      .map((loc) => parseLocator(String(loc)).path)
+      .filter(Boolean)
+    const entry = activeMonitors.get(workspaceId)
+    if (!entry) {
+      pendingAttention.set(workspaceId, paths)
+      return
+    }
+    const before = [...entry.attention].sort().join('\n')
+    entry.attention = new Set(paths)
+    // Drop cached state for repos that left the set, so re-attention re-emits.
+    for (const key of [...lastState.keys()]) {
+      const [ws, repoPath] = key.split('\0')
+      if (ws === workspaceId && repoPath !== entry.rootPath && !entry.attention.has(repoPath)) {
+        lastState.delete(key)
+      }
+    }
+    if (before !== [...entry.attention].sort().join('\n')) {
+      entry.nextDelayMs = POLL_INTERVAL_MIN_MS
+      clearTimer(entry)
+      void tick(entry)
+    }
   })
 
   ipcMain.on(GIT_MONITOR_STOP, (_event, workspaceId: string) => {
@@ -264,6 +349,9 @@ export function registerHandlers(): void {
       entry.unsubscribeFs?.()
       activeMonitors.delete(workspaceId)
     }
-    lastState.delete(workspaceId)
+    pendingAttention.delete(workspaceId)
+    for (const key of [...lastState.keys()]) {
+      if (key.startsWith(`${workspaceId}\0`)) lastState.delete(key)
+    }
   })
 }

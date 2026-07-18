@@ -89,6 +89,11 @@ export interface PanelState {
    *  mobile user agent + phone viewport/DPR (Chrome-devtools-style device
    *  mode); absent/'desktop' is the normal desktop rendering. */
   browserDevice?: BrowserDeviceMode
+  /** Agent panels only: repo (locator) the agent is pinned to. pi runs at this
+   *  cwd instead of the workspace root — the meaningful scope in a CONTAINER
+   *  workspace (folder of repos). Absent = workspace root (single-repo flows
+   *  unchanged). */
+  agentCwd?: string
   /** When set, EditorPanel renders as a Monaco diff editor. */
   diffMode?: 'staged' | 'working'
   /** Editor panels with a markdown file only: render the rendered preview
@@ -1002,6 +1007,8 @@ export interface ProjectPanelRef {
   browserLive?: boolean
   /** Browser panels only: device emulation (see PanelState.browserDevice). */
   browserDevice?: BrowserDeviceMode
+  /** Agent panels only: pinned repo cwd (see PanelState.agentCwd). */
+  agentCwd?: string
   /** Document panels only: sub-type discriminator for the viewer. */
   documentType?: 'pdf' | 'docx' | 'image'
   /** Extension panels only: which installed extension + which of its declared

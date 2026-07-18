@@ -19,6 +19,7 @@ import {
   Check,
 } from '@phosphor-icons/react'
 import { useAppStore } from '../stores/appStore'
+import { useRepoContextStore } from '../stores/repoContextStore'
 import { SidebarSectionHeader, SidebarHeaderButton } from './SidebarSectionHeader'
 import { pathDisplayName } from '../lib/fs/displayPath'
 import { Tooltip } from '../ui/Tooltip'
@@ -408,6 +409,9 @@ interface RepoSourceControlProps {
 
 const RepoSourceControl: React.FC<RepoSourceControlProps> = ({ rootPath, nested = false }) => {
   const [sectionOpen, setSectionOpen] = useState(true)
+  // Live per-repo status from the attention-bounded monitor (container
+  // workspaces) — drives the collapsed-header dirty dot without expanding.
+  const liveStatus = useRepoContextStore((s) => s.statusByRepo[rootPath] ?? null)
   // status + worktrees come from the single per-workspace gitStatusStore (the
   // shared fsWatch + focus + branch-update loop). The Source Control list can
   // therefore no longer disagree with the Explorer / Search git tints. Only the
@@ -687,6 +691,12 @@ const RepoSourceControl: React.FC<RepoSourceControlProps> = ({ rootPath, nested 
         >
           {sectionOpen ? <CaretDown size={12} /> : <CaretRight size={12} />}
           <span className="truncate text-secondary flex-shrink-0 max-w-[45%]">{repoName}</span>
+          {/* Live dirty dot from the attention-bounded git monitor (container
+              workspaces): present for repos hosting open panels, silent
+              otherwise — the section's own status still loads on expand. */}
+          {liveStatus?.isDirty && (
+            <span aria-label="dirty" className="w-[5px] h-[5px] rounded-full bg-blue-400 flex-shrink-0" />
+          )}
           <span className="flex-1 min-w-0 font-normal normal-case">{branchSubtitle}</span>
           <div className="flex items-center gap-0.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
             {headerActions}

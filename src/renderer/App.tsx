@@ -16,6 +16,7 @@ import { useBrowserStore } from './stores/browserStore'
 import { workspaceDisplayName } from './lib/fs/displayPath'
 import { useFileDropTracker, FileDropOverlay } from './drag/fileDropTarget'
 import { useProcessMonitor } from './hooks/useProcessMonitor'
+import { useRepoContext } from './hooks/useRepoContext'
 import { cateAgentController } from './cateAgent/cateAgentController'
 import { useCateHostActionResponder } from './hooks/useCateHostActionResponder'
 import { useCateAgentReady } from './stores/providerReadinessStore'
@@ -147,6 +148,7 @@ function MainApp() {
 
   // Main-only: terminal/agent activity → status bar + worktree sync.
   useProcessMonitor(selectedWorkspaceId)
+  useRepoContext(selectedWorkspaceId)
 
   // Tracks which workspace folders have had their Cate Agent restored this session.
   const cateAgentRestoredRef = useRef<Set<string>>(new Set())
