@@ -65,6 +65,7 @@ import {
   SHELL_AGENT_SESSION_UPDATE,
   SHELL_CWD_UPDATE,
   SHELL_AGENT_SCREEN_STATE,
+  SHELL_AGENT_HOOK_EVENT,
   SETTINGS_GET,
   SETTINGS_SET,
   SETTINGS_GET_ALL,
@@ -677,6 +678,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   onShellAgentSessionUpdate(callback: (terminalId: string, session: unknown) => void): () => void {
     return createIpcListener(SHELL_AGENT_SESSION_UPDATE, callback)
+  },
+
+  onShellAgentHookEvent(callback: (terminalId: string, event: unknown) => void): () => void {
+    return createIpcListener(SHELL_AGENT_HOOK_EVENT, callback)
   },
 
   shellReportAgentScreenState(terminalId: string, state: string): void {

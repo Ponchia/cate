@@ -315,7 +315,13 @@ async function spawnTerminal(
   // for its own host (the local resolver, or the daemon's first-existing-of
   // [requested, $SHELL, bash, sh]) — so a path that only exists on the client is
   // handled there, not branched on here.
-  const handle = await runtime.process.create({ cols: options.cols, rows: options.rows, cwd, shell: options.shell, env: cateApiEnv }, onData, onExit)
+  // agentHooks: user terminals opt into agent hook injection (push-based agent
+  // status/session events — see src/runtime/capabilities/agentHooks.ts).
+  const handle = await runtime.process.create(
+    { cols: options.cols, rows: options.rows, cwd, shell: options.shell, env: cateApiEnv, agentHooks: true },
+    onData,
+    onExit,
+  )
   resolvedShell = handle.shell ?? ''
 
   terminalRuntime.set(handle.id, runtimeId)

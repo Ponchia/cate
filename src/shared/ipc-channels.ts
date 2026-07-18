@@ -91,6 +91,9 @@ export const SHELL_AGENT_SESSION_UPDATE = 'shell:agentSessionUpdate' // main -> 
 // Renderer (where the xterm buffer lives) reports the agent's screen-derived
 // state up to main; main re-broadcasts so every window's sidebar agrees.
 export const SHELL_AGENT_SCREEN_STATE = 'shell:agentScreenState'
+// Normalized push-based agent-CLI hook event (session identity / turn status /
+// permission-wait, ingested by the runtime daemon) — main -> owning window.
+export const SHELL_AGENT_HOOK_EVENT = 'shell:agentHookEvent'
 
 // Settings
 export const SETTINGS_GET = 'settings:get'

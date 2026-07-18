@@ -4,6 +4,7 @@
 
 import type { AgentCreateOptions, AgentEventEnvelope, AgentExtensionUIResponse, AgentImageAttachment, AgentModelRef, AgentModelDescriptor, AgentRpcState, AgentSessionListEntry, AgentSessionStats, AgentSlashCommand, AgentThinkingLevel, AppSettings, AgentState, AuthProviderDescriptor, AuthProviderStatus, CustomOpenAIProvider, DockWindowInitPayload, DockWindowSyncState, DetachedDockWindowSnapshot, WindowPanelInfo, WindowPanelReport, FileSearchOptions, FileSearchResult, FileTreeNode, SearchOptions, SearchResultBatch, SearchDoneEvent, NotificationAction, OAuthFlowEvent, PanelTransferSnapshot, PerfSnapshot, Point, ProviderVerification, SidebarSession, TerminalActivity, TerminalAgentSession, WorkspaceInfo, WorkspaceMutationResult, RemoteConnectSpec, RuntimeConnectResult, RuntimeStatusEvent, RuntimeConnection, RuntimePhase, RemoteProjectEntry, SshHostEntry, UIState } from './types'
 import type { SavedSkill, InstalledSkill, SkillEntry, SkillSource, SkillTargetId } from './skills'
+import type { AgentHookEvent } from './agentHooks'
 import type { ExtensionListEntry, ExtensionManifest } from './extensions'
 
 /** Lifecycle state of the auto-updater, surfaced to the renderer for the
@@ -360,6 +361,14 @@ export interface ElectronAPI {
    *  when the agent exited (clears the persisted stamp). */
   onShellAgentSessionUpdate(
     callback: (terminalId: string, session: TerminalAgentSession | null) => void,
+  ): () => void
+
+  /** Subscribe to normalized agent-CLI hook events (push-based session
+   *  identity / turn status / permission-wait, ingested by the terminal's
+   *  runtime daemon and routed to the owning window). Mechanism only — the
+   *  status/notification/session features wire onto this stream. */
+  onShellAgentHookEvent(
+    callback: (terminalId: string, event: AgentHookEvent) => void,
   ): () => void
 
   /** Subscribe to CWD updates (main -> renderer). */

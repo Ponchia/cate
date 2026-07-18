@@ -13,6 +13,7 @@ import type {
   ProcessHost,
   PtyActivity,
   AgentHost,
+  AgentHookHost,
   AgentHandle,
   PtyHandle,
   ServerHost,
@@ -33,12 +34,13 @@ import type {
 } from './types'
 import type { FileAccessContext } from './types'
 import type { RuntimeRpcClient } from './rpcClient'
-import type { FsWatchEvtPayload, PtyEvtPayload, AgentEvtPayload, SearchEvtPayload, ServerEvtPayload, TunnelEvtPayload, TunnelListenEvtPayload } from '../../runtime/protocol'
+import type { FsWatchEvtPayload, PtyEvtPayload, AgentEvtPayload, AgentHookEvtPayload, SearchEvtPayload, ServerEvtPayload, TunnelEvtPayload, TunnelListenEvtPayload } from '../../runtime/protocol'
 import type { FileTreeNode, FileSearchResult, TerminalAgentSession } from '../../shared/types'
 
 export class RemoteRuntime implements Runtime {
   readonly process: ProcessHost
   readonly agent: AgentHost
+  readonly agentHooks: AgentHookHost
   readonly file: FileHost
   readonly vcs: VcsHost
   readonly server: ServerHost
@@ -122,6 +124,33 @@ export class RemoteRuntime implements Runtime {
       stop: (id) => {
         void this.rpc.call(Methods.agentStop, [id]).catch(() => {})
         this.rpc.unregisterStream(id)
+      },
+    }
+
+    // Agent hooks: server-assigned streamId, like watch — subscribe, then
+    // register the stream when the round-trip resolves. Normalized events
+    // arrive as evt frames.
+    this.agentHooks = {
+      subscribe: (onEvent) => {
+        let streamId: string | null = null
+        let stopped = false
+        void call<string>(Methods.agentHooksSubscribe, []).then((id) => {
+          if (stopped) {
+            // Unsubscribed before the subscribe round-trip resolved.
+            void this.rpc.call(Methods.agentHooksUnsubscribe, [id]).catch(() => {})
+            return
+          }
+          streamId = id
+          this.rpc.registerStream(id, (payload) => onEvent(payload as AgentHookEvtPayload))
+        }).catch(() => { /* subscribe failed; no events */ })
+        return () => {
+          stopped = true
+          if (streamId) {
+            this.rpc.unregisterStream(streamId)
+            void this.rpc.call(Methods.agentHooksUnsubscribe, [streamId]).catch(() => {})
+            streamId = null
+          }
+        }
       },
     }
 

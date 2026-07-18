@@ -15,6 +15,7 @@ import { createVcsCapability } from './vcs'
 import { createProcessCapability, type ProcessCapability } from './process'
 import { resolveShell } from './shellResolver'
 import { createAgentCapability } from './agent'
+import { createAgentHooksCapability, type AgentHooksCapability } from './agentHooks'
 import { createServerCapability, type ServerCapability } from './server'
 import { createTunnelCapability, type TunnelCapability } from './tunnel'
 import { ensurePiOnHost, piCliPath } from '../ensurePi'
@@ -57,8 +58,10 @@ export interface DaemonRuntime {
   process: ProcessCapability
   server: ServerCapability
   tunnel: TunnelCapability
-  /** Reap every live server child + tunnel socket (servers + tunnels). Process
-   *  groups are reaped via `process.killAllGroups()` by the daemon entry. */
+  agentHooks: AgentHooksCapability
+  /** Reap every live server child + tunnel socket (servers + tunnels + the
+   *  agent-hook ingestion endpoint). Process groups are reaped via
+   *  `process.killAllGroups()` by the daemon entry. */
   killAll(): void
 }
 
@@ -188,6 +191,12 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
   // roots; every vcs cwd is validated against the CALLER's access.scopeId.
   const vcs = createVcsCapability({ env, scopeId: config.id })
 
+  // Agent hook injection: every PTY gets the hook env (ingestion endpoint,
+  // per-boot token, CATE_TERMINAL_ID, PATH shims) and its cwd gets the
+  // workspace-scoped hook files, so agent CLIs the user types push their
+  // session/turn/permission events back to this daemon.
+  const agentHooks = createAgentHooksCapability()
+
   const innerProc = createProcessCapability({
     resolveShell: (requested) => {
       const resolved = resolveShell(requested)
@@ -198,6 +207,10 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
     },
     getEnv: cleanEnv,
     idleSuspend: config.idleSuspend,
+    hooks: {
+      envForPty: (ptyId, env) => agentHooks.envForPty(ptyId, env),
+      prepareWorkspace: (cwd) => agentHooks.prepareWorkspace(cwd),
+    },
   })
 
   // The daemon is the AUTHORITATIVE cwd check (RemoteRuntime.validateCwd is a
@@ -234,6 +247,7 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
     id: config.id,
     process: proc,
     agent,
+    agentHooks: { subscribe: (onEvent) => agentHooks.subscribe(onEvent) },
     file,
     vcs,
     server,
@@ -266,6 +280,7 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
     process: proc,
     server,
     tunnel,
-    killAll: () => { server.killAll(); tunnel.closeAll() },
+    agentHooks,
+    killAll: () => { server.killAll(); tunnel.closeAll(); agentHooks.dispose() },
   }
 }

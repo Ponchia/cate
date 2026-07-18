@@ -165,6 +165,16 @@ export interface ProcessDeps {
    * backgrounded local terminals still suspend.
    */
   idleSuspend?: boolean
+  /**
+   * Agent hook injection (see agentHooks.ts): plants the per-pty hook env
+   * (ingestion endpoint/token + CATE_TERMINAL_ID + PATH shims) and prepares
+   * workspace-scoped hook files before the shell spawns. Optional — hosts and
+   * tests without hook support spawn plain shells.
+   */
+  hooks?: {
+    envForPty(ptyId: string, env: Record<string, string>): Promise<Record<string, string>>
+    prepareWorkspace(cwd: string): Promise<void>
+  }
 }
 
 /** The capability the daemon holds onto: the ProcessHost plus the concrete
@@ -246,16 +256,28 @@ export function createProcessCapability(deps: ProcessDeps): ProcessCapability {
       const id = opts.id ?? `pty-${Date.now()}-${Math.round(seq++ + Math.random() * 1e6).toString(36)}`
       const ptySpawn = await getPtySpawn()
       const shell = deps.resolveShell(opts.shell)
+      const cwd = opts.cwd || os.homedir()
+      // Merge caller env over the host env; when a CLI endpoint was injected
+      // (CATE_API), also put the bundled `cate` on PATH so agents can run it.
+      let env = catePathEnv({ ...deps.getEnv(), ...(opts.env ?? {}) })
+      // Agent hook injection (opt-in per pty via opts.agentHooks): hook env
+      // (endpoint/token/CATE_TERMINAL_ID + PATH shims) on the pty, workspace
+      // hook files in its cwd. Failure degrades to a plain shell — a terminal
+      // must never fail to open over hooks.
+      if (deps.hooks && opts.agentHooks) {
+        try {
+          env = await deps.hooks.envForPty(id, env)
+          await deps.hooks.prepareWorkspace(cwd)
+        } catch { /* hook injection unavailable */ }
+      }
       const pty = ptySpawn(shell.path, shell.args, {
         name: 'xterm-256color',
         cols: opts.cols,
         rows: opts.rows,
         // Empty cwd → the host's home dir (resolved on whichever host this
         // capability runs on: the local machine or the remote daemon).
-        cwd: opts.cwd || os.homedir(),
-        // Merge caller env over the host env; when a CLI endpoint was injected
-        // (CATE_API), also put the bundled `cate` on PATH so agents can run it.
-        env: catePathEnv({ ...deps.getEnv(), ...(opts.env ?? {}) }),
+        cwd,
+        env,
       })
       ptys.set(id, pty)
       if (idleEnabled) {
