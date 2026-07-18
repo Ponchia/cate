@@ -113,6 +113,27 @@ export function setupWorkspaceSync(): () => void {
     })
     .catch(() => { /* best-effort seed; live events still drive updates */ })
 
+  // Seed REMOTE workspace phases the same way: session restore (and persistent-
+  // workspace provisioning) connect runtimes BEFORE this subscription exists, so
+  // their `connected` broadcasts can be missed entirely — leaving the workspace
+  // pill stuck on "Connecting…" against a live connection (also hit after a dev
+  // HMR reload, which remounts the renderer mid-session). Snapshot the live
+  // connection set and mark matching workspaces connected; live events remain
+  // the authority for every later transition.
+  void window.electronAPI
+    .runtimeList()
+    .then((connectedIds) => {
+      const store = useAppStore.getState()
+      for (const ws of store.workspaces) {
+        const conn = ws.connection
+        if (!conn || conn.kind === 'local') continue
+        if (connectedIds.includes(conn.runtimeId) && ws.runtime?.phase !== 'connected') {
+          store.setWorkspaceRuntimePhase(ws.id, 'connected')
+        }
+      }
+    })
+    .catch(() => { /* best-effort seed; live events still drive updates */ })
+
   workspaceSyncCleanup = () => {
     unsubscribe()
     unsubscribeStatus()
