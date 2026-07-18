@@ -59,10 +59,13 @@ export const useRepoContextStore = create<RepoContextState>((set, get) => ({
       }))
     } catch (err) {
       log.debug('[repo-context] discovery failed for %s: %s', rootPath, err instanceof Error ? err.message : String(err))
+      // Do NOT stamp loadedAt: a failure (typically the pre-connect race — the
+      // runtime isn't registered yet at boot) must not be TTL-cached as if it
+      // were a result, or the workspace stays repo-blind for the whole TTL.
       set((s) => ({
         reposByWorkspace: {
           ...s.reposByWorkspace,
-          [workspaceId]: { repos: s.reposByWorkspace[workspaceId]?.repos ?? [], loadedAt: Date.now(), loading: false },
+          [workspaceId]: { repos: s.reposByWorkspace[workspaceId]?.repos ?? [], loadedAt: s.reposByWorkspace[workspaceId]?.loadedAt ?? 0, loading: false },
         },
       }))
     }

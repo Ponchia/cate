@@ -13,6 +13,7 @@ import { useEffect, useMemo } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { useRepoContextStore, repoForPath, subscribeRepoStatusOnce } from '../stores/repoContextStore'
 import { nearestRepoFor } from '../../shared/repoMatch'
+import { isWorkspaceMonitorReady } from './workspaceMonitorReady'
 import type { PanelState } from '../../shared/types'
 
 /** The path a panel's git identity derives from (null = no git context). */
@@ -39,11 +40,17 @@ export function useRepoContext(workspaceId: string): void {
   const panels = useAppStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.panels ?? null)
   const repos = useRepoContextStore((s) => s.reposByWorkspace[workspaceId]?.repos ?? null)
 
-  // Inventory discovery once the workspace has a root (re-checked on TTL).
+  // Inventory discovery once the workspace has a root AND its runtime is
+  // ready (re-checked on TTL). Gating on readiness — like the git monitor —
+  // avoids the boot race where discovery fires before a remote runtime is
+  // registered; `ready` flipping true re-runs the effect and retries.
+  const ready = useAppStore((s) =>
+    isWorkspaceMonitorReady(s.workspaces.find((w) => w.id === workspaceId)),
+  )
   useEffect(() => {
-    if (!rootPath) return
+    if (!rootPath || !ready) return
     void useRepoContextStore.getState().ensureRepos(workspaceId, rootPath)
-  }, [workspaceId, rootPath])
+  }, [workspaceId, rootPath, ready])
 
   // Attention set: unique repos across all open panels' context paths. The
   // joined key keeps the effect quiet unless membership actually changes.
