@@ -40,7 +40,7 @@ export class RuntimeManager {
    *  RemoteRuntime). Used to eagerly provision enabled extensions onto a newly
    *  reachable host. Separate from the single statusListener so it can have many
    *  subscribers without contending with the IPC status broadcast. */
-  private readonly connectedListeners = new Set<(id: RuntimeId, runtime: Runtime) => void>()
+  private readonly connectedListeners = new Set<(id: RuntimeId, runtime: Runtime) => void | Promise<void>>()
   /** Fired when a runtime is REMOVED on transport close (a live drop — crash /
    *  network / daemon exit), for both remote and the LOCAL path. Mirrors
    *  connectedListeners so subscribers can release any per-runtime state that
@@ -225,17 +225,23 @@ export class RuntimeManager {
     this.statusListener = fn
   }
 
-  /** Subscribe to runtime `connected` events (live RemoteRuntime). Fires for
-   *  LOCAL's real connect and every remote/WSL connect. Returns an unsubscribe. */
-  onConnected(cb: (id: RuntimeId, runtime: Runtime) => void): () => void {
+  /** Subscribe to runtime readiness (live RemoteRuntime). Fires for LOCAL's real
+   *  connect and every remote/WSL connect; async listeners finish before the
+   *  renderer sees `connected`. Async listeners must use the provided runtime —
+   *  resolve(id) stays deferred until readiness completes. */
+  onConnected(cb: (id: RuntimeId, runtime: Runtime) => void | Promise<void>): () => void {
     this.connectedListeners.add(cb)
     return () => { this.connectedListeners.delete(cb) }
   }
 
-  private emitConnected(id: RuntimeId, runtime: Runtime): void {
-    for (const cb of this.connectedListeners) {
-      try { cb(id, runtime) } catch { /* a subscriber must not break connect */ }
-    }
+  private async emitConnected(id: RuntimeId, runtime: Runtime): Promise<void> {
+    await Promise.all([...this.connectedListeners].map(async (cb) => {
+      try {
+        await cb(id, runtime)
+      } catch (err) {
+        log.warn('[runtime] onConnected subscriber for %s failed: %O', id, err)
+      }
+    }))
   }
 
   /** Subscribe to runtime `disconnected` events (a live transport drop removed
@@ -281,12 +287,12 @@ export class RuntimeManager {
     return this.runtimes.has(id)
   }
 
-  /** True only when a runtime is FULLY connected (a live RemoteRuntime), not
-   *  while a connect is still in flight (a DeferredRuntime is registered but the
-   *  daemon isn't online yet). Backed by the connections map, which doConnect
-   *  populates only at the final `connected` step. */
+  /** True only when a runtime is FULLY connected and its async connection hooks
+   *  have completed. During root replay the live connection exists, but the
+   *  DeferredRuntime stays registered so callers cannot observe a half-ready
+   *  workspace. */
   isConnected(id: RuntimeId): boolean {
-    return this.connections.has(id)
+    return this.connections.has(id) && !(this.runtimes.get(id) instanceof DeferredRuntime)
   }
 
   /** Register (or replace) a runtime. The local runtime cannot be replaced. */
@@ -526,11 +532,14 @@ export class RuntimeManager {
       }
       this.emitStatus(id, 'disconnected')
     })
-    this.runtimes.set(id, runtime)
     this.connections.set(id, conn)
+    await this.emitConnected(id, runtime)
+    if (this.connections.get(id) !== conn) {
+      throw new Error(`Runtime connection closed while initialising "${id}"`)
+    }
+    this.runtimes.set(id, runtime)
     log.info('[runtime] connected %s (%s) node=%s', id, transport.kind, hello.node.version)
     this.emitStatus(id, 'connected')
-    this.emitConnected(id, runtime)
     return runtime
   }
 

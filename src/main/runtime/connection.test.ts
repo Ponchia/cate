@@ -223,6 +223,37 @@ describe('RuntimeManager connection lifecycle', () => {
     expect(seen).not.toContain('disconnected')
   })
 
+  test('connected waits for async connection hooks to finish', async () => {
+    const mgr = new RuntimeManager()
+    const events: string[] = []
+    let releaseHook!: () => void
+    const hookGate = new Promise<void>((resolve) => { releaseHook = resolve })
+
+    mgr.setStatusListener((_id, state) => events.push(`status:${state}`))
+    mgr.onConnected(async () => {
+      events.push('hook:start')
+      await hookGate
+      events.push('hook:done')
+    })
+
+    const pending = mgr.connect('wsl_test', new FakeTransport())
+    await vi.waitFor(() => expect(events).toContain('hook:start'))
+
+    expect(events).toEqual(['status:connecting', 'hook:start'])
+    expect(mgr.isConnected('wsl_test')).toBe(false)
+
+    releaseHook()
+    await pending
+
+    expect(events).toEqual([
+      'status:connecting',
+      'hook:start',
+      'hook:done',
+      'status:connected',
+    ])
+    expect(mgr.isConnected('wsl_test')).toBe(true)
+  })
+
   test('an unexpected channel close reports disconnected', async () => {
     const mgr = new RuntimeManager()
     const transport = new FakeTransport()

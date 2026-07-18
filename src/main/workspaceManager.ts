@@ -101,14 +101,16 @@ function forwardAllowedRoot(rootPath: string, op: 'add' | 'remove', scopeId: str
 /** Re-register every workspace root owned by a runtime after connect. Daemon
  *  root state is process-local, so a reconnect starts with none of the
  *  workspace-scoped roots previously forwarded by this process. */
-function replayAllowedRoots(runtimeId: string, runtime: ReturnType<typeof runtimes.resolve>): void {
+async function replayAllowedRoots(runtimeId: string, runtime: ReturnType<typeof runtimes.resolve>): Promise<void> {
+  const registrations: Promise<void>[] = []
   for (const workspace of workspaces.values()) {
     const locator = parseLocator(workspace.rootPath)
     if (!locator.path || locator.runtimeId !== runtimeId) continue
-    runtime.addAllowedRoot(locator.path, workspace.id).catch(() => {
+    registrations.push(runtime.addAllowedRoot(locator.path, workspace.id).catch(() => {
       /* best-effort: a rejected registration must not break runtime connect */
-    })
+    }))
   }
+  await Promise.all(registrations)
 }
 
 /** Seed the cate-cli skill for every workspace on a runtime once it actually

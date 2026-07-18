@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
 
 const handlers = new Map<string, IpcHandler>()
-const connectedListeners: Array<(id: string, runtime: typeof remoteRuntime) => void> = []
-const fireConnected = (id: string): void => {
-  for (const listener of connectedListeners) listener(id, remoteRuntime)
+const connectedListeners: Array<(id: string, runtime: typeof remoteRuntime) => void | Promise<void>> = []
+const fireConnected = async (id: string): Promise<void> => {
+  await Promise.all(connectedListeners.map((listener) => listener(id, remoteRuntime)))
 }
 let connected = false
 
@@ -70,8 +70,19 @@ describe('remote workspace root scopes', () => {
     // exists yet. Initial connection must replay it under the workspace id (not
     // the runtime id carried by the locator).
     expect(remoteRuntime.addAllowedRoot).not.toHaveBeenCalled()
+    let releaseRegistration!: () => void
+    const registrationGate = new Promise<void>((resolve) => { releaseRegistration = resolve })
+    remoteRuntime.addAllowedRoot.mockImplementationOnce(() => registrationGate)
     connected = true
-    fireConnected(runtimeId)
+    let replayFinished = false
+    const replay = fireConnected(runtimeId).then(() => { replayFinished = true })
+    await vi.waitFor(() => expect(remoteRuntime.addAllowedRoot).toHaveBeenCalledWith(root, workspaceId))
+
+    expect(replayFinished).toBe(false)
+    releaseRegistration()
+    await replay
+
+    expect(replayFinished).toBe(true)
     expect(remoteRuntime.addAllowedRoot).toHaveBeenLastCalledWith(root, workspaceId)
     expect(workspaceId).not.toBe(runtimeId)
 
@@ -88,7 +99,7 @@ describe('remote workspace root scopes', () => {
     // Reconnect creates a fresh daemon root registry; both workspace scopes are
     // replayed onto the replacement runtime.
     remoteRuntime.addAllowedRoot.mockClear()
-    fireConnected(runtimeId)
+    await fireConnected(runtimeId)
     expect(remoteRuntime.addAllowedRoot.mock.calls).toEqual([
       [root, workspaceId],
       [secondRoot, secondId],
@@ -120,7 +131,7 @@ describe('remote workspace root scopes', () => {
     // Runtime (re)connect replays seeding for every workspace on that runtime —
     // the moment a REMOTE workspace can actually seed.
     seed.mockClear()
-    fireConnected(runtimeId)
+    await fireConnected(runtimeId)
     expect(seed.mock.calls.map(([root]) => root).sort()).toEqual([
       locator('/home/dev/a'),
       locator('/home/dev/b'),
@@ -128,7 +139,7 @@ describe('remote workspace root scopes', () => {
 
     // Other runtimes' connects don't touch these workspaces.
     seed.mockClear()
-    fireConnected('srv_other')
+    await fireConnected('srv_other')
     expect(seed).not.toHaveBeenCalled()
   })
 
