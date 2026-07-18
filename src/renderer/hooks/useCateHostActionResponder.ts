@@ -24,6 +24,7 @@ import { closePanelWithConfirm } from '../lib/closePanelWithConfirm'
 import { toAbsolutePath, pathKey } from '../../shared/pathUtils'
 import { parseLocator, formatLocator } from '../../main/runtime/locator'
 import { handleBrowserMethod } from '../lib/browser/browserDriver'
+import { handleTerminalMethod } from '../lib/terminal/terminalDriver'
 import { browserPanelUrl, isStartPageUrl, type PanelType, type Point } from '../../shared/types'
 import type { PanelPlacement } from '../stores/appStore'
 
@@ -120,6 +121,16 @@ export function useCateHostActionResponder(): void {
         // <webview>. Delegating here keeps this switch focused on store mutations.
         if (method.startsWith('cate.browser.')) {
           const outcome = await handleBrowserMethod(workspaceId, method, args)
+          return outcome.ok
+            ? reply(true, outcome.result !== undefined ? { result: outcome.result } : undefined)
+            : reply(false, { error: outcome.error })
+        }
+
+        // Terminal-control surface (cate.terminal.*): the terminal driver
+        // resolves the target terminal panel and reads its xterm buffer /
+        // writes to its PTY via the terminalRegistry.
+        if (method.startsWith('cate.terminal.')) {
+          const outcome = await handleTerminalMethod(workspaceId, method, args)
           return outcome.ok
             ? reply(true, outcome.result !== undefined ? { result: outcome.result } : undefined)
             : reply(false, { error: outcome.error })

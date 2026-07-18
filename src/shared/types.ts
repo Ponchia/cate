@@ -1419,6 +1419,13 @@ export interface AppSettings {
    *  uninstall sticks. Turning this off stops future installs; it does not
    *  remove an already-installed skill. */
   cliSkillInstallEnabled: boolean
+  /** Let the `cate` CLI (and thus agents/tools in terminals) SEND INPUT to
+   *  terminal panels (`cate terminal type` / `press`). Off by default: reading
+   *  terminal output rides on cliEnabled alone, but injecting keystrokes into a
+   *  live shell is a bigger grant, so it is a separate opt-in. Checked in the
+   *  main process at dispatch — when off, type/press return a stable error that
+   *  points here. */
+  cliTerminalInputEnabled: boolean
 
   // Browser
   browserHomepage: string
@@ -1550,6 +1557,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoSuspendIdleTerminals: true,
   cliEnabled: true,
   cliSkillInstallEnabled: true,
+  cliTerminalInputEnabled: false,
 
   // Browser
   browserHomepage: '',

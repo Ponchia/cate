@@ -14,6 +14,8 @@
 //     panel.focus
 //   - cate.browser.*: forwarded to the OWNER window of the target browser panel
 //     (args.panelId), or the active main window when unaddressed.
+//   - cate.terminal.*: same owner-window routing for terminal panels; type/press
+//     are additionally gated by the cliTerminalInputEnabled setting.
 //   - Anything else: { error: 'unsupported', method }
 //
 // Every invoke validates the extension is enabled before serving, EXCEPT
@@ -72,6 +74,11 @@ import { showOsNotification } from '../ipc/notifications'
 const CATE_API_VERSION = 3
 
 const FORWARD_TIMEOUT_MS = 10_000
+
+/** Stable error for cate.terminal.type/press while the user setting is off.
+ *  Tells the caller how to get input enabled, not just that it is denied. */
+export const TERMINAL_INPUT_DISABLED =
+  'terminal-input-disabled: enable "CLI terminal input" in Cate Settings → Terminal'
 
 interface InvokePayload {
   extensionId: string
@@ -181,18 +188,19 @@ export function forwardToActiveWindow(payload: InvokePayload): Promise<InvokeRes
 }
 
 /**
- * Resolve the webContents that should receive a cate.browser.* method: the
- * window that OWNS the addressed browser panel, or the active main window when
- * the caller doesn't address a specific panel. Unlike the state-mutating
- * forwards above, a browser method must reach the exact window hosting that
- * panel's webview, not just any active window.
+ * Resolve the webContents that should receive a cate.browser.* / cate.terminal.*
+ * method: the window that OWNS the addressed panel (of the required type), or
+ * the active main window when the caller doesn't address a specific panel.
+ * Unlike the state-mutating forwards above, these methods must reach the exact
+ * window hosting that panel's webview/xterm, not just any active window.
  */
-function resolveBrowserTargetWindow(
+function resolvePanelTargetWindow(
   panelId: string | undefined,
+  type: 'browser' | 'terminal',
 ): { wc: WebContents; ownerWindowId: number } | { error: string } {
   if (panelId) {
     const info = getWindowPanels().find((p) => p.panelId === panelId)
-    if (!info || info.type !== 'browser') return { error: 'no-such-browser' }
+    if (!info || info.type !== type) return { error: `no-such-${type}` }
     const win = getWindow(info.ownerWindowId)
     if (!win || win.isDestroyed()) return { error: 'no-host-window' }
     return { wc: win.webContents, ownerWindowId: info.ownerWindowId }
@@ -250,6 +258,7 @@ export function requiredScopeFor(method: string): string | null | undefined {
       if (method.startsWith('cate.agent.')) return 'agent'
       if (method.startsWith('cate.editor.')) return 'editor.read'
       if (method.startsWith('cate.browser.')) return 'browser'
+      if (method.startsWith('cate.terminal.')) return 'terminal'
       return undefined
   }
 }
@@ -422,7 +431,7 @@ export async function dispatchCateInvoke(
   // forwarded payload stays the caller's own origin panel (empty for terminals).
   if (method.startsWith('cate.browser.')) {
     const a = (args ?? {}) as { panelId?: string }
-    const target = resolveBrowserTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined)
+    const target = resolvePanelTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined, 'browser')
     if ('error' in target) return { error: target.error, method }
     // Consent (extension callers only) gates the forward, mirroring the agent
     // one-time-per-session prompt. First-party callers are trusted.
@@ -444,6 +453,24 @@ export async function dispatchCateInvoke(
       }
     }
     return result
+  }
+
+  // Terminal control: route to the OWNER window of the addressed terminal panel
+  // (args.panelId), or the active main window when unaddressed (`read` resolves
+  // the focused terminal renderer-side). Input (type/press) is additionally
+  // gated by the cliTerminalInputEnabled setting — OFF by default; reads stay
+  // available whenever the endpoint itself is up.
+  if (method.startsWith('cate.terminal.')) {
+    if (
+      (method === 'cate.terminal.type' || method === 'cate.terminal.press') &&
+      getSetting('cliTerminalInputEnabled') !== true
+    ) {
+      return { error: TERMINAL_INPUT_DISABLED, method }
+    }
+    const a = (args ?? {}) as { panelId?: string }
+    const target = resolvePanelTargetWindow(typeof a.panelId === 'string' ? a.panelId : undefined, 'terminal')
+    if ('error' in target) return { error: target.error, method }
+    return forwardToOwner(target.wc, { extensionId, workspaceId, panelId: panelId ?? '', method, args })
   }
 
   switch (method) {

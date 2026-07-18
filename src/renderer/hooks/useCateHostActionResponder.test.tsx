@@ -36,6 +36,11 @@ const h = vi.hoisted(() => ({
   activePanelId: null as string | null,
 }))
 
+const terminalDriver = vi.hoisted(() => ({
+  handleTerminalMethod: vi.fn(async () => ({ ok: true as const, result: { panelId: 't1', alt: false, text: 'x' } })),
+}))
+vi.mock('../lib/terminal/terminalDriver', () => ({ handleTerminalMethod: terminalDriver.handleTerminalMethod }))
+
 vi.mock('../lib/fs/fileRouting', () => ({ openFileAsPanel: h.openFileAsPanel }))
 vi.mock('../lib/workspace/panelReveal', () => ({ revealPanel: h.revealPanel }))
 vi.mock('../lib/workspace/canvasAccess', () => ({ placementForBackgroundPanel: h.placementForBackgroundPanel }))
@@ -323,6 +328,22 @@ describe('useCateHostActionResponder', () => {
     expect(h.closePanelWithConfirm).toHaveBeenCalledWith(WS, 'ed-1')
     expect(h.revealPanel).not.toHaveBeenCalled()
     expect(replies).toContainEqual({ requestId: 'req-cate.panel.close', ok: true })
+  })
+
+  it('delegates cate.terminal.* to the terminal driver and relays its result', async () => {
+    await fire('cate.terminal.read', { panelId: 't1' })
+    expect(terminalDriver.handleTerminalMethod).toHaveBeenCalledWith(WS, 'cate.terminal.read', { panelId: 't1' })
+    expect(replies).toContainEqual({
+      requestId: 'req-cate.terminal.read',
+      ok: true,
+      result: { panelId: 't1', alt: false, text: 'x' },
+    })
+  })
+
+  it('relays a terminal-driver error verbatim', async () => {
+    terminalDriver.handleTerminalMethod.mockResolvedValueOnce({ ok: false, error: 'no-terminal-focused' } as never)
+    await fire('cate.terminal.read', {})
+    expect(replies).toContainEqual({ requestId: 'req-cate.terminal.read', ok: false, error: 'no-terminal-focused' })
   })
 
 })

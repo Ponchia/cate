@@ -61,6 +61,7 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   autoSuspendIdleTerminals: 'boolean',
   cliEnabled: 'boolean',
   cliSkillInstallEnabled: 'boolean',
+  cliTerminalInputEnabled: 'boolean',
   browserHomepage: 'string',
   browserSearchEngine: 'string',
   browserShowBookmarksBar: 'boolean',
