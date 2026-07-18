@@ -277,10 +277,20 @@ async function spawnTerminal(
   // can only mean a path on THAT runtime's filesystem — sessions saved before
   // getCwd re-encoded the locator persisted exactly this shape. Re-anchor it so
   // the spawn doesn't route to LOCAL and get rejected as an out-of-root path.
-  if (runtimeId === LOCAL_RUNTIME_ID && options.cwd && options.workspaceId) {
+  if (options.cwd && options.workspaceId) {
     const wsRoot = getWorkspaceInfo(options.workspaceId)?.rootPath
     const wsRuntimeId = wsRoot ? parseLocator(wsRoot).runtimeId : LOCAL_RUNTIME_ID
-    if (wsRuntimeId !== LOCAL_RUNTIME_ID) runtimeId = wsRuntimeId
+    if (runtimeId === LOCAL_RUNTIME_ID && wsRuntimeId !== LOCAL_RUNTIME_ID) {
+      runtimeId = wsRuntimeId
+    } else if (runtimeId !== wsRuntimeId && !runtimes.has(runtimeId)) {
+      // The cwd names a runtime that no longer exists — a workspace migrated
+      // between transports (e.g. SSH → persistent ws://) restores session state
+      // whose locators carry the OLD runtime id. Same remote filesystem, new
+      // pipe: re-anchor to the workspace's live runtime instead of failing
+      // with "No runtime registered".
+      log.info('[terminal] re-anchoring stale cwd runtime %s -> %s', runtimeId, wsRuntimeId)
+      runtimeId = wsRuntimeId
+    }
   }
   const runtime = runtimes.resolve(runtimeId)
 

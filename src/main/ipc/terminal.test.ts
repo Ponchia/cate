@@ -116,6 +116,9 @@ const rt = vi.hoisted(() => {
 vi.mock('../runtime/runtimeManager', () => ({
   runtimes: {
     resolve: rt.resolve,
+    // Registered runtimes for the stale-cwd re-anchor check: the workspace's
+    // own runtime and LOCAL exist; anything else is "gone".
+    has: (id: string) => id === 'local' || id === 'srv_abc',
     disposeAll: () => Promise.resolve(),
     onConnected: () => () => {},
   },
@@ -590,6 +593,16 @@ describe('remote terminal cwd routing', () => {
     await spawn({ cwd: '/Users/u/proj', workspaceId: 'ws-l' })
     expect(rt.state.resolvedIds).toContain('local')
     expect(rt.state.resolvedIds).not.toContain('srv_abc')
+  })
+
+  it('re-anchors a cwd whose runtime no longer exists to the workspace runtime', async () => {
+    // A workspace migrated between transports (SSH → persistent ws://): its
+    // restored session cwds still carry the dead runtime's id.
+    ws.getWorkspaceInfo.mockReturnValue({ rootPath: 'cate-runtime://srv_abc/home/u/proj' })
+    await spawn({ cwd: 'cate-runtime://srv_dead/home/u/proj/sub', workspaceId: 'ws-r' })
+    expect(rt.state.resolvedIds).toContain('srv_abc')
+    expect(rt.state.resolvedIds).not.toContain('srv_dead')
+    expect((diag.ptyCreate.mock.calls[0][0] as { cwd: string }).cwd).toBe('/home/u/proj/sub')
   })
 
   it('getCwd re-encodes the hosting runtime locator for a remote terminal', async () => {
