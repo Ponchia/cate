@@ -119,6 +119,10 @@ export default function BrowserPanel({
   // Optional: a panel docked in a detached dock window has no CanvasStoreProvider
   // (no canvas node to be focused), so treat that as not-canvas-focused.
   const isFocused = useOptionalCanvasStoreContext((s) => focusedNodeId(s) === nodeId, false)
+  // Whether a canvas context exists at all — the guest-side dim below must only
+  // run for canvas nodes (a browser in a detached dock window has no focus
+  // model and must never be dimmed).
+  const hasCanvas = useOptionalCanvasStoreContext(() => true, false)
 
   // --- Tabs (light model: one webview re-navigates on switch) --------------
   // Seed once from the current persisted schema. There is deliberately no
@@ -510,6 +514,57 @@ export default function BrowserPanel({
     e.preventDefault()
     runBrowserAction(action)
   }, [runBrowserAction])
+
+  // -------------------------------------------------------------------------
+  // Unfocused-node dim, applied INSIDE the guest page. The embedder has no
+  // reliable way to dim a webview: the DOM dim overlay does not composite
+  // above the guest layer, and opacity on the <webview> element is visually
+  // ignored under the canvas transform (verified live) — so without this a
+  // browser node gives NO cue that it's inactive, and users click "through"
+  // into the page. insertCSS is per-document (cleared by navigation), so
+  // re-apply on every dom-ready while unfocused. Canvas nodes only — a browser
+  // in a detached dock window has no focus model and must never dim.
+  // -------------------------------------------------------------------------
+
+  const dimKeyRef = useRef<string | null>(null)
+  useEffect(() => {
+    const webview = webviewRef.current as unknown as {
+      insertCSS(css: string): Promise<string>
+      removeInsertedCSS(key: string): Promise<void>
+      addEventListener(ev: string, cb: () => void): void
+      removeEventListener(ev: string, cb: () => void): void
+    } | null
+    if (!webview || !hasCanvas) return
+    let cancelled = false
+    const applyDim = async (): Promise<void> => {
+      if (dimKeyRef.current) return
+      try {
+        const key = await webview.insertCSS('html { filter: brightness(0.78) saturate(0.85) !important; }')
+        if (cancelled || isFocusedRef.current) {
+          void webview.removeInsertedCSS(key).catch(() => {})
+          return
+        }
+        dimKeyRef.current = key
+      } catch { /* guest not ready yet; dom-ready below retries */ }
+    }
+    const clearDim = (): void => {
+      const key = dimKeyRef.current
+      dimKeyRef.current = null
+      if (key) void webview.removeInsertedCSS(key).catch(() => { /* navigated away */ })
+    }
+    if (isFocused) clearDim()
+    else void applyDim()
+    const onDomReady = (): void => {
+      // Navigation dropped any inserted CSS; the stored key is stale.
+      dimKeyRef.current = null
+      if (!isFocusedRef.current) void applyDim()
+    }
+    webview.addEventListener('dom-ready', onDomReady)
+    return () => {
+      cancelled = true
+      webview.removeEventListener('dom-ready', onDomReady)
+    }
+  }, [isFocused, hasCanvas, partition, proxyReady])
 
   // -------------------------------------------------------------------------
   // Focus the webview when this panel becomes the focused node
