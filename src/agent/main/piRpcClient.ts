@@ -33,6 +33,11 @@ export interface PiRpcClientOptions {
   provider?: string
   model?: string
   args?: string[]
+  /** Explicit agent-session id. A DETERMINISTIC id (derived from the panel) is
+   *  what makes persistent-runtime reattach possible: the next app run asks the
+   *  daemon for the same id and rebinds to the surviving pi instead of spawning
+   *  a second process onto the same session jsonl. */
+  id?: string
 }
 
 let seq = 0
@@ -43,6 +48,10 @@ export class PiRpcClient {
   private readonly listeners: PiEventListener[] = []
   private readonly exitListeners: Array<(code: number, stderr?: string) => void> = []
   private reqId = 0
+  // Request ids are unique ACROSS client instances (random component): after a
+  // reattach, pi may still emit responses to the PREVIOUS client's in-flight
+  // requests — a plain counter would restart at req_1 and mis-correlate them.
+  private readonly reqPrefix = `req_${Math.random().toString(36).slice(2, 8)}`
   private started = false
   /** Set by stop()/dispose so an expected exit isn't reported as a crash. */
   private disposing = false
@@ -52,21 +61,16 @@ export class PiRpcClient {
     private readonly runtime: Runtime,
     private readonly options: PiRpcClientOptions,
   ) {
-    this.aid = `pi-${++seq}-${runtime.id}`
+    this.aid = options.id ?? `pi-${++seq}-${runtime.id}`
   }
 
-  async start(): Promise<void> {
-    if (this.started) throw new Error('PiRpcClient already started')
-    this.started = true
-    await this.runtime.agent.start(
-      {
-        id: this.aid,
-        cwd: this.options.cwd,
-        env: this.options.env,
-        provider: this.options.provider,
-        model: this.options.model,
-        args: this.options.args,
-      },
+  get id(): string {
+    return this.aid
+  }
+
+  /** The line/exit handlers shared by start (fresh spawn) and attach (rebind). */
+  private handlers(): [(id: string, line: string) => void, (id: string, code: number, stderr?: string) => void] {
+    return [
       (_id, line) => this.handleLine(line),
       (_id, code, stderr) => {
         if (stderr) this.stderr = stderr
@@ -77,7 +81,42 @@ export class PiRpcClient {
           for (const l of this.exitListeners) { try { l(code, stderr) } catch { /* noop */ } }
         }
       },
+    ]
+  }
+
+  async start(): Promise<void> {
+    if (this.started) throw new Error('PiRpcClient already started')
+    this.started = true
+    const [onLine, onExit] = this.handlers()
+    await this.runtime.agent.start(
+      {
+        id: this.aid,
+        cwd: this.options.cwd,
+        env: this.options.env,
+        provider: this.options.provider,
+        model: this.options.model,
+        args: this.options.args,
+      },
+      onLine,
+      onExit,
     )
+  }
+
+  /**
+   * Rebind to a pi session that is ALREADY RUNNING on a persistent daemon
+   * (detach-survival). No replay is requested — pi owns all conversation state,
+   * and the agent layer reconstructs UI state through normal RPCs (get_state /
+   * get_fork_messages); replayed historical lines would only risk confusing
+   * response correlation. Throws when the daemon has no such live session —
+   * the caller falls back to a fresh start().
+   */
+  async attach(): Promise<void> {
+    if (this.started) throw new Error('PiRpcClient already started')
+    const sessions = this.runtime.sessions
+    if (!sessions) throw new Error('This runtime has no session registry')
+    const [onLine, onExit] = this.handlers()
+    await sessions.attachAgent(this.aid, onLine, onExit, Number.MAX_SAFE_INTEGER)
+    this.started = true
   }
 
   async stop(): Promise<void> {
@@ -85,6 +124,20 @@ export class PiRpcClient {
     this.disposing = true
     this.runtime.agent.stop(this.aid)
     this.rejectAllPending('pi session stopped')
+    this.started = false
+  }
+
+  /**
+   * Release this client WITHOUT stopping pi — the persistent daemon keeps the
+   * process running (detach-survival) and a later client reattaches by the
+   * same deterministic id. Used on window close / app quit for sessions hosted
+   * on a persistent runtime; explicit panel close still uses stop().
+   */
+  async detach(): Promise<void> {
+    if (!this.started) return
+    this.disposing = true
+    try { await this.runtime.sessions?.detachAgent(this.aid, () => {}) } catch { /* connection may be gone */ }
+    this.rejectAllPending('pi session detached')
     this.started = false
   }
 
@@ -184,7 +237,7 @@ export class PiRpcClient {
 
   private send(command: Record<string, unknown>): Promise<PiResponse> {
     if (!this.started) return Promise.reject(new Error('PiRpcClient not started'))
-    const id = `req_${++this.reqId}`
+    const id = `${this.reqPrefix}_${++this.reqId}`
     return new Promise<PiResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)

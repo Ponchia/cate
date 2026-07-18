@@ -15,7 +15,7 @@
 import path from 'path'
 import { type WebContents } from 'electron'
 import log from '../../main/logger'
-import { parseLocator } from '../../main/runtime/locator'
+import { parseLocator, LOCAL_RUNTIME_ID } from '../../main/runtime/locator'
 import { runtimes } from '../../main/runtime/runtimeManager'
 import type { Runtime } from '../../main/runtime/types'
 import { PiRpcClient } from './piRpcClient'
@@ -202,6 +202,11 @@ export class AgentManager {
         model: opts.model?.model,
         args: extraArgs.length > 0 ? extraArgs : undefined,
         env,
+        // Deterministic per-panel id: on a persistent runtime, the pi process
+        // survives our absence under this id, and the next create() for the
+        // same panel REATTACHES to it instead of spawning a second pi onto the
+        // same session jsonl.
+        id: `pi-${opts.panelId}`,
       })
 
       // Ensure pi is present on the host BEFORE start. pi ships in the runtime
@@ -209,8 +214,20 @@ export class AgentManager {
       // provisioned host this is a quick verify.
       await runtime.agent.ensurePi()
 
+      // Persistent runtime: rebind to a surviving pi first (tmux semantics —
+      // the agent kept working while no client was attached). Falls back to a
+      // fresh spawn when there is no live session under this panel's id.
+      let attached = false
+      if (runtime.sessions) {
+        try {
+          await client.attach()
+          attached = true
+          log.info('[agentManager] reattached to surviving pi panel=%s', opts.panelId)
+        } catch { /* no live session — spawn fresh below */ }
+      }
+
       try {
-        await client.start()
+        if (!attached) await client.start()
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         log.warn('[agentManager] failed to start pi for %s: %s', opts.panelId, message)
@@ -633,13 +650,34 @@ export class AgentManager {
     }
   }
 
-  /** Drop sessions whose sender WebContents has gone away. */
+  /** Drop sessions whose sender WebContents has gone away. A window closing is
+   *  a DETACH, not a kill, for sessions hosted on a persistent remote runtime:
+   *  pi keeps working on the daemon (the whole point of the tmux model) and the
+   *  next create() for the same panel reattaches. Local sessions — and explicit
+   *  panel closes, which go through dispose() — still stop pi. */
   disposeForWebContents(wcId: number): void {
     for (const [panelId, session] of this.sessions) {
-      if (session.sender.id === wcId) {
+      if (session.sender.id !== wcId) continue
+      const persistent = !!session.runtime?.sessions && session.runtime.id !== LOCAL_RUNTIME_ID
+      if (persistent) {
+        void this.locks.run(panelId, () => this.detachInternal(panelId))
+      } else {
         void this.dispose(panelId)
       }
     }
+  }
+
+  /** Release a session's client without stopping pi (persistent runtimes). */
+  private async detachInternal(panelId: string): Promise<void> {
+    const session = this.sessions.get(panelId)
+    if (!session) return
+    try { session.unsubscribeEvents() } catch { /* noop */ }
+    try { session.disposeExitWatcher() } catch { /* noop */ }
+    try { session.disposeAuthWatcher() } catch { /* noop */ }
+    try { session.client.rejectAllPending('Pi session detached') } catch { /* noop */ }
+    try { await session.client.detach() } catch { /* noop */ }
+    this.sessions.delete(panelId)
+    log.info('[agentManager] detached session panel=%s (pi keeps running on the daemon)', panelId)
   }
 
   // -------------------------------------------------------------------------

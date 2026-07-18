@@ -21,7 +21,7 @@
 
 import { Buffer } from 'buffer'
 import { formatLocator, parseLocator, LOCAL_RUNTIME_ID } from '../main/runtime/locator'
-import { DEFAULT_SETTINGS } from '../shared/types'
+import { DEFAULT_SETTINGS, TELEMETRY_NOTICE_VERSION } from '../shared/types'
 import type {
   AppSettings,
   RemoteProjectEntry,
@@ -303,6 +303,13 @@ export function installElectronApiShim(config: WebConfig): { client: WebRuntimeC
     gitMonitorStop: () => {},
 
     // Settings -----------------------------------------------------------------
+    // The welcome/telemetry notice ack persists like any other setting so the
+    // dialog doesn't re-greet every page load. (No telemetry exists in the web
+    // build — the ack is purely "stop showing me the card".)
+    acknowledgeTelemetryNotice: async () => {
+      const merged = { ...lsJson<Partial<AppSettings>>('cate-web-settings', {}), telemetryNoticeAcknowledgedVersion: TELEMETRY_NOTICE_VERSION }
+      lsSet('cate-web-settings', merged)
+    },
     settingsGet: async <K extends keyof AppSettings>(key: K) => settings()[key],
     settingsGetAll: async () => settings(),
     settingsSet: async <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
