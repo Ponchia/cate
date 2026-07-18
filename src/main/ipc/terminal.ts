@@ -63,6 +63,11 @@ const terminalRuntime: Map<string, RuntimeId> = new Map()
 // a reattach replays exactly what was missed while disconnected.
 const terminalWiring: Map<string, { onData: (id: string, data: string) => void; onExit: (id: string, exitCode: number) => void }> = new Map()
 const terminalBytes: Map<string, number> = new Map()
+// Restore-attach replay, buffered until the renderer PULLS it (terminalLogRead
+// keyed by the ptyId): pushing it through the data pipeline would race the
+// renderer wiring its listeners after terminal:create resolves — the replay
+// would be dropped before any xterm is listening.
+const pendingReplays: Map<string, string> = new Map()
 const sessionListeners = new Set<() => void>()
 
 function emitSessionsChanged(): void {
@@ -373,10 +378,12 @@ async function spawnTerminal(
       terminalRuntime.set(id, runtimeId)
       terminalOwners.set(id, ownerWindowId)
       terminalWiring.set(id, { onData, onExit })
-      terminalBytes.set(id, res.offset - Buffer.byteLength(res.replay, 'utf-8'))
+      terminalBytes.set(id, res.offset)
+      // Buffer the replay for the renderer to PULL (replayTerminalLog →
+      // terminalLogRead by ptyId) once its xterm is wired — see pendingReplays.
+      if (res.replay) pendingReplays.set(id, res.replay)
       emitSessionsChanged()
-      if (res.replay) onData(id, res.replay)
-      log.info('[terminal] attached %s to surviving session (pid %d)', id, res.info.pid)
+      log.info('[terminal] attached %s to surviving session (pid %d, %d replay bytes)', id, res.info.pid, res.replay.length)
       return id
     } catch (err) {
       log.info('[terminal] attach %s failed (%s); spawning fresh', options.attachPtyId, err instanceof Error ? err.message : String(err))
@@ -514,6 +521,14 @@ export function registerHandlers(): void {
     if (!isSafeLogFileId(terminalId)) {
       log.warn('[terminal] rejected unsafe terminal id for log read: %s', String(terminalId))
       return null
+    }
+    // A reattached session's server-side replay takes precedence: it is the
+    // LIVE buffer (scrollback + everything since), while the persisted
+    // .scrollback file is from the previous app run. One-shot drain.
+    const replay = pendingReplays.get(terminalId)
+    if (replay != null) {
+      pendingReplays.delete(terminalId)
+      return replay
     }
     const { TerminalLogger } = await import('./terminalLogger')
     const logDir = TerminalLogger.getLogDir()

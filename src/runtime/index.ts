@@ -31,6 +31,8 @@ interface DaemonArgs {
   listen: string
   /** Token file for --listen auth. Created (0600, random) if absent. */
   tokenFile: string
+  /** Built web-client directory to serve over HTTP on the same port. */
+  webRoot: string
 }
 
 function parseArgs(argv: string[]): DaemonArgs {
@@ -40,6 +42,7 @@ function parseArgs(argv: string[]): DaemonArgs {
   let idleSuspend = false
   let listen = ''
   let tokenFile = ''
+  let webRoot = ''
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--root') root = argv[++i] ?? ''
@@ -48,12 +51,13 @@ function parseArgs(argv: string[]): DaemonArgs {
     else if (a === '--idle-suspend') idleSuspend = true
     else if (a === '--listen') listen = argv[++i] ?? ''
     else if (a === '--token-file') tokenFile = argv[++i] ?? ''
+    else if (a === '--web-root') webRoot = argv[++i] ?? ''
   }
   if (!root) {
     process.stderr.write('cate-runtime: --root <abs-path> is required\n')
     process.exit(2)
   }
-  return { root, id, exclusions, idleSuspend, listen, tokenFile }
+  return { root, id, exclusions, idleSuspend, listen, tokenFile, webRoot }
 }
 
 /** Read the auth token for --listen mode, generating one (0600) on first run
@@ -129,7 +133,13 @@ async function main(): Promise<void> {
       process.exit(2)
     }
     const token = loadOrCreateToken(args.tokenFile)
-    const handle = startWsServer({ host: m[1], port: parseInt(m[2], 10), token, api: runtime })
+    const handle = startWsServer({
+      host: m[1],
+      port: parseInt(m[2], 10),
+      token,
+      api: runtime,
+      webRoot: args.webRoot || undefined,
+    })
     cleanup = () => handle.close()
     return
   }

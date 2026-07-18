@@ -34,6 +34,8 @@
     "sentry:test": "node scripts/sentry-test.mjs",
     "build": "electron-vite build",
     "build:runtime": "node src/runtime/build/esbuild.config.mjs",
+    "build:web": "vite build -c vite.web.config.ts",
+    "dev:web": "vite -c vite.web.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

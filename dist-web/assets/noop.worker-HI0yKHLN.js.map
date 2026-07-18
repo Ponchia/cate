@@ -1,0 +1,1 @@
+{"version":3,"file":"noop.worker-HI0yKHLN.js","sources":["../src/renderer/workers/noop.worker.ts"],"sourcesContent":["globalThis.onmessage = () => {}\n"],"names":[],"mappings":"yBAAA,WAAW,UAAY,IAAM,CAAC"}

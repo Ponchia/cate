@@ -351,10 +351,16 @@ export async function getOrCreate(panelId: string, opts: CreateOpts): Promise<Re
       panelId,
       attachPtyId,
     })
-    // Reattach succeeded when main handed back the SAME session id: the
-    // scrollback was replayed server-side (ring buffer), so the client-side
-    // log replay below must be skipped or the content would double up.
+    // Reattach succeeded when main handed back the SAME session id. The
+    // server-side replay is buffered in main keyed by the PTY id (pushing it
+    // through the data stream would race this wiring) — point the pending
+    // restore's replay source at it so step 12 pulls the LIVE buffer instead
+    // of the previous run's persisted scrollback file.
     const reattached = attachPtyId != null && ptyId === attachPtyId
+    if (reattached) {
+      const pending = pendingTerminalStarts.get(panelId)
+      if (pending?.kind === 'restore') pending.replayFromId = ptyId
+    }
 
     // If the entry was disposed while we were waiting, dispose() couldn't kill
     // the PTY (ptyId was still '') — kill the freshly-created one here so it
@@ -379,9 +385,10 @@ export async function getOrCreate(panelId: string, opts: CreateOpts): Promise<Re
       terminal.write(opts.initialInput)
     }
 
-    // 12. Replay scrollback log if this terminal was restored from a session
-    //     (skipped after a live reattach — the server already replayed).
-    if (!reattached && pendingTerminalStarts.get(panelId)?.kind === 'restore') {
+    // 12. Replay scrollback log if this terminal was restored from a session.
+    //     After a live reattach the pull source was redirected above to the
+    //     server-side ring replay (the live buffer), same pipeline either way.
+    if (pendingTerminalStarts.get(panelId)?.kind === 'restore') {
       replayTerminalLog(panelId).catch((err) => log.warn('[terminal] Replay log failed:', err))
     }
   } catch (err) {
