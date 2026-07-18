@@ -27,6 +27,8 @@ import { cornerFromPoint } from '../lib/canvasCorners'
 import { useResolvedShortcuts } from '../stores/shortcutStore'
 import { displayString, PANEL_DEFAULT_SIZES } from '../../shared/types'
 import { useAppStore } from '../stores/appStore'
+import { useRepoContextStore } from '../stores/repoContextStore'
+import { repoDisplayName } from '../../shared/repoMatch'
 import { inheritedWorktreeFromSelection } from '../lib/inheritWorktree'
 import { Tooltip } from '../ui/Tooltip'
 
@@ -46,9 +48,10 @@ const ToolbarButton: React.FC<{
   size?: 'panel' | 'zoom'
   active?: boolean
   onMouseDown?: (e: React.MouseEvent) => void
+  onContextMenu?: (e: React.MouseEvent) => void
   placement?: 'top' | 'right'
   children: React.ReactNode
-}> = ({ onClick, title, size = 'panel', active = false, onMouseDown, placement = 'top', children }) => {
+}> = ({ onClick, title, size = 'panel', active = false, onMouseDown, onContextMenu, placement = 'top', children }) => {
   const sizeClass = size === 'panel' ? 'w-9 h-9' : 'w-8 h-8'
   const activeClass = active ? 'bg-hover-strong' : 'bg-transparent'
   return (
@@ -57,6 +60,7 @@ const ToolbarButton: React.FC<{
         type="button"
         onClick={onClick}
         onMouseDown={onMouseDown}
+        onContextMenu={onContextMenu}
         aria-label={title}
         style={{ WebkitTapHighlightColor: 'transparent' }}
         className={`${sizeClass} ${activeClass} flex items-center justify-center rounded-full text-secondary hover:text-primary hover:bg-hover-strong active:bg-hover-strong active:scale-[0.92] focus:outline-none focus-visible:outline-none transition-all duration-100`}
@@ -121,6 +125,26 @@ const TerminalSpawnButton: React.FC<{ onClick: () => void; canvasPanelId: string
     window.addEventListener('mouseup', onUp, true)
   }
 
+  // Right-click: per-repo spawn menu for CONTAINER workspaces (folder of
+  // repos). Purely additive — a plain click keeps the frictionless default
+  // (container root); this is the opt-in accelerator for "terminal in repo X".
+  const handleContextMenu = async (e: React.MouseEvent): Promise<void> => {
+    e.preventDefault()
+    const app = useAppStore.getState()
+    const wsId = app.selectedWorkspaceId
+    if (!wsId) return
+    const rootPath = app.getWorkspace(wsId)?.rootPath ?? null
+    const repos = (useRepoContextStore.getState().reposByWorkspace[wsId]?.repos ?? []).filter((r) => r !== rootPath)
+    if (repos.length === 0) return
+    const choice = await window.electronAPI.showContextMenu([
+      { id: '__root', label: 'Container root' },
+      { type: 'separator' as const },
+      ...repos.map((repo) => ({ id: repo, label: repoDisplayName(repo) })),
+    ])
+    if (!choice) return
+    app.createTerminal(wsId, undefined, undefined, { target: 'canvas', canvasPanelId }, choice === '__root' ? undefined : choice)
+  }
+
   return (
     <>
       <ToolbarButton
@@ -129,6 +153,7 @@ const TerminalSpawnButton: React.FC<{ onClick: () => void; canvasPanelId: string
           onClick()
         }}
         onMouseDown={handleMouseDown}
+        onContextMenu={(e) => { void handleContextMenu(e) }}
         title="Terminal. Click for recommendations, or drag onto the canvas."
         size="panel"
         placement={placement}

@@ -33,6 +33,7 @@ import { CreateWorktreeForm } from '../sidebar/CreateWorktreeForm'
 import { useWorktrees, type JoinedWorktree } from '../stores/useWorktrees'
 import { useGitStatusSnapshot, gitStatusStore } from '../stores/gitStatusStore'
 import { useUIStore } from '../stores/uiStore'
+import { useRepoContextStore } from '../stores/repoContextStore'
 import { useAppStore, getWorktreeColorPalette } from '../stores/appStore'
 import { useParallelWork, runWorktreeContextMenu, type CardCallbacks } from '../stores/useParallelWork'
 import { useWorktreeStatuses, humanStatus, type PrStatus } from '../stores/useWorktreeStatuses'
@@ -65,6 +66,15 @@ const WorktreeToolbarMenu: React.FC<WorktreeToolbarMenuProps> = ({
   const focusedWorktreeId = useUIStore((s) => s.focusedWorktreeId)
   const active = open || !!focusedWorktreeId
 
+  // Container workspaces (folder of repos): the worktree system is still
+  // rooted at the workspace root, which here isn't a repo — the button would
+  // only open a dead menu. Hide it until worktrees learn per-repo scoping
+  // (per-repo git already lives in the Source Control sidebar + repo chips).
+  const rootIsRepo = useGitStatusSnapshot(rootPath).isRepo
+  const isContainer = useRepoContextStore(
+    (s) => !rootIsRepo && (s.reposByWorkspace[workspaceId]?.repos ?? []).some((r) => r !== rootPath),
+  )
+
   // Notify the parent card on real open/close transitions only (not on every
   // render), so an open fly-out keeps the collapsing toolbar expanded.
   const onOpenChangeRef = useRef(onOpenChange)
@@ -93,6 +103,8 @@ const WorktreeToolbarMenu: React.FC<WorktreeToolbarMenuProps> = ({
     }
     setOpen(true)
   }, [open, menuSide])
+
+  if (isContainer) return null
 
   return (
     <>
