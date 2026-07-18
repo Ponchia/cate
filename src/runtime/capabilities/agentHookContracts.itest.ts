@@ -17,6 +17,8 @@
 //             '<inline JSON>'. session_id/transcript_path/cwd on every event;
 //             /clear = SessionEnd(reason=clear) + SessionStart(source=clear,
 //             new id); --session-id pre-assigns the id. Works in -p and TUI.
+//             Permission-wait: Notification hook, notification_type
+//             "permission_prompt" (and "idle_prompt" once idle nags kick in).
 //   codex   · JSON-on-stdin hooks injected per-invocation via -c overrides.
 //             Untrusted hooks are SILENTLY skipped: a hooks.state entry with a
 //             trusted_hash (sha256 of the canonical handler identity, key
@@ -24,6 +26,11 @@
 //             hash scheme is internal, so THIS is the contract most likely to
 //             drift. transcript_path IS the rollout file; exec resume reuses
 //             the same id + file (source="resume"). SessionEnd never fires.
+//             In the TUI, NO hook fires at launch — SessionStart(source=
+//             startup) + everything else arrives at the FIRST prompt submit.
+//             Permission-wait: PermissionRequest hook (session_id, turn_id,
+//             tool_name, tool_input) — fires in exec mode too, where the
+//             unanswerable approval is then auto-rejected and the turn Stops.
 //   pi      · in-process extension via -e <file.ts>; ctx.sessionManager gives
 //             sessionId + sessionFile on every event; agent_start/agent_end
 //             bracket each turn; --session-id creates-or-resumes an exact id.
@@ -35,6 +42,15 @@
 //             fires even when the provider errors, so this works with broken
 //             auth. ALWAYS spawn with OPENCODE_DISABLE_AUTOUPDATE=1 — the TUI
 //             update modal steals keystrokes and self-updates.
+//             Permission-wait: permission.asked bus event (sessionID,
+//             permission, metadata.command). Needs a completed model turn that
+//             CALLS a gated tool, so the test brings its own offline
+//             OpenAI-compatible provider; run mode never asks (headless).
+//
+// Permission-wait exists ONLY on claude/codex/opencode. pi has no approval
+// concept at all (tools execute directly — verified: zero approval strings in
+// its dist), and cursor/agy expose no permission hook — for those Cate keeps
+// the screen-heuristic settle-timer fallback.
 //   cursor  · <cwd>/.cursor/hooks.json (project-scoped; fine for a throwaway
 //             cwd). conversation_id (= chats/<md5(cwd)>/<id> dir) on every
 //             event. TUI fires beforeSubmitPrompt/stop/afterAgentResponse;
@@ -236,9 +252,15 @@ async function driveTui(bin: string, args: string[], cwd: string, env: Record<st
 
   return {
     pid: p.pid,
+    // Type character-by-character: opencode's composer drops a bulk-written
+    // line entirely (verified live — the submit lands on an empty input), and
+    // per-char typing is what a real terminal produces anyway.
     send: async (line) => {
-      p.write(line)
-      await sleep(600) // let TUI input handling settle before submit
+      for (const ch of line) {
+        p.write(ch)
+        await sleep(15)
+      }
+      await sleep(800) // let TUI input handling settle before submit
       p.write('\r')
     },
     settle: async (ms) => {
@@ -270,7 +292,7 @@ describe.skipIf(!LIVE || !hasBin('claude'))('claude hook contract', () => {
   const claudeSettings = (bridge: string): string =>
     JSON.stringify({
       hooks: Object.fromEntries(
-        ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'].map((e) => [
+        ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'SessionEnd'].map((e) => [
           e,
           [{ hooks: [{ type: 'command', command: bridge }] }],
         ]),
@@ -390,6 +412,46 @@ describe.skipIf(!LIVE || !hasBin('claude'))('claude hook contract', () => {
     expectEcho(resumeEvents, tid)
   })
 
+  // Permission-wait is PUSHED: while a tool call is blocked on the user's
+  // approval, the Notification hook fires with notification_type
+  // "permission_prompt" — mid-turn, before any Stop. This is the signal that
+  // replaces the spinner-stop + settle-timer "needs input" heuristic.
+  test('TUI: Notification(permission_prompt) fires while blocked on tool approval', { retry: 1, timeout: 420_000 }, async () => {
+    const cwd = makeCwd('claude-perm')
+    const eventsFile = join(cwd, 'events.jsonl')
+    const bridge = writeBridge(cwd)
+    const tid = `cate-term-claude-perm-${Date.now()}`
+    const events = (): BridgeEvent[] => readJsonl<BridgeEvent>(eventsFile)
+
+    const tui = await driveTui(
+      'claude',
+      ['--model', 'haiku', '--settings', claudeSettings(bridge)],
+      cwd,
+      cleanEnv({ CATE_EVENTS_FILE: eventsFile, CATE_TERMINAL_ID: tid }),
+    )
+    await tui.waitFor(() => byName(events(), 'SessionStart').length > 0, 60_000, 'SessionStart')
+    const id = byName(events(), 'SessionStart')[0].payload.session_id as string
+    registerTranscriptCleanup(byName(events(), 'SessionStart')[0].payload.transcript_path as string)
+
+    // `touch` is outside claude's safe-command set in default permission mode,
+    // so the turn parks on an approval prompt instead of completing.
+    await tui.send('Use the Bash tool to run exactly this command: touch needs-approval.txt')
+    await tui.waitFor(
+      () => byName(events(), 'Notification').some((e) => e.payload.notification_type === 'permission_prompt'),
+      180_000,
+      'Notification(permission_prompt)',
+    )
+    const perm = byName(events(), 'Notification').find(
+      (e) => e.payload.notification_type === 'permission_prompt',
+    )?.payload
+    expect(perm?.session_id, 'permission-wait identifies the session').toBe(id)
+    expect(perm?.message, 'human-readable permission message').toContain('permission')
+    // The turn is still in flight — the wait signal precedes any Stop.
+    expect(byName(events(), 'Stop').length, 'no Stop while blocked on approval').toBe(0)
+    expectEcho(events(), tid)
+    tui.kill()
+  })
+
   // Resuming a dead id must FAIL (not silently start fresh) — this is what
   // lets Cate fall back to a plain shell when a stored id has been deleted.
   test('print mode: resuming an unknown session id fails', { timeout: 240_000 }, async () => {
@@ -421,6 +483,7 @@ describe.skipIf(!LIVE || !hasBin('codex'))('codex hook contract', () => {
     const events: [string, string][] = [
       ['SessionStart', 'session_start'],
       ['UserPromptSubmit', 'user_prompt_submit'],
+      ['PermissionRequest', 'permission_request'],
       ['Stop', 'stop'],
     ]
     const args: string[] = []
@@ -480,6 +543,79 @@ describe.skipIf(!LIVE || !hasBin('codex'))('codex hook contract', () => {
     expect(resumeStart?.transcript_path).toBe(rollout)
     expect(resumeEvents.some((e) => e.payload.hook_event_name === 'Stop')).toBe(true)
     expectEcho(resumeEvents, tid)
+  })
+
+  // Permission-wait is PUSHED: PermissionRequest fires the moment a tool call
+  // needs approval — in exec mode too, where codex then auto-rejects ("approval
+  // is not supported in exec mode") and the turn completes with a Stop. That
+  // auto-reject makes exec the cheap deterministic harness for this contract.
+  test('exec: PermissionRequest fires when a command needs approval', { timeout: 300_000 }, async () => {
+    const cwd = makeCwd('codex-perm')
+    const bridge = writeBridge(cwd)
+    const tid = `cate-term-codex-perm-${Date.now()}`
+    const eventsFile = join(cwd, 'events.jsonl')
+
+    // approval_policy=untrusted parks ANY command on approval; the exec run
+    // still exits 0 (the model reports the rejection), so run() must not throw.
+    await run(
+      'codex',
+      ['exec', '--skip-git-repo-check', '-c', 'approval_policy="untrusted"', ...hookArgs(bridge),
+        'Run exactly this shell command: touch needs-approval.txt'],
+      { cwd, env: cleanEnv({ CATE_EVENTS_FILE: eventsFile, CATE_TERMINAL_ID: tid }), timeout: 240_000 },
+    )
+    const events = readJsonl<BridgeEvent>(eventsFile)
+    const start = events.find((e) => e.payload.hook_event_name === 'SessionStart')?.payload
+    expect(start?.session_id).toMatch(UUID_RE)
+    cleanups.push(() => rmSync(start?.transcript_path as string, { force: true }))
+
+    const perm = events.find((e) => e.payload.hook_event_name === 'PermissionRequest')?.payload
+    expect(perm, 'PermissionRequest fired').toBeTruthy()
+    expect(perm?.session_id, 'permission-wait identifies the session').toBe(start?.session_id)
+    expect(perm?.turn_id, 'permission-wait identifies the turn').toBeTruthy()
+    expect(perm?.tool_name).toBe('Bash')
+    expect((perm?.tool_input as { command?: string })?.command).toContain('touch')
+
+    // Event order pins the state machine the tracker runs: submit → wait → end.
+    const names = events.map((e) => e.payload.hook_event_name)
+    expect(names.indexOf('PermissionRequest')).toBeGreaterThan(names.indexOf('UserPromptSubmit'))
+    expect(names.indexOf('Stop'), 'auto-reject completes the turn').toBeGreaterThan(names.indexOf('PermissionRequest'))
+    expectEcho(events, tid)
+  })
+
+  // The TUI defers EVERY hook to the first prompt submit — nothing fires at
+  // launch. Pinned because the session-stamp feature must know that codex TUI
+  // identity arrives only once the user prompts (until then the fd-scan
+  // fallback probe is the only signal).
+  test('TUI: hooks are silent at launch; SessionStart arrives with the first submit', { retry: 1, timeout: 420_000 }, async () => {
+    const cwd = makeCwd('codex-tui')
+    const bridge = writeBridge(cwd)
+    const tid = `cate-term-codex-tui-${Date.now()}`
+    const eventsFile = join(cwd, 'events.jsonl')
+    const events = (): BridgeEvent[] => readJsonl<BridgeEvent>(eventsFile)
+
+    const tui = await driveTui(
+      'codex',
+      ['-c', 'approval_policy="untrusted"', ...hookArgs(bridge)],
+      cwd,
+      cleanEnv({ CATE_EVENTS_FILE: eventsFile, CATE_TERMINAL_ID: tid }),
+    )
+    await tui.settle(10_000)
+    expect(events().length, 'no hook fires at TUI launch').toBe(0)
+
+    await tui.send('Run exactly this shell command: touch needs-approval.txt')
+    await tui.waitFor(
+      () => events().some((e) => e.payload.hook_event_name === 'PermissionRequest'),
+      180_000,
+      'PermissionRequest in TUI',
+    )
+    const start = events().find((e) => e.payload.hook_event_name === 'SessionStart')?.payload
+    expect(start?.source, 'deferred SessionStart still reports startup').toBe('startup')
+    expect(start?.session_id).toMatch(UUID_RE)
+    cleanups.push(() => rmSync(start?.transcript_path as string, { force: true }))
+    const perm = events().find((e) => e.payload.hook_event_name === 'PermissionRequest')?.payload
+    expect(perm?.session_id).toBe(start?.session_id)
+    expectEcho(events(), tid)
+    tui.kill()
   })
 })
 
@@ -717,6 +853,111 @@ export const CateEventLogger = async ({ directory }) => {
       'resume must not create a new session',
     ).toBe(false)
     expect(resumeEvents.some((e) => e.type === 'session.idle' && e.sessionID === id)).toBe(true)
+  })
+
+  // Permission-wait is PUSHED: permission.asked fires on the bus when a gated
+  // tool call parks on user approval. Reaching it needs a model turn that
+  // actually CALLS bash, and run mode never asks — so this drives the TUI
+  // against a self-hosted offline OpenAI-compatible provider that always
+  // answers with a bash tool call (no network, no credentials, no cost).
+  test('TUI: permission.asked fires while a bash call waits for approval', { retry: 1, timeout: 420_000 }, async () => {
+    const { createServer } = await import('node:http')
+    const cwd = makeCwd('opencode-perm')
+    const plugin = join(cwd, 'cate-plugin.mjs')
+    // Same shape as PLUGIN_JS but with the FULL properties object — the
+    // permission payload (permission/metadata) lives beside sessionID.
+    writeFileSync(
+      plugin,
+      `
+import { appendFileSync } from "node:fs"
+const OUT = process.env.CATE_EVENTS_FILE
+export const CatePermLogger = async () => ({
+  event: async ({ event }) => {
+    appendFileSync(OUT, JSON.stringify({
+      type: event?.type,
+      sessionID: event?.properties?.sessionID ?? event?.properties?.info?.id ?? null,
+      properties: event?.properties ?? null,
+      cate_terminal_id: process.env.CATE_TERMINAL_ID ?? null,
+    }) + "\\n")
+  },
+})
+`,
+    )
+
+    // One-trick provider: first request streams a bash tool call, the
+    // follow-up (carrying the tool result) streams plain text and stops.
+    const server = createServer((req, res) => {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        const followUp = body.includes('"tool"')
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        const send = (obj: unknown): void => void res.write(`data: ${JSON.stringify(obj)}\n\n`)
+        const base = { id: 'cmpl-1', object: 'chat.completion.chunk', created: 1, model: 'fake-1' }
+        if (!followUp) {
+          send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'bash', arguments: '' } }] }, finish_reason: null }] })
+          send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command: 'touch needs-approval.txt', description: 'touch a file' }) } }] }, finish_reason: null }] })
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
+        } else {
+          send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }] })
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    cleanups.push(() => server.close())
+    const port = (server.address() as { port: number }).port
+
+    const tid = `cate-term-opencode-perm-${Date.now()}`
+    const eventsFile = join(cwd, 'events.jsonl')
+    interface PermEvent {
+      type: string
+      sessionID: string | null
+      properties: { permission?: string; sessionID?: string; metadata?: { command?: string } } | null
+      cate_terminal_id: string | null
+    }
+    const events = (): PermEvent[] => readJsonl<PermEvent>(eventsFile)
+    const tuiEnv = cleanEnv({
+      CATE_EVENTS_FILE: eventsFile,
+      CATE_TERMINAL_ID: tid,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        plugin: [`file://${plugin}`],
+        permission: { bash: 'ask' },
+        provider: {
+          catefake: {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Cate Fake',
+            options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'unused' },
+            models: { 'fake-1': { name: 'Fake One', tool_call: true, limit: { context: 128000, output: 4096 } } },
+          },
+        },
+        model: 'catefake/fake-1',
+      }),
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+    })
+
+    const tui = await driveTui('opencode', [], cwd, tuiEnv)
+    await tui.settle(8_000)
+    await tui.send('please run the bash command')
+    await tui.waitFor(() => events().some((e) => e.type === 'permission.asked'), 120_000, 'permission.asked')
+
+    const created = events().find((e) => e.type === 'session.created')
+    const id = created?.sessionID as string
+    expect(id).toMatch(/^ses_/)
+    cleanups.push(() => {
+      execFileSync('opencode', ['session', 'delete', id], { env: cleanEnv(), timeout: 30_000 })
+      rmSync(join(homedir(), '.local', 'share', 'opencode', 'storage', 'session_diff', `${id}.json`), { force: true })
+    })
+    const asked = events().find((e) => e.type === 'permission.asked')?.properties
+    expect(asked?.sessionID, 'permission-wait identifies the session').toBe(id)
+    expect(asked?.permission).toBe('bash')
+    expect(asked?.metadata?.command).toContain('touch')
+    // The turn is still busy while parked on approval — idle has not fired.
+    expect(events().some((e) => e.type === 'session.idle' && e.sessionID === id)).toBe(false)
+    expectEcho(events().map((e) => ({ cateTerminalId: e.cate_terminal_id })), tid)
+    tui.kill()
   })
 })
 
