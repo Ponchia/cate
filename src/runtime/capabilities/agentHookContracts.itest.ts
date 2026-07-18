@@ -19,6 +19,8 @@
 //             new id); --session-id pre-assigns the id. Works in -p and TUI.
 //             Permission-wait: Notification hook, notification_type
 //             "permission_prompt" (and "idle_prompt" once idle nags kick in).
+//             Approval resolution: PostToolUse fires once the approved tool
+//             ran (denial produces no PostToolUse — the turn just Stops).
 //   codex   · JSON-on-stdin hooks injected per-invocation via -c overrides.
 //             Untrusted hooks are SILENTLY skipped: a hooks.state entry with a
 //             trusted_hash (sha256 of the canonical handler identity, key
@@ -31,6 +33,8 @@
 //             Permission-wait: PermissionRequest hook (session_id, turn_id,
 //             tool_name, tool_input) — fires in exec mode too, where the
 //             unanswerable approval is then auto-rejected and the turn Stops.
+//             Approval resolution: PostToolUse (label post_tool_use) fires
+//             after an executed command, same payload family.
 //   pi      · in-process extension via -e <file.ts>; ctx.sessionManager gives
 //             sessionId + sessionFile on every event; agent_start/agent_end
 //             bracket each turn; --session-id creates-or-resumes an exact id.
@@ -46,6 +50,8 @@
 //             permission, metadata.command). Needs a completed model turn that
 //             CALLS a gated tool, so the test brings its own offline
 //             OpenAI-compatible provider; run mode never asks (headless).
+//             Approval resolution: permission.replied (sessionID, requestID =
+//             the asked id, reply "once"/"always"/"reject"), then busy resumes.
 //
 // Permission-wait exists ONLY on claude/codex/opencode. pi has no approval
 // concept at all (tools execute directly — verified: zero approval strings in
@@ -292,7 +298,7 @@ describe.skipIf(!LIVE || !hasBin('claude'))('claude hook contract', () => {
   const claudeSettings = (bridge: string): string =>
     JSON.stringify({
       hooks: Object.fromEntries(
-        ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'SessionEnd'].map((e) => [
+        ['SessionStart', 'UserPromptSubmit', 'Notification', 'PostToolUse', 'Stop', 'SessionEnd'].map((e) => [
           e,
           [{ hooks: [{ type: 'command', command: bridge }] }],
         ]),
@@ -415,8 +421,10 @@ describe.skipIf(!LIVE || !hasBin('claude'))('claude hook contract', () => {
   // Permission-wait is PUSHED: while a tool call is blocked on the user's
   // approval, the Notification hook fires with notification_type
   // "permission_prompt" — mid-turn, before any Stop. This is the signal that
-  // replaces the spinner-stop + settle-timer "needs input" heuristic.
-  test('TUI: Notification(permission_prompt) fires while blocked on tool approval', { retry: 1, timeout: 420_000 }, async () => {
+  // replaces the spinner-stop + settle-timer "needs input" heuristic. And the
+  // RESOLUTION is pushed too: approving runs the tool, so PostToolUse marks
+  // the turn as back in flight before it finally Stops.
+  test('TUI: Notification(permission_prompt) while blocked; approval resumes via PostToolUse', { retry: 1, timeout: 420_000 }, async () => {
     const cwd = makeCwd('claude-perm')
     const eventsFile = join(cwd, 'events.jsonl')
     const bridge = writeBridge(cwd)
@@ -448,6 +456,14 @@ describe.skipIf(!LIVE || !hasBin('claude'))('claude hook contract', () => {
     expect(perm?.message, 'human-readable permission message').toContain('permission')
     // The turn is still in flight — the wait signal precedes any Stop.
     expect(byName(events(), 'Stop').length, 'no Stop while blocked on approval').toBe(0)
+
+    // Approve (Enter accepts the highlighted "Yes"): the tool runs, PostToolUse
+    // pushes the back-in-flight signal, then the turn completes with Stop.
+    await tui.send('')
+    await tui.waitFor(() => byName(events(), 'PostToolUse').length > 0, 120_000, 'PostToolUse after approval')
+    expect(byName(events(), 'PostToolUse')[0].payload.session_id).toBe(id)
+    expect(byName(events(), 'PostToolUse')[0].payload.tool_name).toBe('Bash')
+    await tui.waitFor(() => byName(events(), 'Stop').length > 0, 120_000, 'Stop after approval')
     expectEcho(events(), tid)
     tui.kill()
   })
@@ -484,6 +500,7 @@ describe.skipIf(!LIVE || !hasBin('codex'))('codex hook contract', () => {
       ['SessionStart', 'session_start'],
       ['UserPromptSubmit', 'user_prompt_submit'],
       ['PermissionRequest', 'permission_request'],
+      ['PostToolUse', 'post_tool_use'],
       ['Stop', 'stop'],
     ]
     const args: string[] = []
@@ -579,6 +596,33 @@ describe.skipIf(!LIVE || !hasBin('codex'))('codex hook contract', () => {
     const names = events.map((e) => e.payload.hook_event_name)
     expect(names.indexOf('PermissionRequest')).toBeGreaterThan(names.indexOf('UserPromptSubmit'))
     expect(names.indexOf('Stop'), 'auto-reject completes the turn').toBeGreaterThan(names.indexOf('PermissionRequest'))
+    expectEcho(events, tid)
+  })
+
+  // Approval RESOLUTION is pushed as PostToolUse once the tool actually ran —
+  // pinned via --full-auto (auto-approved echo), where the order is
+  // UserPromptSubmit → PostToolUse → Stop with no PermissionRequest.
+  test('exec: PostToolUse fires after an executed command', { timeout: 300_000 }, async () => {
+    const cwd = makeCwd('codex-pt')
+    const bridge = writeBridge(cwd)
+    const tid = `cate-term-codex-pt-${Date.now()}`
+    const eventsFile = join(cwd, 'events.jsonl')
+
+    await run(
+      'codex',
+      ['exec', '--skip-git-repo-check', '--full-auto', ...hookArgs(bridge), 'Run exactly this shell command: echo cate-pt-probe'],
+      { cwd, env: cleanEnv({ CATE_EVENTS_FILE: eventsFile, CATE_TERMINAL_ID: tid }), timeout: 240_000 },
+    )
+    const events = readJsonl<BridgeEvent>(eventsFile)
+    const start = events.find((e) => e.payload.hook_event_name === 'SessionStart')?.payload
+    cleanups.push(() => rmSync(start?.transcript_path as string, { force: true }))
+    const post = events.find((e) => e.payload.hook_event_name === 'PostToolUse')?.payload
+    expect(post, 'PostToolUse fired').toBeTruthy()
+    expect(post?.session_id).toBe(start?.session_id)
+    expect(post?.tool_name).toBe('Bash')
+    const names = events.map((e) => e.payload.hook_event_name)
+    expect(names).not.toContain('PermissionRequest')
+    expect(names.indexOf('Stop')).toBeGreaterThan(names.indexOf('PostToolUse'))
     expectEcho(events, tid)
   })
 
@@ -856,11 +900,13 @@ export const CateEventLogger = async ({ directory }) => {
   })
 
   // Permission-wait is PUSHED: permission.asked fires on the bus when a gated
-  // tool call parks on user approval. Reaching it needs a model turn that
-  // actually CALLS bash, and run mode never asks — so this drives the TUI
-  // against a self-hosted offline OpenAI-compatible provider that always
-  // answers with a bash tool call (no network, no credentials, no cost).
-  test('TUI: permission.asked fires while a bash call waits for approval', { retry: 1, timeout: 420_000 }, async () => {
+  // tool call parks on user approval, and the RESOLUTION is pushed as
+  // permission.replied (requestID = the asked id) once the user answers.
+  // Reaching it needs a model turn that actually CALLS bash, and run mode
+  // never asks — so this drives the TUI against a self-hosted offline
+  // OpenAI-compatible provider that always answers with a bash tool call
+  // (no network, no credentials, no cost).
+  test('TUI: permission.asked while a bash call waits; approval pushes permission.replied', { retry: 1, timeout: 420_000 }, async () => {
     const { createServer } = await import('node:http')
     const cwd = makeCwd('opencode-perm')
     const plugin = join(cwd, 'cate-plugin.mjs')
@@ -915,7 +961,14 @@ export const CatePermLogger = async () => ({
     interface PermEvent {
       type: string
       sessionID: string | null
-      properties: { permission?: string; sessionID?: string; metadata?: { command?: string } } | null
+      properties: {
+        id?: string
+        permission?: string
+        sessionID?: string
+        metadata?: { command?: string }
+        requestID?: string
+        reply?: string
+      } | null
       cate_terminal_id: string | null
     }
     const events = (): PermEvent[] => readJsonl<PermEvent>(eventsFile)
@@ -956,6 +1009,20 @@ export const CatePermLogger = async () => ({
     expect(asked?.metadata?.command).toContain('touch')
     // The turn is still busy while parked on approval — idle has not fired.
     expect(events().some((e) => e.type === 'session.idle' && e.sessionID === id)).toBe(false)
+
+    // Approve (Enter accepts the highlighted "allow once"): permission.replied
+    // resolves the SAME request, then the turn runs on to completion.
+    await tui.send('')
+    await tui.waitFor(() => events().some((e) => e.type === 'permission.replied'), 60_000, 'permission.replied')
+    const replied = events().find((e) => e.type === 'permission.replied')?.properties
+    expect(replied?.sessionID).toBe(id)
+    expect(replied?.requestID, 'resolution references the asked request').toBe(asked?.id)
+    expect(replied?.reply).toBeTruthy()
+    await tui.waitFor(
+      () => events().some((e) => e.type === 'session.idle' && e.sessionID === id),
+      120_000,
+      'session.idle after approval',
+    )
     expectEcho(events().map((e) => ({ cateTerminalId: e.cate_terminal_id })), tid)
     tui.kill()
   })
