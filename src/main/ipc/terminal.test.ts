@@ -79,13 +79,37 @@ vi.mock('../extensions/workspaceCateApi', () => ({
 
 // A fake runtime whose process.create is the hoisted spy, so the instant-exit
 // tests can drive onData/onExit deterministically through the real spawnTerminal.
+// resolve records the ids it was asked for (plain functions, not vi.fn — the
+// global restoreMocks would strip a factory-set implementation), so the
+// cwd-routing tests can assert WHICH runtime a spawn was routed to. The real
+// (pure) locator module is used, not a mock.
+const rt = vi.hoisted(() => {
+  const state = { resolvedIds: [] as string[], cwd: null as string | null }
+  return {
+    state,
+    resolve: (id: string) => {
+      state.resolvedIds.push(id)
+      return {
+        validateCwd: (p: string) => p,
+        process: {
+          create: (...args: unknown[]) => (diag.ptyCreate as (...a: unknown[]) => unknown)(...args),
+          getCwd: async () => state.cwd,
+        },
+      }
+    },
+  }
+})
 vi.mock('../runtime/runtimeManager', () => ({
   runtimes: {
-    resolve: () => ({ validateCwd: (p: string) => p, process: { create: diag.ptyCreate } }),
+    resolve: rt.resolve,
     disposeAll: () => Promise.resolve(),
   },
 }))
-vi.mock('../runtime/locator', () => ({ parseLocator: (cwd: string) => ({ runtimeId: 'local', path: cwd }) }))
+
+// Workspace lookup used by spawnTerminal's bare-cwd re-anchoring. Defaults to
+// unknown workspace; the routing tests point it at a remote-rooted workspace.
+const ws = vi.hoisted(() => ({ getWorkspaceInfo: vi.fn() }))
+vi.mock('../workspaceManager', () => ({ getWorkspaceInfo: ws.getWorkspaceInfo }))
 
 // --- terminalLifecycle (renderer) deps, stubbed so getOrCreate/dispose run
 //     without a real xterm/DOM/store stack. registryState is left REAL so the
@@ -502,5 +526,68 @@ describe('CATE_API env injection into spawned terminals', () => {
 
     expect(cateApi.ensureEndpoint).toHaveBeenCalledWith('ws-1')
     expect(env).toBeUndefined()
+  })
+})
+
+// ===========================================================================
+// Remote terminal cwd routing. Two halves of one round-trip bug:
+//  - terminal:getCwd must re-encode the hosting runtime's locator into the
+//    returned path (the ProcessHost reports a host-absolute path; session save
+//    persists it and feeds it back to terminal:create, where a bare path
+//    routes to LOCAL and gets rejected as outside the local allowed roots).
+//  - terminal:create must re-anchor a BARE cwd to the workspace's runtime when
+//    that workspace is remote-rooted, healing sessions saved before the
+//    getCwd fix (their terminalCwds are bare host paths).
+// ===========================================================================
+describe('remote terminal cwd routing', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    diag.ptyCreate.mockReset()
+    rt.state.resolvedIds.length = 0
+    rt.state.cwd = null
+    ws.getWorkspaceInfo.mockReset()
+    cateApi.ensureEndpoint.mockResolvedValue(null)
+  })
+
+  async function spawn(options: { cwd?: string; workspaceId?: string }): Promise<string> {
+    diag.ptyCreate.mockResolvedValue({ id: 'pty-r', pid: 123, shell: '/bin/bash' })
+    const mod = await import('./terminal')
+    mod.registerHandlers()
+    return (await handlers.get('terminal:create')!({}, { cols: 80, rows: 24, ...options })) as string
+  }
+
+  it('routes a locator cwd to its runtime with the host-absolute path', async () => {
+    await spawn({ cwd: 'cate-runtime://srv_abc/home/u/proj' })
+    expect(rt.state.resolvedIds).toContain('srv_abc')
+    expect((diag.ptyCreate.mock.calls[0][0] as { cwd: string }).cwd).toBe('/home/u/proj')
+  })
+
+  it('re-anchors a bare cwd to the workspace runtime when the workspace root is remote', async () => {
+    ws.getWorkspaceInfo.mockReturnValue({ rootPath: 'cate-runtime://srv_abc/home/u/proj' })
+    await spawn({ cwd: '/home/u/proj', workspaceId: 'ws-r' })
+    expect(ws.getWorkspaceInfo).toHaveBeenCalledWith('ws-r')
+    expect(rt.state.resolvedIds).toContain('srv_abc')
+    expect((diag.ptyCreate.mock.calls[0][0] as { cwd: string }).cwd).toBe('/home/u/proj')
+  })
+
+  it('keeps a bare cwd on LOCAL when the workspace root is local', async () => {
+    ws.getWorkspaceInfo.mockReturnValue({ rootPath: '/Users/u/proj' })
+    await spawn({ cwd: '/Users/u/proj', workspaceId: 'ws-l' })
+    expect(rt.state.resolvedIds).toContain('local')
+    expect(rt.state.resolvedIds).not.toContain('srv_abc')
+  })
+
+  it('getCwd re-encodes the hosting runtime locator for a remote terminal', async () => {
+    const ptyId = await spawn({ cwd: 'cate-runtime://srv_abc/home/u/proj' })
+    rt.state.cwd = '/home/u/proj/sub'
+    const cwd = await handlers.get('terminal:getCwd')!({}, ptyId)
+    expect(cwd).toBe('cate-runtime://srv_abc/home/u/proj/sub')
+  })
+
+  it('getCwd returns the bare path for a local terminal', async () => {
+    const ptyId = await spawn({ cwd: '/Users/u/proj' })
+    rt.state.cwd = '/Users/u/proj'
+    const cwd = await handlers.get('terminal:getCwd')!({}, ptyId)
+    expect(cwd).toBe('/Users/u/proj')
   })
 })

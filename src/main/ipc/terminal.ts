@@ -39,11 +39,12 @@ import { getOrCreateLogger, removeLogger, flushAll as flushAllLoggers, disposeAl
 import log from '../logger'
 import { sendToWindow, windowFromEvent, onWindowClosed } from '../windowRegistry'
 import { countTerminalData } from '../perf/perfMonitor'
-import { parseLocator, type RuntimeId } from '../runtime/locator'
+import { formatLocator, parseLocator, LOCAL_RUNTIME_ID, type RuntimeId } from '../runtime/locator'
 import { runtimes } from '../runtime/runtimeManager'
 import type { Runtime } from '../runtime/types'
 import { createStringDispatcher } from './batchedDispatcher'
 import { workspaceCateApi } from '../extensions/workspaceCateApi'
+import { getWorkspaceInfo } from '../workspaceManager'
 
 // Set true during app shutdown so PTY data/exit callbacks no-op instead of
 // calling into a torn-down JS environment.
@@ -229,7 +230,18 @@ async function spawnTerminal(
   options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string; panelId?: string },
   ownerWindowId: number,
 ): Promise<string> {
-  const { runtimeId, path: cwdPath } = parseLocator(options.cwd ?? '')
+  const locator = parseLocator(options.cwd ?? '')
+  const cwdPath = locator.path
+  let runtimeId = locator.runtimeId
+  // A bare (scheme-less) cwd in a workspace whose root lives on another runtime
+  // can only mean a path on THAT runtime's filesystem — sessions saved before
+  // getCwd re-encoded the locator persisted exactly this shape. Re-anchor it so
+  // the spawn doesn't route to LOCAL and get rejected as an out-of-root path.
+  if (runtimeId === LOCAL_RUNTIME_ID && options.cwd && options.workspaceId) {
+    const wsRoot = getWorkspaceInfo(options.workspaceId)?.rootPath
+    const wsRuntimeId = wsRoot ? parseLocator(wsRoot).runtimeId : LOCAL_RUNTIME_ID
+    if (wsRuntimeId !== LOCAL_RUNTIME_ID) runtimeId = wsRuntimeId
+  }
   const runtime = runtimes.resolve(runtimeId)
 
   // No client-side validation: the authoritative allowed-root check runs on
@@ -404,7 +416,13 @@ export function registerHandlers(): void {
   ipcMain.handle(TERMINAL_GET_CWD, async (_event, ptyId: string): Promise<string | null> => {
     const runtime = runtimeForTerminal(ptyId)
     if (!runtime) return null
-    return runtime.process.getCwd(ptyId)
+    const cwd = await runtime.process.getCwd(ptyId)
+    if (cwd == null) return null
+    // The ProcessHost reports a host-absolute path. Callers persist this into
+    // session snapshots and feed it back to terminal:create, where a bare path
+    // routes to LOCAL — so a non-local terminal's cwd must carry its locator.
+    const runtimeId = terminalRuntime.get(ptyId)
+    return runtimeId && runtimeId !== LOCAL_RUNTIME_ID ? formatLocator({ runtimeId, path: cwd }) : cwd
   })
 
   // Scrollback/log file names are derived from ids supplied by the renderer
