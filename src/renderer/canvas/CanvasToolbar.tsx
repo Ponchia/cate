@@ -18,6 +18,7 @@ import {
   ChatCircle,
   Shapes,
   FlowArrow,
+  Note,
 } from '@phosphor-icons/react'
 import Minimap from './Minimap'
 import WorktreeToolbarMenu from './WorktreeToolbarMenu'
@@ -298,6 +299,13 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
     canvasApi.getState().setAnnotationMode(current?.kind === 'connect' ? null : { kind: 'connect' })
   }
 
+  const handleNoteClick = () => {
+    const current = canvasApi.getState().annotationMode
+    canvasApi.getState().setAnnotationMode(
+      current?.kind === 'draw' && current.shape === 'note' ? null : { kind: 'draw', shape: 'note' },
+    )
+  }
+
   // The buttons are identical between layouts — only the tooltip side, fly-out
   // direction, and divider orientation change. Shared so the two layouts can't
   // drift apart.
@@ -343,9 +351,17 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       </ToolbarButton>
       {divider}
       <ModeButton
+        onClick={handleNoteClick}
+        title="Sticky note — click to place, then type"
+        active={annotationMode?.kind === 'draw' && annotationMode.shape === 'note'}
+        placement={place}
+      >
+        <Note size={18} />
+      </ModeButton>
+      <ModeButton
         onClick={() => { void handleShapeClick() }}
         title="Shape — draw a rectangle or ellipse"
-        active={annotationMode?.kind === 'draw'}
+        active={annotationMode?.kind === 'draw' && annotationMode.shape !== 'note'}
         placement={place}
       >
         <Shapes size={18} />

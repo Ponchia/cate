@@ -20,12 +20,16 @@ interface EndpointGeom {
 }
 
 /** Resolve a connector endpoint to its current rect (null when the target is
- *  gone — the connector should not render). */
+ *  gone — the connector should not render). A free point endpoint resolves to
+ *  a zero-size rect at the point, so its anchor IS the point. */
 export function resolveEndpoint(
   ep: CanvasConnectorEndpoint,
   nodes: Record<string, CanvasNodeState>,
   shapes: Record<string, CanvasShapeState>,
 ): EndpointGeom | null {
+  if (ep.kind === 'point') {
+    return { rect: { origin: ep.point, size: { width: 0, height: 0 } }, ellipse: false }
+  }
   if (ep.kind === 'node') {
     const n = nodes[ep.nodeId]
     return n ? { rect: { origin: n.origin, size: n.size }, ellipse: false } : null
@@ -149,6 +153,9 @@ export function shapeMembers(
   nodes: Record<string, CanvasNodeState>,
   shapes: Record<string, CanvasShapeState>,
 ): ShapeMembers {
+  // Sticky notes are content, not containers — a big note over a panel must
+  // never capture it.
+  if (container.kind === 'note') return { nodeIds: [], shapeIds: [] }
   const area = container.size.width * container.size.height
   const nodeIds: string[] = []
   const shapeIds: string[] = []
@@ -163,6 +170,70 @@ export function shapeMembers(
     if (pointInShape(rectCenter({ origin: s.origin, size: s.size }), container)) shapeIds.push(s.id)
   }
   return { nodeIds, shapeIds }
+}
+
+// -----------------------------------------------------------------------------
+// Alignment snapping — edges/centers of a dragged rect against other rects.
+// Feeds the canvas store's snapGuides (SnapGuides renders the rules).
+// -----------------------------------------------------------------------------
+
+export interface SnapLine {
+  axis: 'x' | 'y'
+  position: number
+  type: 'edge' | 'center'
+}
+
+export interface SnapResult {
+  origin: Point
+  lines: SnapLine[]
+}
+
+/** Snap a dragged rect's edges/centers to the edges/centers of `others`.
+ *  `threshold` is in canvas units (callers divide a screen-px tolerance by
+ *  zoom). Returns the adjusted origin plus the guide lines to render — at most
+ *  one snap per axis (the closest). */
+export function snapRectToTargets(
+  origin: Point,
+  size: Size,
+  others: Rect[],
+  threshold: number,
+): SnapResult {
+  const candidates = (lo: number, len: number) => [
+    { at: lo, type: 'edge' as const },
+    { at: lo + len / 2, type: 'center' as const },
+    { at: lo + len, type: 'edge' as const },
+  ]
+  const best: Record<'x' | 'y', { delta: number; line: SnapLine } | null> = { x: null, y: null }
+  for (const other of others) {
+    for (const axis of ['x', 'y'] as const) {
+      const [lo, len, oLo, oLen] = axis === 'x'
+        ? [origin.x, size.width, other.origin.x, other.size.width]
+        : [origin.y, size.height, other.origin.y, other.size.height]
+      for (const mine of candidates(lo, len)) {
+        for (const theirs of candidates(oLo, oLen)) {
+          const delta = theirs.at - mine.at
+          if (Math.abs(delta) > threshold) continue
+          if (best[axis] && Math.abs(best[axis]!.delta) <= Math.abs(delta)) continue
+          best[axis] = {
+            delta,
+            line: {
+              axis,
+              position: theirs.at,
+              // A center-to-center alignment renders dashed; edge lines solid.
+              type: mine.type === 'center' && theirs.type === 'center' ? 'center' : 'edge',
+            },
+          }
+        }
+      }
+    }
+  }
+  return {
+    origin: {
+      x: origin.x + (best.x?.delta ?? 0),
+      y: origin.y + (best.y?.delta ?? 0),
+    },
+    lines: [best.x?.line, best.y?.line].filter((l): l is SnapLine => !!l),
+  }
 }
 
 /** The endpoint (shape preferred over node when both hit — shapes render under

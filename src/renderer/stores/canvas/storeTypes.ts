@@ -100,6 +100,12 @@ export interface CanvasStoreState {
   annotationMode: { kind: 'draw'; shape: CanvasShapeKind } | { kind: 'connect' } | null
   /** First endpoint picked while in connect mode (null until the first click). */
   connectorDraft: CanvasConnectorEndpoint | null
+  /** Shape id a freshly-created note should immediately open the text editor
+   *  for (set by the draw overlay, consumed by the annotation layer). */
+  pendingAnnotationEdit: string | null
+  /** Container shape currently highlighted as the drop target of an in-flight
+   *  panel-node drag (transient; null when no drag hovers a container). */
+  dropTargetShapeId: string | null
 }
 
 export interface CanvasHistoryEntry {
@@ -265,6 +271,8 @@ export interface CanvasStoreActions {
   setShapeLabel: (id: string, label: string) => void
   setShapeColor: (id: string, color: string) => void
   setShapeKind: (id: string, kind: CanvasShapeKind) => void
+  setShapeFill: (id: string, fillOpacity: number | undefined) => void
+  setShapeStrokeWidth: (id: string, strokeWidth: number | undefined) => void
   /** Create a connector between two endpoints; returns its id (null when the
    *  endpoints are invalid/identical). Pushes a history step. */
   addConnector: (from: CanvasConnectorEndpoint, to: CanvasConnectorEndpoint, color?: string) => string | null
@@ -287,6 +295,11 @@ export interface CanvasStoreActions {
   clearAnnotationSelection: () => void
   setAnnotationMode: (mode: CanvasStoreState['annotationMode']) => void
   setConnectorDraft: (endpoint: CanvasConnectorEndpoint | null) => void
+  setPendingAnnotationEdit: (id: string | null) => void
+  setDropTargetShape: (id: string | null) => void
+  /** Geometry update for a connector's free point endpoints during a drag (no
+   *  history push — the gesture pushes once at start, like shape moves). */
+  updateConnectorPoints: (id: string, from?: Point, to?: Point) => void
 
   // Bulk reset (used when switching workspaces)
   loadWorkspaceCanvas: (

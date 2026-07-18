@@ -20,6 +20,7 @@ import SnapGuides from './SnapGuides'
 import GhostPlacementLayer from './GhostPlacementLayer'
 import AnnotationLayer from './annotations/AnnotationLayer'
 import AnnotationModeOverlay from './annotations/AnnotationModeOverlay'
+import DropTargetTracker from './annotations/DropTargetTracker'
 import PlacementVizOverlay from './placementViz/PlacementVizOverlay'
 import { WorktreeTerritoryLayer } from './worktree'
 import type { Point, PanelType } from '../../shared/types'
@@ -691,6 +692,9 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
 
       {/* Transient input surface for shape-draw / connector modes. */}
       <AnnotationModeOverlay canvasRef={canvasRef} />
+
+      {/* Highlights the container shape under an in-flight panel drag. */}
+      <DropTargetTracker canvasRef={canvasRef} />
 
       <PlacementHint canvasRef={canvasRef} />
     </div>

@@ -16,6 +16,8 @@ import { SHAPE_DEFAULT_SIZE } from '../../stores/canvas/annotationsSlice'
 import type { Point } from '../../../shared/types'
 
 const ACCENT = 'rgba(74, 158, 255, 0.9)'
+const NOTE_DEFAULT_SIZE = { width: 190, height: 150 }
+const NOTE_DEFAULT_COLOR = '#fbbf24'
 
 const AnnotationModeOverlay: React.FC<{ canvasRef: React.RefObject<HTMLDivElement | null> }> = ({ canvasRef }) => {
   const canvasApi = useCanvasStoreApi()
@@ -86,14 +88,11 @@ const AnnotationModeOverlay: React.FC<{ canvasRef: React.RefObject<HTMLDivElemen
       return
     }
 
-    // Connect mode: pick endpoints.
+    // Connect mode: pick endpoints. Empty canvas is a valid FREE POINT end —
+    // arrows don't have to attach to anything.
     const state = canvasApi.getState()
     const hit = hitTestEndpoint(state.nodes, state.shapes, canvasPt)
-    if (!hit) {
-      // Clicking empty canvas cancels — connecting needs two real targets.
-      exitMode()
-      return
-    }
+      ?? { kind: 'point' as const, point: canvasPt }
     if (!connectorDraft) {
       state.setConnectorDraft(hit)
       return
@@ -141,19 +140,26 @@ const AnnotationModeOverlay: React.FC<{ canvasRef: React.RefObject<HTMLDivElemen
     if (!endPt) return
     const state = canvasApi.getState()
     const dragged = Math.hypot(endPt.x - start.canvas.x, endPt.y - start.canvas.y) >= 8
+    // Notes default to a sticky-sized amber card; frames keep the larger blue default.
+    const defaultSize = mode.shape === 'note' ? NOTE_DEFAULT_SIZE : SHAPE_DEFAULT_SIZE
+    const color = mode.shape === 'note' ? NOTE_DEFAULT_COLOR : undefined
+    let id: string
     if (dragged) {
-      state.addShape(
+      id = state.addShape(
         mode.shape,
         { x: Math.min(start.canvas.x, endPt.x), y: Math.min(start.canvas.y, endPt.y) },
         { width: Math.abs(endPt.x - start.canvas.x), height: Math.abs(endPt.y - start.canvas.y) },
+        color,
       )
     } else {
-      state.addShape(mode.shape, {
-        x: start.canvas.x - SHAPE_DEFAULT_SIZE.width / 2,
-        y: start.canvas.y - SHAPE_DEFAULT_SIZE.height / 2,
-      })
+      id = state.addShape(mode.shape, {
+        x: start.canvas.x - defaultSize.width / 2,
+        y: start.canvas.y - defaultSize.height / 2,
+      }, defaultSize, color)
     }
     exitMode()
+    // A fresh note is for typing — open its text editor immediately.
+    if (mode.shape === 'note' && id) canvasApi.getState().setPendingAnnotationEdit(id)
   }
 
   // Connect-mode preview line: from the draft source's anchor to the cursor.
@@ -186,12 +192,15 @@ const AnnotationModeOverlay: React.FC<{ canvasRef: React.RefObject<HTMLDivElemen
     hoverRect = { x: tl.x, y: tl.y, w: hoverTarget.size.width * z, h: hoverTarget.size.height * z }
   }
 
+  const drawNoun = mode.kind === 'draw'
+    ? { rect: 'rectangle', ellipse: 'ellipse', note: 'sticky note' }[mode.shape]
+    : ''
   const hint =
     mode.kind === 'draw'
-      ? `Click or drag to place a ${mode.shape === 'rect' ? 'rectangle' : 'ellipse'} — Esc to cancel`
+      ? `Click or drag to place a ${drawNoun} — Esc to cancel`
       : connectorDraft
-        ? 'Click the target panel or shape — Esc to cancel'
-        : 'Click the source panel or shape — Esc to cancel'
+        ? 'Click the target — a panel, a shape, or empty canvas — Esc to cancel'
+        : 'Click the source — a panel, a shape, or empty canvas — Esc to cancel'
 
   return (
     <div
@@ -204,7 +213,7 @@ const AnnotationModeOverlay: React.FC<{ canvasRef: React.RefObject<HTMLDivElemen
     >
       <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
         {drawRect && mode.kind === 'draw' && (
-          mode.shape === 'rect' ? (
+          mode.shape !== 'ellipse' ? (
             <rect
               x={drawRect.x} y={drawRect.y} width={drawRect.w} height={drawRect.h}
               rx={10} fill="rgba(74, 158, 255, 0.08)" stroke={ACCENT} strokeWidth={1.5}

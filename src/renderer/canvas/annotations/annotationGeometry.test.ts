@@ -9,6 +9,7 @@ import {
   hitTestShape,
   hitTestEndpoint,
   shapeMembers,
+  snapRectToTargets,
 } from './annotationGeometry'
 import type { CanvasNodeState, CanvasShapeState } from '../../../shared/types'
 
@@ -125,5 +126,58 @@ describe('shapeMembers (frame semantics)', () => {
     }
     const m = shapeMembers(ell, nodes, { ell })
     expect(m.nodeIds).toEqual(['center'])
+  })
+
+  it('sticky notes never act as containers', () => {
+    const bigNote = { ...shape('n1', 0, 0, 600, 400), kind: 'note' as const }
+    const nodes = { inside: node('inside', 100, 100) }
+    expect(shapeMembers(bigNote, nodes, { n1: bigNote })).toEqual({ nodeIds: [], shapeIds: [] })
+  })
+})
+
+describe('free point endpoints', () => {
+  it('a point→node connector anchors the free end AT the point', () => {
+    const nodes = { a: node('a', 400, 0) }
+    const line = connectorLine({ kind: 'point', point: { x: 0, y: 40 } }, { kind: 'node', nodeId: 'a' }, nodes, {})!
+    expect(line.from).toEqual({ x: 0, y: 40 })
+    expect(line.to.x).toBeCloseTo(400) // node's left edge
+  })
+
+  it('a point→point connector runs point to point', () => {
+    const line = connectorLine(
+      { kind: 'point', point: { x: 0, y: 0 } },
+      { kind: 'point', point: { x: 100, y: 50 } },
+      {}, {},
+    )!
+    expect(line.from).toEqual({ x: 0, y: 0 })
+    expect(line.to).toEqual({ x: 100, y: 50 })
+  })
+})
+
+describe('snapRectToTargets', () => {
+  const target = { origin: { x: 500, y: 300 }, size: { width: 200, height: 100 } }
+
+  it('snaps a near-aligned left edge to the target left edge', () => {
+    // Dragged rect's left edge at 495 — 5 units from the target's 500.
+    const r = snapRectToTargets({ x: 495, y: 0 }, { width: 100, height: 80 }, [target], 8)
+    expect(r.origin.x).toBe(500)
+    expect(r.lines).toEqual([{ axis: 'x', position: 500, type: 'edge' }])
+  })
+
+  it('snaps center-to-center and marks the guide dashed', () => {
+    // Dragged center x at 597 (= 547+100/2); target center x = 600.
+    const r = snapRectToTargets({ x: 547, y: 0 }, { width: 100, height: 80 }, [target], 8)
+    expect(r.origin.x).toBe(550)
+    expect(r.lines[0]).toEqual({ axis: 'x', position: 600, type: 'center' })
+  })
+
+  it('does nothing outside the threshold and snaps both axes independently', () => {
+    const far = snapRectToTargets({ x: 0, y: 0 }, { width: 100, height: 80 }, [target], 8)
+    expect(far.origin).toEqual({ x: 0, y: 0 })
+    expect(far.lines).toEqual([])
+    // Right edge near target's left (400+100=500) AND top edge near target's top.
+    const both = snapRectToTargets({ x: 397, y: 297 }, { width: 100, height: 80 }, [target], 8)
+    expect(both.origin).toEqual({ x: 400, y: 300 })
+    expect(both.lines.length).toBe(2)
   })
 })

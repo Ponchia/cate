@@ -25,6 +25,8 @@ type AnnotationsActions = Pick<
   | 'setShapeLabel'
   | 'setShapeColor'
   | 'setShapeKind'
+  | 'setShapeFill'
+  | 'setShapeStrokeWidth'
   | 'addConnector'
   | 'setConnectorLabel'
   | 'setConnectorColor'
@@ -39,6 +41,9 @@ type AnnotationsActions = Pick<
   | 'clearAnnotationSelection'
   | 'setAnnotationMode'
   | 'setConnectorDraft'
+  | 'setPendingAnnotationEdit'
+  | 'setDropTargetShape'
+  | 'updateConnectorPoints'
 >
 
 export const SHAPE_DEFAULT_SIZE = { width: 200, height: 130 }
@@ -47,15 +52,18 @@ export const SHAPE_MIN_SIZE = { width: 40, height: 30 }
 function endpointsEqual(a: CanvasConnectorEndpoint, b: CanvasConnectorEndpoint): boolean {
   if (a.kind === 'node' && b.kind === 'node') return a.nodeId === b.nodeId
   if (a.kind === 'shape' && b.kind === 'shape') return a.shapeId === b.shapeId
+  if (a.kind === 'point' && b.kind === 'point') return a.point.x === b.point.x && a.point.y === b.point.y
   return false
 }
 
-/** Whether an endpoint resolves against the given live state. */
+/** Whether an endpoint resolves against the given live state. Free points
+ *  always exist. */
 function endpointExists(
   ep: CanvasConnectorEndpoint,
   nodes: Record<string, unknown>,
   shapes: Record<string, unknown>,
 ): boolean {
+  if (ep.kind === 'point') return true
   return ep.kind === 'node' ? !!nodes[ep.nodeId] : !!shapes[ep.shapeId]
 }
 
@@ -86,7 +94,7 @@ export function sanitizeLoadedAnnotations(raw: CanvasAnnotations | undefined): C
   const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
   for (const [id, s] of Object.entries(raw?.shapes ?? {})) {
     if (!s || typeof s !== 'object') continue
-    if (s.kind !== 'rect' && s.kind !== 'ellipse') continue
+    if (s.kind !== 'rect' && s.kind !== 'ellipse' && s.kind !== 'note') continue
     if (!finite(s.origin?.x) || !finite(s.origin?.y) || !finite(s.size?.width) || !finite(s.size?.height)) continue
     shapes[id] = {
       id,
@@ -98,13 +106,19 @@ export function sanitizeLoadedAnnotations(raw: CanvasAnnotations | undefined): C
       },
       color: typeof s.color === 'string' ? s.color : ANNOTATION_COLORS[0].value,
       label: typeof s.label === 'string' ? s.label : undefined,
+      fillOpacity: finite(s.fillOpacity) ? Math.min(Math.max(s.fillOpacity, 0), 1) : undefined,
+      strokeWidth: finite(s.strokeWidth) ? Math.min(Math.max(s.strokeWidth, 0.5), 8) : undefined,
       creationIndex: finite(s.creationIndex) ? s.creationIndex : 0,
     }
   }
   for (const [id, c] of Object.entries(raw?.connectors ?? {})) {
     if (!c || typeof c !== 'object') continue
     const validEp = (ep: CanvasConnectorEndpoint | undefined): ep is CanvasConnectorEndpoint =>
-      !!ep && ((ep.kind === 'node' && typeof ep.nodeId === 'string') || (ep.kind === 'shape' && typeof ep.shapeId === 'string'))
+      !!ep && (
+        (ep.kind === 'node' && typeof ep.nodeId === 'string') ||
+        (ep.kind === 'shape' && typeof ep.shapeId === 'string') ||
+        (ep.kind === 'point' && finite(ep.point?.x) && finite(ep.point?.y))
+      )
     if (!validEp(c.from) || !validEp(c.to)) continue
     connectors[id] = {
       id,
@@ -195,6 +209,20 @@ export function createAnnotationsSlice(set: CanvasSet, get: CanvasGet): Annotati
       if (!shape || shape.kind === kind) return
       get().pushHistory()
       set((state) => ({ shapes: { ...state.shapes, [id]: { ...shape, kind } } }))
+    },
+
+    setShapeFill(id, fillOpacity) {
+      const shape = get().shapes[id]
+      if (!shape || shape.fillOpacity === fillOpacity) return
+      get().pushHistory()
+      set((state) => ({ shapes: { ...state.shapes, [id]: { ...shape, fillOpacity } } }))
+    },
+
+    setShapeStrokeWidth(id, strokeWidth) {
+      const shape = get().shapes[id]
+      if (!shape || shape.strokeWidth === strokeWidth) return
+      get().pushHistory()
+      set((state) => ({ shapes: { ...state.shapes, [id]: { ...shape, strokeWidth } } }))
     },
 
     addConnector(from, to, color) {
@@ -325,10 +353,14 @@ export function createAnnotationsSlice(set: CanvasSet, get: CanvasGet): Annotati
       // Connectors: explicitly selected ones, plus those running between two
       // duplicated shapes (duplicating a group keeps its internal wiring).
       const connectors = { ...state.connectors }
-      const remap = (ep: CanvasConnectorEndpoint): CanvasConnectorEndpoint =>
-        ep.kind === 'shape' && idMap.has(ep.shapeId) ? { kind: 'shape', shapeId: idMap.get(ep.shapeId)! } : ep
+      const remap = (ep: CanvasConnectorEndpoint): CanvasConnectorEndpoint => {
+        if (ep.kind === 'shape' && idMap.has(ep.shapeId)) return { kind: 'shape', shapeId: idMap.get(ep.shapeId)! }
+        // Free points duplicate by offsetting alongside the cloned shapes.
+        if (ep.kind === 'point') return { kind: 'point', point: { x: ep.point.x + OFFSET, y: ep.point.y + OFFSET } }
+        return ep
+      }
       const coveredEnd = (ep: CanvasConnectorEndpoint): boolean =>
-        ep.kind === 'node' || (ep.kind === 'shape' && idMap.has(ep.shapeId))
+        ep.kind === 'node' || ep.kind === 'point' || (ep.kind === 'shape' && idMap.has(ep.shapeId))
       const wanted = new Set(connectorIds)
       for (const c of Object.values(state.connectors)) {
         const internal = c.from.kind === 'shape' && c.to.kind === 'shape'
@@ -404,6 +436,32 @@ export function createAnnotationsSlice(set: CanvasSet, get: CanvasGet): Annotati
 
     setConnectorDraft(endpoint) {
       set({ connectorDraft: endpoint })
+    },
+
+    setPendingAnnotationEdit(id) {
+      set({ pendingAnnotationEdit: id })
+    },
+
+    setDropTargetShape(id) {
+      if (get().dropTargetShapeId === id) return
+      set({ dropTargetShapeId: id })
+    },
+
+    updateConnectorPoints(id, from, to) {
+      set((state) => {
+        const c = state.connectors[id]
+        if (!c) return state
+        return {
+          connectors: {
+            ...state.connectors,
+            [id]: {
+              ...c,
+              ...(from && c.from.kind === 'point' ? { from: { kind: 'point' as const, point: from } } : {}),
+              ...(to && c.to.kind === 'point' ? { to: { kind: 'point' as const, point: to } } : {}),
+            },
+          },
+        }
+      })
     },
   }
 }

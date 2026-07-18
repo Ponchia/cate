@@ -171,6 +171,52 @@ describe('annotations slice', () => {
     expect(store.getState().shapes[a].creationIndex).toBeLessThan(store.getState().shapes[b].creationIndex)
   })
 
+  it('point-endpoint connectors: create, drag points, duplicate offsets them', () => {
+    const { store, nodeId } = storeWithNode()
+    const c = store.getState().addConnector(
+      { kind: 'point', point: { x: 500, y: 500 } },
+      { kind: 'node', nodeId },
+    )!
+    expect(c).not.toBeNull()
+    store.getState().updateConnectorPoints(c, { x: 600, y: 550 })
+    const moved = store.getState().connectors[c]
+    expect(moved.from).toEqual({ kind: 'point', point: { x: 600, y: 550 } })
+    expect(moved.to).toEqual({ kind: 'node', nodeId }) // anchored end untouched
+    const clones = store.getState().duplicateAnnotations([c])
+    expect(clones.length).toBe(1)
+    const clone = store.getState().connectors[clones[0]]
+    expect(clone.from).toEqual({ kind: 'point', point: { x: 628, y: 578 } })
+  })
+
+  it('note kind round-trips through load; corrupt point endpoints are dropped', () => {
+    const store = createCanvasStore()
+    const annotations = {
+      shapes: {
+        note1: { id: 'note1', kind: 'note', origin: { x: 0, y: 0 }, size: { width: 190, height: 150 }, color: '#fbbf24', label: 'todo:\nship it', creationIndex: 0 },
+      },
+      connectors: {
+        free: { id: 'free', from: { kind: 'point', point: { x: 1, y: 2 } }, to: { kind: 'shape', shapeId: 'note1' }, color: '#fbbf24', creationIndex: 1 },
+        bad: { id: 'bad', from: { kind: 'point', point: { x: Number.NaN, y: 0 } }, to: { kind: 'shape', shapeId: 'note1' }, color: '#fbbf24', creationIndex: 2 },
+      },
+    } as unknown as CanvasAnnotations
+    store.getState().loadWorkspaceCanvas({}, { x: 0, y: 0 }, 1, annotations)
+    const s = store.getState()
+    expect(s.shapes.note1.kind).toBe('note')
+    expect(s.shapes.note1.label).toBe('todo:\nship it')
+    expect(Object.keys(s.connectors)).toEqual(['free'])
+  })
+
+  it('fill/stroke style controls persist on the shape and are undoable', () => {
+    const store = createCanvasStore()
+    const id = store.getState().addShape('rect', { x: 0, y: 0 })
+    store.getState().setShapeFill(id, 0.35)
+    store.getState().setShapeStrokeWidth(id, 3)
+    expect(store.getState().shapes[id].fillOpacity).toBe(0.35)
+    expect(store.getState().shapes[id].strokeWidth).toBe(3)
+    store.getState().undo()
+    expect(store.getState().shapes[id].strokeWidth).toBeUndefined()
+  })
+
   it('reverseConnector swaps direction and setConnectorArrows round-trips', () => {
     const { store, nodeId } = storeWithNode()
     const a = store.getState().addShape('rect', { x: 400, y: 0 })

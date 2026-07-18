@@ -72,6 +72,8 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
       annotationSelection: [],
       annotationMode: null,
       connectorDraft: null,
+      pendingAnnotationEdit: null,
+      dropTargetShapeId: null,
 
       // --- Actions (composed from focused slices) ---
       ...createHistorySlice(set, get),
@@ -143,6 +145,8 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
           annotationSelection: [],
           annotationMode: null,
           connectorDraft: null,
+          pendingAnnotationEdit: null,
+          dropTargetShapeId: null,
         })
       },
     }

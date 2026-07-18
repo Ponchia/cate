@@ -362,7 +362,7 @@ export interface DockWindowInitPayload {
 // by id and re-route as their endpoints move.
 // -----------------------------------------------------------------------------
 
-export type CanvasShapeKind = 'rect' | 'ellipse'
+export type CanvasShapeKind = 'rect' | 'ellipse' | 'note'
 
 export interface CanvasShapeState {
   id: string
@@ -371,7 +371,14 @@ export interface CanvasShapeState {
   size: Size
   /** Accent color (hex). Stroke + translucent fill derive from it. */
   color: string
+  /** rect/ellipse: short centered/top label. note: the full sticky text
+   *  (multiline, wrapped). */
   label?: string
+  /** rect/ellipse fill strength, 0..1 fraction of the accent mixed into the
+   *  fill. Absent = the default subtle fill. Notes ignore it (solid card). */
+  fillOpacity?: number
+  /** Stroke width in canvas units. Absent = default (1.5). */
+  strokeWidth?: number
   /** Stable draw order among shapes (all shapes render below panel nodes). */
   creationIndex: number
 }
@@ -379,6 +386,7 @@ export interface CanvasShapeState {
 export type CanvasConnectorEndpoint =
   | { kind: 'node'; nodeId: string }
   | { kind: 'shape'; shapeId: string }
+  | { kind: 'point'; point: Point }
 
 export interface CanvasConnectorState {
   id: string
