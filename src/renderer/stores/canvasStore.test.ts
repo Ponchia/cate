@@ -456,6 +456,51 @@ describe('canvasStore.zoomToSelection', () => {
 })
 
 // =============================================================================
+// zoomToNode — animated fit-and-center of one node (double-click on its
+// chrome). In this rAF-less environment the fallback applies instantly, which
+// makes the target geometry directly assertable.
+// =============================================================================
+
+describe('canvasStore.zoomToNode', () => {
+  it('centers the node in the viewport regardless of selection', () => {
+    const store = createCanvasStore()
+    store.getState().setContainerSize({ width: 1000, height: 800 })
+    const a = store.getState().addNode('a', 'editor', { x: 0, y: 0 }, { width: 100, height: 100 })
+    const b = store.getState().addNode('b', 'editor', { x: 2000, y: 2000 }, { width: 100, height: 100 })
+    store.getState().selectNodes([a], false) // selection must NOT win over the explicit target
+
+    store.getState().zoomToNode(b)
+
+    // Node b's center (2050,2050) maps to the container center.
+    const view = store.getState().canvasToView({ x: 2050, y: 2050 })
+    expect(view.x).toBeCloseTo(500, 0)
+    expect(view.y).toBeCloseTo(400, 0)
+  })
+
+  it('caps the zoom for a small node (no over-blow past 1.5x)', () => {
+    const store = createCanvasStore()
+    store.getState().setContainerSize({ width: 2000, height: 1600 })
+    const a = store.getState().addNode('a', 'editor', { x: 0, y: 0 }, { width: 100, height: 100 })
+
+    store.getState().zoomToNode(a)
+
+    expect(store.getState().zoomLevel).toBeLessThanOrEqual(1.5)
+  })
+
+  it('is a no-op for an unknown node id', () => {
+    const store = createCanvasStore()
+    store.getState().setContainerSize({ width: 1000, height: 800 })
+    store.getState().addNode('a', 'editor', { x: 0, y: 0 }, { width: 100, height: 100 })
+    const before = { zoom: store.getState().zoomLevel, offset: store.getState().viewportOffset }
+
+    store.getState().zoomToNode('ghost')
+
+    expect(store.getState().zoomLevel).toBe(before.zoom)
+    expect(store.getState().viewportOffset).toEqual(before.offset)
+  })
+})
+
+// =============================================================================
 // recommendPlacements — 3–5 ranked, non-overlapping spots for the ghost picker.
 // =============================================================================
 

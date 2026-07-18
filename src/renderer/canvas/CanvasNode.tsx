@@ -180,6 +180,7 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
   const focusNode = useCanvasStoreContext((s) => s.focusNode)
   const removeNode = useCanvasStoreContext((s) => s.removeNode)
   const toggleMaximize = useCanvasStoreContext((s) => s.toggleMaximize)
+  const zoomToNode = useCanvasStoreContext((s) => s.zoomToNode)
   const isSelected = useCanvasStoreContext((s) => isNodeSelected(s, nodeId))
   const isDockDragging = useDragStore((s) => s.isDragging)
   const { hidden: isWholeNodeDragSource } = useDragSourceVisibility(nodeId)
@@ -613,12 +614,24 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
       style={containerStyle}
       onClick={handleClick}
       onMouseDown={handleMouseDown}
+      onDoubleClick={(e) => {
+        // Double-click on the node CHROME (tab bar / grab strip) zooms the
+        // node to fill the viewport — the standard canvas-tool gesture. Panel
+        // CONTENT keeps its native double-click (word-select in editors and
+        // terminals), so anything outside the chrome is ignored here.
+        const target = e.target as HTMLElement
+        if (!target.closest('[data-dock-tab-bar], [data-node-grab-strip]')) return
+        e.preventDefault()
+        e.stopPropagation()
+        zoomToNode(nodeId)
+      }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
       {/* Standalone grab strip — only when the layout is split (or empty). */}
       {!rootIsTabs && (
         <div
+          data-node-grab-strip
           style={{
             height: GRAB_STRIP_HEIGHT,
             display: 'flex',

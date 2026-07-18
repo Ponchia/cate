@@ -576,6 +576,16 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onDoubleClick={(e) => {
+        // Double-click on EMPTY canvas fits everything — the complement of the
+        // node-chrome double-click (which zooms that node; it stops
+        // propagation, so reaching here with a node ancestor means the click
+        // was inside panel content and belongs to the panel).
+        const target = e.target as HTMLElement
+        if (target.closest('[data-node-id]')) return
+        if (target.closest('button, [role="dialog"]')) return
+        canvasApi.getState().zoomToFit()
+      }}
       onContextMenu={handleContextMenu}
       onDragOver={handleFileDragOver}
       onDrop={handleFileDrop}

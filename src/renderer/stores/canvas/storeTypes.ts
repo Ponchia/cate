@@ -180,6 +180,10 @@ export interface CanvasStoreActions {
 
   zoomToFit: () => void
   zoomToSelection: () => void
+  /** Animated fit-and-center of one node (double-click on its chrome): glides
+   *  zoom + offset together so the node fills the viewport (same padding and
+   *  single-node zoom cap as zoomToSelection). No-op for an unknown node. */
+  zoomToNode: (nodeId: string) => void
 
   /** Publish (or clear) the active-tab worktree for a node. */
   setNodeActiveWorktree: (nodeId: string, worktreeId: string | null) => void

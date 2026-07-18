@@ -167,6 +167,7 @@ export function DockTabBar(props: DockTabBarProps) {
 
   return (
     <div
+      data-dock-tab-bar
       className={`flex items-center flex-1 min-w-0 ${compact ? 'gap-0.5' : 'gap-1'}`}
       style={onEmptyMouseDown ? { cursor: 'grab' } : undefined}
       onContextMenu={onEmptyContextMenu}

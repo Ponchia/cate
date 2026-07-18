@@ -25,6 +25,7 @@ type ViewportActions = Pick<
   | 'viewFrame'
   | 'zoomToFit'
   | 'zoomToSelection'
+  | 'zoomToNode'
 >
 
 export function createViewportSlice(set: CanvasSet, get: CanvasGet, ctx: CanvasStoreCtx): ViewportActions {
@@ -253,6 +254,57 @@ export function createViewportSlice(set: CanvasSet, get: CanvasGet, ctx: CanvasS
           y: (cs.height - contentH * zoom) / 2 - (minY - padding) * zoom,
         },
       })
+    },
+
+    zoomToNode(nodeId) {
+      const state = get()
+      const node = state.nodes[nodeId]
+      if (!node) return
+      const cs = state.containerSize
+      if (cs.width === 0 || cs.height === 0) return
+
+      // Same fit math as zoomToSelection's single-node case: padded fit,
+      // capped so a small panel doesn't blow up past readable scale.
+      const padding = 60
+      const contentW = node.size.width + padding * 2
+      const contentH = node.size.height + padding * 2
+      const fitZoom = Math.min(cs.width / contentW, cs.height / contentH)
+      const targetZoom = Math.min(Math.max(fitZoom, ZOOM_MIN), Math.min(ZOOM_MAX, 1.5))
+      const targetOffset = {
+        x: (cs.width - contentW * targetZoom) / 2 - (node.origin.x - padding) * targetZoom,
+        y: (cs.height - contentH * targetZoom) / 2 - (node.origin.y - padding) * targetZoom,
+      }
+
+      // Glide zoom + offset TOGETHER (the existing tweens each drive only one,
+      // and animateZoomTo re-derives offset around the view center — combining
+      // them would fight). One rAF loop eases both toward the fit target.
+      ctx.cancelZoomAnim()
+      ctx.cancelOffsetAnim()
+      if (get().suppressAutoFocus) set({ suppressAutoFocus: false })
+
+      if (typeof requestAnimationFrame !== 'function') {
+        set({ zoomLevel: targetZoom, viewportOffset: targetOffset })
+        return
+      }
+
+      const EASE = 0.18
+      const tick = () => {
+        const { zoomLevel: z, viewportOffset: o } = get()
+        const dz = targetZoom - z
+        const dx = targetOffset.x - o.x
+        const dy = targetOffset.y - o.y
+        if (Math.abs(dz) < 0.001 && Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+          set({ zoomLevel: targetZoom, viewportOffset: targetOffset })
+          ctx.activeZoomAnimationRafId = 0
+          return
+        }
+        set({
+          zoomLevel: z + dz * EASE,
+          viewportOffset: { x: o.x + dx * EASE, y: o.y + dy * EASE },
+        })
+        ctx.activeZoomAnimationRafId = requestAnimationFrame(tick)
+      }
+      ctx.activeZoomAnimationRafId = requestAnimationFrame(tick)
     },
   }
 }
