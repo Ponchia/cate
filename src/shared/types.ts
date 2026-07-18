@@ -331,6 +331,9 @@ export interface DockWindowInitPayload {
    *  a respawned terminal lands where it was. Keyed by the stable panelId (same
    *  as the main window's snapshot.terminalCwds). */
   terminalCwds?: Record<string, string>
+  /** Session-restore only: per terminal panelId → its live server-side ptyId,
+   *  for persistent-runtime reattach (see WorkspaceSnapshot.terminalPtys). */
+  terminalPtys?: Record<string, string>
   /** Session-restore only: per top-level canvas panelId → its reconstructed
    *  canvas hydration (nodes/viewport + child panels), so EVERY canvas tab
    *  restores its children rather than only the first. Absent for a fresh live
@@ -356,6 +359,11 @@ export interface DetachedDockWindowSnapshot {
    *  stable panelId (`<panelId>.scrollback`), exactly like the main window — no
    *  ptyId indirection, so restore never depends on a captured live-ptyId map. */
   terminalCwds?: Record<string, string>
+  /** Per terminal panelId → its live server-side ptyId. On a PERSISTENT runtime
+   *  the session may still be running at restore; the terminal reattaches to it
+   *  (with server-side replay) instead of respawning. Harmless when stale — a
+   *  failed attach falls back to a fresh spawn at terminalCwds[panelId]. */
+  terminalPtys?: Record<string, string>
   /** Per-canvas-panel layout snapshots (nodes + viewport), keyed by canvas panelId,
    *  so a detached canvas window restores its children instead of landing empty. */
   canvasStates: Record<string, CanvasLayoutSnapshot>
@@ -881,6 +889,11 @@ export interface SessionSnapshot {
    *  live working directory so a restored terminal respawns where it was rather
    *  than at the workspace root. Sourced from / saved to session.json. */
   terminalCwds?: Record<string, string>
+  /** Per terminal panel id → its live server-side ptyId at save time. On a
+   *  persistent runtime the session may still be running at restore, in which
+   *  case the terminal REATTACHES (server-side scrollback replay) instead of
+   *  respawning. Stale ids are harmless: a failed attach spawns fresh. */
+  terminalPtys?: Record<string, string>
   /** Git worktree registry (with per-worktree color/label). Persisted so colors
    *  stay stable across restarts instead of being re-assigned round-robin from
    *  the palette, and so panel.worktreeId references still resolve. */
@@ -930,6 +943,8 @@ export interface DockWindowSyncState {
   dockState: DockStateSnapshot
   panels: Record<string, PanelState>
   terminalCwds?: Record<string, string>
+  /** panelId → live server-side ptyId, for persistent-runtime reattach. */
+  terminalPtys?: Record<string, string>
   canvasStates: Record<string, CanvasLayoutSnapshot>
 }
 

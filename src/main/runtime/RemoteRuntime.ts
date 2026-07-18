@@ -15,6 +15,11 @@ import type {
   AgentHost,
   AgentHandle,
   PtyHandle,
+  SessionsHost,
+  PtySessionInfo,
+  AgentSessionInfo,
+  PtyAttachResult,
+  AgentAttachResult,
   ServerHost,
   ServerHandle,
   TunnelHost,
@@ -43,6 +48,7 @@ export class RemoteRuntime implements Runtime {
   readonly vcs: VcsHost
   readonly server: ServerHost
   readonly tunnel: TunnelHost
+  readonly sessions: SessionsHost
   private ptySeq = 0
 
   constructor(
@@ -74,7 +80,10 @@ export class RemoteRuntime implements Runtime {
         // Client-generated id == the stream key. Register BEFORE the create
         // round-trip so the daemon's first output (it arrives after the res on
         // an ordered pipe, but the listener must already exist) is never lost.
-        const id = `rpty-${++this.ptySeq}-${this.id}`
+        // The random component matters on a PERSISTENT daemon: a bare sequence
+        // resets every app launch and would collide with a surviving session's
+        // id (the hub rejects duplicate ids rather than double-spawning).
+        const id = `rpty-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}-${++this.ptySeq}-${this.id}`
         this.rpc.registerStream(id, (payload) => {
           const p = payload as PtyEvtPayload
           if (p.kind === 'data') onData(id, p.data)
@@ -98,6 +107,49 @@ export class RemoteRuntime implements Runtime {
       setVisibility: (id, visible) => { void this.rpc.call(Methods.ptySetVisibility, [id, visible]).catch(() => {}) },
       scanActivity: (ids) => call<Record<string, PtyActivity>>(Methods.ptyScanActivity, [ids]),
       scanPorts: (ids) => call<Record<string, number[]>>(Methods.ptyScanPorts, [ids]),
+    }
+
+    // Sessions (persistent daemon): list/attach/detach over the hub. attach
+    // registers the evt stream BEFORE the round-trip (same no-early-loss rule
+    // as ptyCreate) — the replay comes back in the response, and live output
+    // follows on the stream; the daemon guarantees the two never overlap.
+    this.sessions = {
+      listPtys: () => call<PtySessionInfo[]>(Methods.sessionsPtyList, []),
+      attachPty: async (id, onData, onExit, sinceByte) => {
+        this.rpc.registerStream(id, (payload) => {
+          const p = payload as PtyEvtPayload
+          if (p.kind === 'data') onData(id, p.data)
+          else { onExit(id, p.exitCode); this.rpc.unregisterStream(id) }
+        })
+        try {
+          return await call<PtyAttachResult>(Methods.sessionsPtyAttach, [id, sinceByte])
+        } catch (err) {
+          this.rpc.unregisterStream(id)
+          throw err
+        }
+      },
+      detachPty: async (id) => {
+        this.rpc.unregisterStream(id)
+        await call<void>(Methods.sessionsPtyDetach, [id])
+      },
+      listAgents: () => call<AgentSessionInfo[]>(Methods.sessionsAgentList, []),
+      attachAgent: async (id, onLine, onExit, sinceLine) => {
+        this.rpc.registerStream(id, (payload) => {
+          const p = payload as AgentEvtPayload
+          if (p.kind === 'line') onLine(id, p.line)
+          else { onExit(id, p.code, p.stderr); this.rpc.unregisterStream(id) }
+        })
+        try {
+          return await call<AgentAttachResult>(Methods.sessionsAgentAttach, [id, sinceLine])
+        } catch (err) {
+          this.rpc.unregisterStream(id)
+          throw err
+        }
+      },
+      detachAgent: async (id) => {
+        this.rpc.unregisterStream(id)
+        await call<void>(Methods.sessionsAgentDetach, [id])
+      },
     }
 
     // Agent: pi runs on the daemon's host; lines/exit stream back keyed by the

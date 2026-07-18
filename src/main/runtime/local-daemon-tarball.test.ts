@@ -53,8 +53,10 @@ describe.skipIf(!hasTarball)('local daemon from the real tarball', () => {
     expect(existsSync(path.join(installDir, 'runtime.cjs'))).toBe(true)
     expect(existsSync(path.join(installDir, 'pi', 'dist', 'cli.js'))).toBe(true)
 
-    // fs over the wire.
-    const dir = await runtime.validatePathStrict(workspace)
+    // fs over the wire. The daemon validates against per-scope roots with no
+    // fallback: name the daemon's own scope (its --id, under which --root was
+    // registered at startup), like every trusted main-process caller does.
+    const dir = await runtime.validatePathStrict(workspace, undefined, 'srv_localtarball')
     const tree = await runtime.file.readDir(dir)
     expect(tree.map((n) => n.name)).toContain('hello.ts')
 

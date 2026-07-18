@@ -109,6 +109,14 @@ async function replayAllowedRoots(runtimeId: string, runtime: ReturnType<typeof 
     registrations.push(runtime.addAllowedRoot(locator.path, workspace.id).catch(() => {
       /* best-effort: a rejected registration must not break runtime connect */
     }))
+    // Also register under the runtime's own id: RemoteRuntime's trusted-caller
+    // default scopes main-internal ops (project-state saves, skill seeds) to
+    // the CLIENT's runtimeId. An SSH daemon knows that scope because it was
+    // launched with `--id <runtimeId>`; a persistent (ws://) daemon was not —
+    // it runs under its own service id — so the client must establish it.
+    registrations.push(runtime.addAllowedRoot(locator.path, runtimeId).catch(() => {
+      /* best-effort */
+    }))
   }
   await Promise.all(registrations)
 }

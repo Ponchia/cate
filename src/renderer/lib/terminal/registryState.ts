@@ -119,7 +119,10 @@ export function setPtyForPanel(panelId: string, ptyId: string): void {
 
 export type PendingTerminalStart =
   | { kind: 'transfer'; ptyId: string; scrollback?: string }
-  | { kind: 'restore'; cwd?: string; replayFromId: string }
+  /** `attachPtyId`: the server-side session this panel owned last run — on a
+   *  persistent runtime the spawn REATTACHES to it (server replay) instead of
+   *  respawning; stale/absent falls back to a fresh spawn at `cwd`. */
+  | { kind: 'restore'; cwd?: string; replayFromId: string; attachPtyId?: string }
 
 /** The one staging registry consulted before a TerminalPanel starts. */
 export const pendingTerminalStarts = new Map<string, PendingTerminalStart>()

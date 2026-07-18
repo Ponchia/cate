@@ -6,20 +6,31 @@
 // this bundles into a runtime-agnostic file (see build/esbuild.config.mjs).
 //
 // Usage: cate-runtime --root <abs-path> --id <runtimeId> [--exclude a,b,c]
+//        cate-runtime --root <abs-path> --id <runtimeId> --listen <host:port> \
+//          [--token-file <path>]   # persistent multi-client mode (tmux-style)
 // =============================================================================
 
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { randomBytes } from 'crypto'
 import { addAllowedRoot } from '../main/ipc/pathValidation'
 import { RpcServer } from './rpcServer'
 import { buildDaemonRuntime } from './capabilities'
 import { hostExtensionsRoot } from './capabilities/extensions'
 import { reapOrphanServers } from './capabilities/server'
 import { applyLoginEnv } from './loginEnv'
+import { startWsServer } from './wsServer'
 
 interface DaemonArgs {
   root: string
   id: string
   exclusions: string[]
   idleSuspend: boolean
+  /** host:port to serve WebSocket clients on (persistent mode). Empty → stdio. */
+  listen: string
+  /** Token file for --listen auth. Created (0600, random) if absent. */
+  tokenFile: string
 }
 
 function parseArgs(argv: string[]): DaemonArgs {
@@ -27,18 +38,37 @@ function parseArgs(argv: string[]): DaemonArgs {
   let id = 'remote'
   let exclusions: string[] = []
   let idleSuspend = false
+  let listen = ''
+  let tokenFile = ''
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--root') root = argv[++i] ?? ''
     else if (a === '--id') id = argv[++i] ?? id
     else if (a === '--exclude') exclusions = (argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
     else if (a === '--idle-suspend') idleSuspend = true
+    else if (a === '--listen') listen = argv[++i] ?? ''
+    else if (a === '--token-file') tokenFile = argv[++i] ?? ''
   }
   if (!root) {
     process.stderr.write('cate-runtime: --root <abs-path> is required\n')
     process.exit(2)
   }
-  return { root, id, exclusions, idleSuspend }
+  return { root, id, exclusions, idleSuspend, listen, tokenFile }
+}
+
+/** Read the auth token for --listen mode, generating one (0600) on first run
+ *  so a fresh install has a secret without any manual step. */
+function loadOrCreateToken(tokenFile: string): string {
+  const file = tokenFile || path.join(os.homedir(), '.cate', 'runtime-token')
+  try {
+    const existing = fs.readFileSync(file, 'utf-8').trim()
+    if (existing) return existing
+  } catch { /* absent → create below */ }
+  const token = randomBytes(32).toString('hex')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, token + '\n', { mode: 0o600 })
+  process.stderr.write(`cate-runtime: generated auth token at ${file}\n`)
+  return token
 }
 
 async function main(): Promise<void> {
@@ -74,23 +104,42 @@ async function main(): Promise<void> {
     exclusions: args.exclusions,
     idleSuspend: args.idleSuspend,
   })
-  const server = new RpcServer(runtime, (line) => process.stdout.write(line))
 
-  // Reap every live pty's process group + every server child / tunnel socket so
-  // quitting the app (which kills this daemon) doesn't orphan dev-server or
-  // extension-server children. Run before exit on every path.
+  // Reap every live pty's process group + every server child / tunnel socket.
+  // Runs on daemon termination in BOTH modes: for stdio that's the client
+  // quitting (kill children with it — the classic behavior); for --listen
+  // that's an explicit service stop (tmux kill-server semantics). A client
+  // merely DISCONNECTING in --listen mode never reaches this path.
+  let cleanup: () => void = () => {}
   const shutdown = (): void => {
     proc.killAllGroups()
     killAll()
-    server.dispose()
+    cleanup()
     process.exit(0)
   }
+  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', shutdown)
 
+  if (args.listen) {
+    // Persistent multi-client mode: sessions outlive connections. Parse
+    // host:port (IPv6 hosts use [addr]:port).
+    const m = args.listen.match(/^\[?([^\]]*)\]?:(\d+)$/)
+    if (!m) {
+      process.stderr.write(`cate-runtime: invalid --listen "${args.listen}" (expected host:port)\n`)
+      process.exit(2)
+    }
+    const token = loadOrCreateToken(args.tokenFile)
+    const handle = startWsServer({ host: m[1], port: parseInt(m[2], 10), token, api: runtime })
+    cleanup = () => handle.close()
+    return
+  }
+
+  // Connection-scoped stdio mode: one client, die (and reap children) with it.
+  const server = new RpcServer(runtime, (line) => process.stdout.write(line))
+  cleanup = () => server.dispose()
   process.stdin.setEncoding('utf-8')
   process.stdin.on('data', (chunk) => server.handleChunk(chunk))
   process.stdin.on('close', shutdown)
-  process.on('SIGTERM', shutdown)
-  process.on('SIGINT', shutdown)
 
   server.start()
 }

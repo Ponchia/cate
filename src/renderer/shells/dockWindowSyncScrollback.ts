@@ -24,6 +24,8 @@ import type { PanelState } from '../../shared/types'
 export interface TerminalScrollbackSyncResult {
   /** panelId -> live working directory, for the persisted snapshot's terminalCwds. */
   terminalCwds: Record<string, string>
+  /** panelId -> live server-side ptyId, for persistent-runtime reattach. */
+  terminalPtys: Record<string, string>
   /** In-flight terminalScrollbackSave promises (already swallow rejections). */
   savePromises: Array<Promise<void>>
 }
@@ -39,6 +41,7 @@ export async function captureTerminalScrollbacks(
   panels: Record<string, PanelState>,
 ): Promise<TerminalScrollbackSyncResult> {
   const terminalCwds: Record<string, string> = {}
+  const terminalPtys: Record<string, string> = {}
   const savePromises: Array<Promise<void>> = []
   const cwdPromises: Array<Promise<void>> = []
   for (const panel of Object.values(panels)) {
@@ -54,6 +57,7 @@ export async function captureTerminalScrollbacks(
     // Best-effort cwd so a respawned terminal lands where it was. Needs the live
     // ptyId; skipped for a terminal that hasn't spawned yet (a later tick gets it).
     if (entry.ptyId) {
+      terminalPtys[panel.id] = entry.ptyId
       cwdPromises.push(
         window.electronAPI
           .terminalGetCwd(entry.ptyId)
@@ -65,5 +69,5 @@ export async function captureTerminalScrollbacks(
     }
   }
   await Promise.all(cwdPromises)
-  return { terminalCwds, savePromises }
+  return { terminalCwds, terminalPtys, savePromises }
 }

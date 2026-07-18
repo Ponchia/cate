@@ -294,7 +294,7 @@ async function restoreSessionHydrate(snapshot: SessionSnapshot, workspaceId: str
   // TerminalPanel mounts. Scrollback is keyed by the (restore-stable) panel id.
   for (const panel of Object.values(snapshot.panels ?? {})) {
     if (panel.type !== 'terminal') continue
-    terminalRegistry.setPendingRestore(panel.id, snapshot.terminalCwds?.[panel.id])
+    terminalRegistry.setPendingRestore(panel.id, snapshot.terminalCwds?.[panel.id], panel.id, snapshot.terminalPtys?.[panel.id])
   }
 
   // Safety net: guarantee the center zone has a canvas panel after restore.

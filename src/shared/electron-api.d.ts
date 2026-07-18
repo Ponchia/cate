@@ -58,6 +58,10 @@ export interface ElectronAPI {
     workspaceId?: string
     /** Owning Cate panel, exposed to the spawned shell as CATE_PANEL_ID. */
     panelId?: string
+    /** Surviving server-side session to reattach to (persistent runtimes).
+     *  On success the returned ptyId equals this id and the terminal's
+     *  scrollback was replayed server-side; on failure a fresh pty spawns. */
+    attachPtyId?: string
   }): Promise<string>
 
   /** Write data (keystrokes) to a terminal. */

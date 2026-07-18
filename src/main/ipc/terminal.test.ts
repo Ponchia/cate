@@ -103,6 +103,7 @@ vi.mock('../runtime/runtimeManager', () => ({
   runtimes: {
     resolve: rt.resolve,
     disposeAll: () => Promise.resolve(),
+    onConnected: () => () => {},
   },
 }))
 

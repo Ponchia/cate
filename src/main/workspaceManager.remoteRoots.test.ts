@@ -83,7 +83,11 @@ describe('remote workspace root scopes', () => {
     await replay
 
     expect(replayFinished).toBe(true)
-    expect(remoteRuntime.addAllowedRoot).toHaveBeenLastCalledWith(root, workspaceId)
+    expect(remoteRuntime.addAllowedRoot).toHaveBeenCalledWith(root, workspaceId)
+    // The replay ALSO registers under the runtime's own id, covering the
+    // trusted-caller scope on persistent (ws://) daemons that were not
+    // launched with the client's runtimeId.
+    expect(remoteRuntime.addAllowedRoot).toHaveBeenCalledWith(root, runtimeId)
     expect(workspaceId).not.toBe(runtimeId)
 
     // A live daemon accepts newly-created workspaces immediately.
@@ -102,7 +106,9 @@ describe('remote workspace root scopes', () => {
     await fireConnected(runtimeId)
     expect(remoteRuntime.addAllowedRoot.mock.calls).toEqual([
       [root, workspaceId],
+      [root, runtimeId],
       [secondRoot, secondId],
+      [secondRoot, runtimeId],
     ])
   })
 

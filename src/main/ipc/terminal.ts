@@ -55,6 +55,14 @@ const terminalOwners: Map<string, number> = new Map()
 
 // Which runtime hosts each terminal — routes write/resize/kill/getCwd.
 const terminalRuntime: Map<string, RuntimeId> = new Map()
+
+// Persistent-session bookkeeping. `terminalWiring` keeps each live terminal's
+// onData/onExit closures so a runtime reconnect can re-subscribe the SAME
+// pipeline (dispatcher, logger, transfer buffers) to the surviving server-side
+// session; `terminalBytes` tracks received output bytes — the attach cursor, so
+// a reattach replays exactly what was missed while disconnected.
+const terminalWiring: Map<string, { onData: (id: string, data: string) => void; onExit: (id: string, exitCode: number) => void }> = new Map()
+const terminalBytes: Map<string, number> = new Map()
 const sessionListeners = new Set<() => void>()
 
 function emitSessionsChanged(): void {
@@ -223,11 +231,38 @@ export function reassignTerminalWindow(terminalId: string, newWindowId: number):
 function cleanupTerminal(id: string): void {
   terminalOwners.delete(id)
   terminalRuntime.delete(id)
+  terminalWiring.delete(id)
+  terminalBytes.delete(id)
   emitSessionsChanged()
 }
 
+/**
+ * Re-subscribe every live terminal hosted by a runtime after it reconnects
+ * (persistent daemon: the sessions kept running while we were away). Replays
+ * exactly the missed bytes via the per-terminal byte cursor. A session that no
+ * longer exists gets a synthetic exit so the renderer's terminal closes out
+ * instead of sitting frozen forever. Wired via runtimes.onConnected below.
+ */
+async function reattachTerminalsForRuntime(runtimeId: RuntimeId, runtime: Runtime): Promise<void> {
+  const sessions = runtime.sessions
+  if (!sessions) return
+  for (const [ptyId, rid] of [...terminalRuntime]) {
+    if (rid !== runtimeId) continue
+    const wiring = terminalWiring.get(ptyId)
+    if (!wiring) continue
+    try {
+      const res = await sessions.attachPty(ptyId, wiring.onData, wiring.onExit, terminalBytes.get(ptyId) ?? 0)
+      if (res.replay) wiring.onData(ptyId, res.replay)
+      log.info('[terminal] reattached %s after reconnect (replayed %d bytes)', ptyId, res.replay.length)
+    } catch {
+      log.info('[terminal] session %s gone after reconnect; closing terminal', ptyId)
+      wiring.onExit(ptyId, 0)
+    }
+  }
+}
+
 async function spawnTerminal(
-  options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string; panelId?: string },
+  options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string; panelId?: string; attachPtyId?: string },
   ownerWindowId: number,
 ): Promise<string> {
   const locator = parseLocator(options.cwd ?? '')
@@ -293,6 +328,9 @@ async function spawnTerminal(
     terminalId = id
     sawData = true
     countTerminalData(data.length)
+    // Attach cursor for persistent sessions: total received bytes, matching
+    // the daemon's utf-8 byte accounting.
+    terminalBytes.set(id, (terminalBytes.get(id) ?? 0) + Buffer.byteLength(data, 'utf-8'))
     getOrCreateLogger(id).append(data)
 
     const transferState = transferStates.get(id)
@@ -323,6 +361,28 @@ async function spawnTerminal(
     if (windowId != null) sendToWindow(windowId, TERMINAL_EXIT, id, exitCode)
   }
 
+  // Persistent-session reattach: a restored panel names the server-side pty it
+  // owned last session. If that session is still alive on the daemon, subscribe
+  // this fresh pipeline to it (ring replay backfills the scrollback) instead of
+  // spawning a new shell. Any failure — no sessions capability, session gone,
+  // daemon restarted — falls through to a normal spawn.
+  if (options.attachPtyId && runtime.sessions) {
+    try {
+      const res = await runtime.sessions.attachPty(options.attachPtyId, onData, onExit, 0)
+      const id = options.attachPtyId
+      terminalRuntime.set(id, runtimeId)
+      terminalOwners.set(id, ownerWindowId)
+      terminalWiring.set(id, { onData, onExit })
+      terminalBytes.set(id, res.offset - Buffer.byteLength(res.replay, 'utf-8'))
+      emitSessionsChanged()
+      if (res.replay) onData(id, res.replay)
+      log.info('[terminal] attached %s to surviving session (pid %d)', id, res.info.pid)
+      return id
+    } catch (err) {
+      log.info('[terminal] attach %s failed (%s); spawning fresh', options.attachPtyId, err instanceof Error ? err.message : String(err))
+    }
+  }
+
   // The requested shell is the client's preference; each ProcessHost resolves it
   // for its own host (the local resolver, or the daemon's first-existing-of
   // [requested, $SHELL, bash, sh]) — so a path that only exists on the client is
@@ -332,6 +392,7 @@ async function spawnTerminal(
 
   terminalRuntime.set(handle.id, runtimeId)
   terminalOwners.set(handle.id, ownerWindowId)
+  terminalWiring.set(handle.id, { onData, onExit })
   emitSessionsChanged()
   if (handle.notice) {
     try { sendToWindow(ownerWindowId, TERMINAL_DATA, handle.id, handle.notice) } catch { /* window gone */ }
@@ -360,6 +421,13 @@ export function registerHandlers(): void {
   // running PTY's ownership follows the panel instead of orphaning on a dead window.
   onWindowClosed(handleWindowClosedTerminalTransfers)
 
+  // Persistent daemons: when a runtime (re)connects, re-subscribe every live
+  // terminal it hosts — the sessions kept running server-side while we were
+  // disconnected, and the byte cursor replays exactly the missed output.
+  runtimes.onConnected((runtimeId, runtime) => {
+    void reattachTerminalsForRuntime(runtimeId, runtime)
+  })
+
   // Reclaim a closed/crashed window's WebGL context grants — its renderer can no
   // longer release them, and a leaked grant would permanently shrink the budget.
   onWindowClosed(reclaimWindowWebglGrants)
@@ -382,7 +450,7 @@ export function registerHandlers(): void {
 
   ipcMain.handle(
     TERMINAL_CREATE,
-    async (event, options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string }): Promise<string> => {
+    async (event, options: { cols: number; rows: number; cwd?: string; shell?: string; workspaceId?: string; attachPtyId?: string }): Promise<string> => {
       const win = windowFromEvent(event)
       const windowId = win?.id ?? -1
       return spawnTerminal(options, windowId)

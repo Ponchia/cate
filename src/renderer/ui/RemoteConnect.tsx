@@ -26,6 +26,12 @@ export interface RemoteConnectFields {
   distroPath: string
 }
 
+/** True when the connection target is a persistent-runtime WebSocket URL
+ *  (`ws://host:port/?token=…`) rather than an SSH `user@host` target. */
+export function isWsTarget(raw: string): boolean {
+  return /^wss?:\/\//i.test(raw.trim())
+}
+
 /** Pure: assemble a validated RemoteConnectSpec from raw form fields. */
 export function buildConnectSpec(kind: Kind, f: RemoteConnectFields): RemoteConnectSpec {
   if (kind === 'wsl') {
@@ -162,15 +168,25 @@ export function RemoteConnect({
     }
   }
 
-  const parsed = parseSshTarget(target)
+  // A ws:// / wss:// target is a persistent runtime URL — no user@ / SSH auth;
+  // the whole URL (incl. its ?token=) travels as `host` and main strips the
+  // token into the secret store.
+  const wsTarget = isWsTarget(target)
+  const parsed = wsTarget ? {} as ReturnType<typeof parseSshTarget> : parseSshTarget(target)
   const canSubmit =
     !pending &&
     (kind === 'server'
-      ? !!parsed.host && !!parsed.user && !!remotePath.trim()
+      ? wsTarget
+        ? !!remotePath.trim()
+        : !!parsed.host && !!parsed.user && !!remotePath.trim()
       : (distros?.length ?? 0) > 0 && distro.trim() && distroPath.trim())
 
   const submit = (): void => {
     if (!canSubmit) return
+    if (kind === 'server' && wsTarget) {
+      onSubmit({ kind: 'server', host: target.trim(), user: '', remotePath: remotePath.trim() })
+      return
+    }
     onSubmit(
       buildConnectSpec(kind, {
         host: parsed.host ?? '',
@@ -222,7 +238,7 @@ export function RemoteConnect({
               setTarget(e.target.value)
               setSavedAlias('')
             }}
-            placeholder="user@host:port"
+            placeholder="user@host:port — or ws://host:port/?token=… for a persistent runtime"
             autoFocus
           />
 

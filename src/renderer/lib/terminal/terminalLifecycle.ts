@@ -330,6 +330,8 @@ export async function getOrCreate(panelId: string, opts: CreateOpts): Promise<Re
     // Resolve cwd: prefer explicit opt, then fall back to restore data
     const pendingRestore = pendingTerminalStarts.get(panelId)
     const resolvedCwd = opts.cwd ?? (pendingRestore?.kind === 'restore' ? pendingRestore.cwd : undefined)
+    // Surviving server-side session to reattach to (persistent runtimes).
+    const attachPtyId = pendingRestore?.kind === 'restore' ? pendingRestore.attachPtyId : undefined
 
     // If cwd points at a workspace rootPath that was just picked, the main
     // process may not have registered it as an allowed root yet (workspace
@@ -347,7 +349,12 @@ export async function getOrCreate(panelId: string, opts: CreateOpts): Promise<Re
       shell: (shell as string) || undefined,
       workspaceId: opts.workspaceId,
       panelId,
+      attachPtyId,
     })
+    // Reattach succeeded when main handed back the SAME session id: the
+    // scrollback was replayed server-side (ring buffer), so the client-side
+    // log replay below must be skipped or the content would double up.
+    const reattached = attachPtyId != null && ptyId === attachPtyId
 
     // If the entry was disposed while we were waiting, dispose() couldn't kill
     // the PTY (ptyId was still '') — kill the freshly-created one here so it
@@ -373,7 +380,8 @@ export async function getOrCreate(panelId: string, opts: CreateOpts): Promise<Re
     }
 
     // 12. Replay scrollback log if this terminal was restored from a session
-    if (pendingTerminalStarts.get(panelId)?.kind === 'restore') {
+    //     (skipped after a live reattach — the server already replayed).
+    if (!reattached && pendingTerminalStarts.get(panelId)?.kind === 'restore') {
       replayTerminalLog(panelId).catch((err) => log.warn('[terminal] Replay log failed:', err))
     }
   } catch (err) {
@@ -509,9 +517,9 @@ export function setPendingTransfer(panelId: string, ptyId: string, scrollback?: 
   pendingTerminalStarts.set(panelId, { kind: 'transfer', ptyId, scrollback })
 }
 
-export function setPendingRestore(panelId: string, cwd?: string, replayFromId = panelId): void {
+export function setPendingRestore(panelId: string, cwd?: string, replayFromId = panelId, attachPtyId?: string): void {
   if (pendingTerminalStarts.get(panelId)?.kind === 'transfer') return
-  pendingTerminalStarts.set(panelId, { kind: 'restore', cwd, replayFromId })
+  pendingTerminalStarts.set(panelId, { kind: 'restore', cwd, replayFromId, attachPtyId })
 }
 
 /**

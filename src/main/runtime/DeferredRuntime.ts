@@ -26,6 +26,7 @@ import type {
   ServerHost,
   TunnelHost,
   VcsHost,
+  SessionsHost,
 } from './types'
 
 export class DeferredRuntime implements Runtime {
@@ -35,6 +36,7 @@ export class DeferredRuntime implements Runtime {
   readonly vcs: VcsHost
   readonly server: ServerHost
   readonly tunnel: TunnelHost
+  readonly sessions: SessionsHost
 
   constructor(
     readonly id: RuntimeId,
@@ -60,6 +62,23 @@ export class DeferredRuntime implements Runtime {
       start: (opts, onLine, onExit) => d((c) => c.agent.start(opts, onLine, onExit)),
       writeLine: (id, line) => { void ready_.then((c) => c.agent.writeLine(id, line)).catch(() => {}) },
       stop: (id) => { void ready_.then((c) => c.agent.stop(id)).catch(() => {}) },
+    }
+
+    // Sessions queue behind ready like everything else. A real runtime without
+    // the capability (never the case for a live daemon, but the type allows it)
+    // rejects with a clear error rather than silently listing nothing — the
+    // attach caller treats any rejection as "spawn fresh instead".
+    const s = (c: Runtime): SessionsHost => {
+      if (!c.sessions) throw new Error('This runtime has no session registry')
+      return c.sessions
+    }
+    this.sessions = {
+      listPtys: () => d((c) => s(c).listPtys()),
+      attachPty: (id, onData, onExit, sinceByte) => d((c) => s(c).attachPty(id, onData, onExit, sinceByte)),
+      detachPty: (id, onData) => d((c) => s(c).detachPty(id, onData)),
+      listAgents: () => d((c) => s(c).listAgents()),
+      attachAgent: (id, onLine, onExit, sinceLine) => d((c) => s(c).attachAgent(id, onLine, onExit, sinceLine)),
+      detachAgent: (id, onLine) => d((c) => s(c).detachAgent(id, onLine)),
     }
 
     this.server = {

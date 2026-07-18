@@ -44,6 +44,7 @@ import { formatLocator } from '../runtime/locator'
 import { getSetting } from '../settingsFile'
 import type { RuntimeTransport } from '../runtime/transports/transport'
 import { SshTransport } from '../runtime/transports/sshTransport'
+import { WsRuntimeTransport } from '../runtime/transports/wsTransport'
 import { WslTransport } from '../runtime/transports/wslTransport'
 import { saveSshSecret, getSshSecret } from '../runtime/sshSecretStore'
 import { removePinnedHostKey, hostKeyId } from '../runtime/sshKnownHosts'
@@ -127,17 +128,44 @@ export async function listSshHosts(): Promise<SshHostEntry[]> {
   }
 }
 
+/** True when a "host" is really a persistent-runtime WebSocket URL
+ *  (`ws://host:port` / `wss://…`) rather than an SSH target. */
+export function isWsHost(host: string): boolean {
+  return /^wss?:\/\//i.test(host.trim())
+}
+
+/** The ws URL with any `token` query stripped — the persisted/identity form.
+ *  The token itself lives in the encrypted secret store, keyed by runtimeId. */
+export function stripWsToken(host: string): { url: string; token?: string } {
+  try {
+    const u = new URL(host.trim())
+    const token = u.searchParams.get('token') ?? undefined
+    u.searchParams.delete('token')
+    return { url: u.toString().replace(/\?$/, ''), token }
+  } catch {
+    return { url: host.trim() }
+  }
+}
+
 /** Stable, deterministic id so reconnecting the same target reuses its slot.
  *  The path is part of the identity (like the server case): each daemon sandboxes
  *  to a single --root, so two workspaces at different paths in the same distro
  *  need distinct ids, otherwise the second reuses the first daemon and its path
  *  falls outside that daemon's allowed root. The (sanitized) distro name is kept
- *  as a readable prefix; the path hash makes it unique. */
+ *  as a readable prefix; the path hash makes it unique.
+ *
+ *  A ws:// target is the EXCEPTION: one persistent daemon serves any number of
+ *  workspace paths under its broad root, so the id hashes only the (token-
+ *  stripped) URL — every workspace on that daemon shares the runtime. */
 export function mintRuntimeId(spec: RemoteConnectSpec): string {
   if (spec.kind === 'wsl') {
     const safe = spec.distro.replace(/[^a-zA-Z0-9_.-]/g, '-')
     const h = createHash('sha256').update(`${spec.distro}\0${spec.distroPath}`).digest('hex').slice(0, 10)
     return `wsl_${safe}_${h}`
+  }
+  if (isWsHost(spec.host)) {
+    const h = createHash('sha256').update(stripWsToken(spec.host).url).digest('hex').slice(0, 10)
+    return `srv_${h}`
   }
   const h = createHash('sha256')
     .update(`${spec.user}@${spec.host}:${spec.port ?? 22}${spec.remotePath}`)
@@ -171,6 +199,18 @@ export async function buildTransport(runtimeId: string, spec: RemoteConnectSpec)
       idleSuspend: getSetting('autoSuspendIdleTerminals'),
     })
   }
+  // Persistent runtime (ws://): attach to the already-running daemon. The auth
+  // token was stripped from the stored URL at connect time and lives in the
+  // secret store's passphrase slot; re-append it for the live connection.
+  if (isWsHost(spec.host)) {
+    const wsSecret = await getSshSecret(runtimeId)
+    const { url } = stripWsToken(spec.host)
+    const token = wsSecret?.passphrase
+    const u = new URL(url)
+    if (token) u.searchParams.set('token', token)
+    return new WsRuntimeTransport(u.toString())
+  }
+
   // server (SSH): resolve stored secret + optional key file.
   const secret = await getSshSecret(runtimeId)
   const passphrase = spec.auth?.passphrase ?? secret?.passphrase
@@ -229,12 +269,72 @@ export function registerRuntimeHandlers(): void {
     broadcastToAll(RUNTIME_STATUS, evt)
   })
 
+  // ---------------------------------------------------------------------------
+  // Auto-redial for persistent (ws://) runtimes — the mosh half of the model.
+  // A ws daemon outlives the connection, so a drop is ALWAYS worth redialing:
+  // sessions are still running server-side and reattach is cheap. SSH runtimes
+  // keep their manual-reconnect behavior (their daemon died with the drop).
+  // One pending timer per runtime; backoff 1s → 15s, retrying indefinitely
+  // until the connection comes back or the runtime is explicitly disposed.
+  // ---------------------------------------------------------------------------
+  const wsReconnect = new Map<string, { connection: RuntimeConnection; attempt: number; timer: ReturnType<typeof setTimeout> | null }>()
+
+  const scheduleWsRedial = (runtimeId: string): void => {
+    const entry = wsReconnect.get(runtimeId)
+    if (!entry || entry.timer) return
+    const delay = Math.min(15_000, 1000 * 2 ** Math.min(entry.attempt, 4))
+    entry.attempt++
+    runtimes.report(runtimeId, 'connecting', `Reconnecting to the persistent runtime (attempt ${entry.attempt})…`)
+    entry.timer = setTimeout(() => {
+      entry.timer = null
+      if (!wsReconnect.has(runtimeId)) return
+      if (runtimes.isConnected(runtimeId)) return
+      void (async () => {
+        try {
+          const transport = await buildTransport(runtimeId, specFromConnection(entry.connection as Exclude<RuntimeConnection, { kind: 'local' }>))
+          await runtimes.connect(runtimeId, transport)
+          entry.attempt = 0
+          log.info('[runtime:ws] %s reconnected', runtimeId)
+        } catch {
+          scheduleWsRedial(runtimeId)
+        }
+      })()
+    }, delay)
+    if (entry.timer.unref) entry.timer.unref()
+  }
+
+  /** Arm (or refresh) auto-redial for a successfully-connected ws runtime. */
+  const armWsReconnect = (runtimeId: string, connection: RuntimeConnection): void => {
+    if (connection.kind !== 'server' || !isWsHost(connection.host)) return
+    const prior = wsReconnect.get(runtimeId)
+    if (prior?.timer) clearTimeout(prior.timer)
+    wsReconnect.set(runtimeId, { connection, attempt: 0, timer: null })
+  }
+
+  const disarmWsReconnect = (runtimeId: string): void => {
+    const entry = wsReconnect.get(runtimeId)
+    if (entry?.timer) clearTimeout(entry.timer)
+    wsReconnect.delete(runtimeId)
+  }
+
+  runtimes.onDisconnected((runtimeId) => {
+    if (wsReconnect.has(runtimeId)) scheduleWsRedial(runtimeId)
+  })
+
   // Registration only — NO network. Mints the stable id, persists SSH auth, and
   // returns the locator + connection record. The renderer stores the connection
   // and then probes (ensure); the actual reachable/installed/connected state is
   // determined there and streamed back as phases. Keeps state purely
   // probe-driven instead of inferred from this call.
   ipcMain.handle(RUNTIME_CONNECT, async (_event, spec: RemoteConnectSpec): Promise<RuntimeConnectResult> => {
+    // A ws:// target may carry its auth token in the URL. Strip it BEFORE
+    // minting/persisting anything: the token goes to the encrypted secret
+    // store (passphrase slot) and the stored connection keeps the clean URL,
+    // so session.json never contains the secret.
+    if (spec.kind === 'server' && isWsHost(spec.host)) {
+      const { url, token } = stripWsToken(spec.host)
+      spec = { ...spec, host: url, auth: token ? { passphrase: token } : spec.auth }
+    }
     const runtimeId = mintRuntimeId(spec)
     try {
       if (spec.kind === 'server' && spec.auth && (spec.auth.passphrase || spec.auth.keyPath || spec.auth.useAgent)) {
@@ -285,6 +385,7 @@ export function registerRuntimeHandlers(): void {
     }
     try {
       await runtimes.connect(runtimeId, transport)
+      armWsReconnect(runtimeId, connection)
       return { ok: true, runtimeId, rootPath, connection }
     } catch (err) {
       // "Not installed" is an expected probe outcome — the phase is already
@@ -319,6 +420,7 @@ export function registerRuntimeHandlers(): void {
     }
     try {
       await runtimes.connect(runtimeId, transport, { install: true, force: true })
+      armWsReconnect(runtimeId, connection)
       return { ok: true, runtimeId, rootPath, connection }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -334,6 +436,7 @@ export function registerRuntimeHandlers(): void {
   ipcMain.handle(RUNTIME_DELETE, async (_event, connection: RuntimeConnection): Promise<{ ok: boolean; error?: string }> => {
     if (connection.kind === 'local') return { ok: false, error: 'the local runtime cannot be deleted' }
     const { runtimeId } = connection
+    disarmWsReconnect(runtimeId)
     try {
       const transport = await buildTransport(runtimeId, specFromConnection(connection))
       await runtimes.deleteInstall(runtimeId, transport)

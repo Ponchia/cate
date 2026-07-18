@@ -242,6 +242,7 @@ interface DockWindowListEntry {
   bounds: { x: number; y: number; width: number; height: number }
   workspaceId: string
   terminalCwds?: Record<string, string>
+  terminalPtys?: Record<string, string>
   canvasStates: Record<string, CanvasLayoutSnapshot>
 }
 

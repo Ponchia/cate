@@ -110,12 +110,16 @@ export async function saveSession(): Promise<void> {
     // limited to the selected one; never-activated workspaces took the deferred-
     // snapshot path above and keep their saved cwds.
     const terminalCwds: Record<string, string> = {}
+    // Live ptyId per terminal panel: on a persistent runtime the session may
+    // outlive this app run, so the next launch can reattach instead of respawn.
+    const terminalPtys: Record<string, string> = {}
     if (panels) {
       const cwdPromises: { id: string; promise: Promise<string | null> }[] = []
       for (const panel of Object.values(panels)) {
         if (panel.type !== 'terminal') continue
         const entry = terminalRegistry.getEntry(panel.id)
         if (entry?.ptyId) {
+          terminalPtys[panel.id] = entry.ptyId
           cwdPromises.push({
             id: panel.id,
             promise: window.electronAPI.terminalGetCwd(entry.ptyId).catch(() => null),
@@ -137,6 +141,7 @@ export async function saveSession(): Promise<void> {
       // Geometry for every canvas, keyed by canvas panel id (incl. the primary).
       canvases,
       terminalCwds: Object.keys(terminalCwds).length ? terminalCwds : undefined,
+      terminalPtys: Object.keys(terminalPtys).length ? terminalPtys : undefined,
       // Persist the worktree registry (colors/labels) so they're stable across
       // restarts instead of re-assigned from the palette on rediscovery.
       worktrees: workspace.worktrees?.length ? workspace.worktrees : undefined,

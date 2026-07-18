@@ -15,6 +15,7 @@ import { createVcsCapability } from './vcs'
 import { createProcessCapability, type ProcessCapability } from './process'
 import { resolveShell } from './shellResolver'
 import { createAgentCapability } from './agent'
+import { createSessionHub, type SessionHub } from '../sessionHub'
 import { createServerCapability, type ServerCapability } from './server'
 import { createTunnelCapability, type TunnelCapability } from './tunnel'
 import { ensurePiOnHost, piCliPath } from '../ensurePi'
@@ -57,6 +58,10 @@ export interface DaemonRuntime {
   process: ProcessCapability
   server: ServerCapability
   tunnel: TunnelCapability
+  /** The session hub the runtime's process/agent are wrapped in — the wsServer
+   *  uses it to drop a closed connection's subscriptions without killing the
+   *  sessions themselves. */
+  hub: SessionHub
   /** Reap every live server child + tunnel socket (servers + tunnels). Process
    *  groups are reaped via `process.killAllGroups()` by the daemon entry. */
   killAll(): void
@@ -224,6 +229,13 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
     baseEnv: cleanEnv,
   })
 
+  // Session hub: every pty/agent stream flows through it (replay ring +
+  // multi-connection fan-out), and it is the seam that lets sessions outlive
+  // any one connection in `--listen` mode. Its facades keep the ProcessHost/
+  // AgentHost contracts, so nothing downstream changes shape. killAllGroups
+  // still reaches the leaf capability through the spread below.
+  const hub = createSessionHub(proc, agent)
+
   // Server-backed extensions: spawn the server child on the daemon host, bound
   // to a daemon-loopback port; the tunnel bridges raw TCP to that port. Both are
   // electron-free and share the daemon's clean env.
@@ -232,8 +244,10 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
 
   const runtime: Runtime = {
     id: config.id,
-    process: proc,
-    agent,
+    // The hub's facades (NOT the raw capabilities): output rings + fan-out.
+    process: { ...proc, ...hub.process },
+    agent: hub.agent,
+    sessions: hub,
     file,
     vcs,
     server,
@@ -266,6 +280,7 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
     process: proc,
     server,
     tunnel,
+    hub,
     killAll: () => { server.killAll(); tunnel.closeAll() },
   }
 }

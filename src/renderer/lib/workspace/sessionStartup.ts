@@ -211,6 +211,7 @@ export function buildDockWindowRestoreInit(
         workspaceId: dw.workspaceId,
         restore: true,
         terminalCwds: dw.terminalCwds,
+        terminalPtys: dw.terminalPtys,
         canvasStates: {},
       },
     }
@@ -238,6 +239,7 @@ export function buildDockWindowRestoreInit(
     // Cold restore: the shell replays every terminal panel by its panelId.
     restore: true,
     terminalCwds: dw.terminalCwds && Object.keys(dw.terminalCwds).length ? dw.terminalCwds : undefined,
+    terminalPtys: dw.terminalPtys && Object.keys(dw.terminalPtys).length ? dw.terminalPtys : undefined,
     canvasStates,
   }
 

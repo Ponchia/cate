@@ -33,6 +33,12 @@ export class RpcServer {
   private readonly watchUnsubs = new Map<string, () => void>()
   private readonly searchCancels = new Map<string, () => void>()
   private streamSeq = 0
+  // THIS connection's live pty/agent stream subscriptions (created or attached
+  // here), keyed by session id → the callback identity registered with the hub.
+  // dispose() detaches them so a closed connection stops receiving fan-out;
+  // the sessions themselves keep running (persistent-daemon semantics).
+  private readonly ptySubs = new Map<string, (id: string, data: string) => void>()
+  private readonly agentSubs = new Map<string, (id: string, line: string) => void>()
 
   constructor(
     private readonly api: Runtime,
@@ -71,7 +77,10 @@ export class RpcServer {
     this.decoder.push(chunk)
   }
 
-  /** Tear down any active subscriptions (call on disconnect). */
+  /** Tear down any active subscriptions (call on disconnect). Pty/agent
+   *  sessions are DETACHED, not killed — they belong to the daemon, not to
+   *  this connection (detach-survival; the stdio daemon dies right after
+   *  anyway, killing its children via the entry's shutdown path). */
   dispose(): void {
     for (const unsub of this.watchUnsubs.values()) {
       try { unsub() } catch { /* ignore */ }
@@ -81,6 +90,17 @@ export class RpcServer {
       try { cancel() } catch { /* ignore */ }
     }
     this.searchCancels.clear()
+    const sessions = this.api.sessions
+    if (sessions) {
+      for (const [id, onData] of this.ptySubs) {
+        void sessions.detachPty(id, onData).catch(() => {})
+      }
+      for (const [id, onLine] of this.agentSubs) {
+        void sessions.detachAgent(id, onLine).catch(() => {})
+      }
+    }
+    this.ptySubs.clear()
+    this.agentSubs.clear()
   }
 
   private async dispatch(req: ReqFrame): Promise<void> {
@@ -155,12 +175,17 @@ export class RpcServer {
       case Methods.fileWatchStop: return this.stopWatch(s(0))
 
       // --- process (pty) --- data/exit stream back keyed by the pty id ---
-      case Methods.ptyCreate:
-        return api.process.create(
-          p[0] as never,
-          (id, data) => this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'data', data } })),
-          (id, exitCode) => this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'exit', exitCode } })),
-        )
+      case Methods.ptyCreate: {
+        const onData = (id: string, data: string): void =>
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'data', data } }))
+        const onExit = (id: string, exitCode: number): void => {
+          this.ptySubs.delete(id)
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'exit', exitCode } }))
+        }
+        const handle = await api.process.create(p[0] as never, onData, onExit)
+        this.ptySubs.set(handle.id, onData)
+        return handle
+      }
       case Methods.ptyWrite: return api.process.write(s(0), s(1))
       case Methods.ptyResize: return api.process.resize(s(0), n(1) as number, n(2) as number)
       case Methods.ptyKill: return api.process.kill(s(0))
@@ -171,14 +196,65 @@ export class RpcServer {
 
       // --- agent (pi) --- line/exit stream back keyed by the agent id ---
       case Methods.agentEnsurePi: return api.agent.ensurePi()
-      case Methods.agentStart:
-        return api.agent.start(
-          p[0] as never,
-          (id, line) => this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'line', line } })),
-          (id, code, stderr) => this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'exit', code, stderr } })),
-        )
+      case Methods.agentStart: {
+        const onLine = (id: string, line: string): void =>
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'line', line } }))
+        const onExit = (id: string, code: number, stderr?: string): void => {
+          this.agentSubs.delete(id)
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'exit', code, stderr } }))
+        }
+        const handle = await api.agent.start(p[0] as never, onLine, onExit)
+        this.agentSubs.set(handle.id, onLine)
+        return handle
+      }
       case Methods.agentWriteLine: return api.agent.writeLine(s(0), s(1))
       case Methods.agentStop: return api.agent.stop(s(0))
+
+      // --- sessions (persistent daemon) --- attach/list/detach over the hub.
+      // attach wires this connection's evt stream exactly like create/start and
+      // returns the buffered replay; the hub guarantees replay/live atomicity.
+      case Methods.sessionsPtyList: return this.requireSessions().listPtys()
+      case Methods.sessionsPtyAttach: {
+        const sessions = this.requireSessions()
+        const onData = (id: string, data: string): void =>
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'data', data } }))
+        const onExit = (id: string, exitCode: number): void => {
+          this.ptySubs.delete(id)
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'exit', exitCode } }))
+        }
+        const result = await sessions.attachPty(s(0), onData, onExit, n(1))
+        this.ptySubs.set(s(0), onData)
+        return result
+      }
+      case Methods.sessionsPtyDetach: {
+        const onData = this.ptySubs.get(s(0))
+        if (onData) {
+          this.ptySubs.delete(s(0))
+          await this.requireSessions().detachPty(s(0), onData)
+        }
+        return
+      }
+      case Methods.sessionsAgentList: return this.requireSessions().listAgents()
+      case Methods.sessionsAgentAttach: {
+        const sessions = this.requireSessions()
+        const onLine = (id: string, line: string): void =>
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'line', line } }))
+        const onExit = (id: string, code: number, stderr?: string): void => {
+          this.agentSubs.delete(id)
+          this.write(serializeFrame({ t: 'evt', streamId: id, payload: { kind: 'exit', code, stderr } }))
+        }
+        const result = await sessions.attachAgent(s(0), onLine, onExit, n(1))
+        this.agentSubs.set(s(0), onLine)
+        return result
+      }
+      case Methods.sessionsAgentDetach: {
+        const onLine = this.agentSubs.get(s(0))
+        if (onLine) {
+          this.agentSubs.delete(s(0))
+          await this.requireSessions().detachAgent(s(0), onLine)
+        }
+        return
+      }
 
       // --- server (server-backed extensions) --- output/exit stream back keyed by the server id ---
       case Methods.serverStart:
@@ -252,6 +328,12 @@ export class RpcServer {
       default:
         throw new Error(`Unknown runtime method: ${method}`)
     }
+  }
+
+  private requireSessions(): NonNullable<Runtime['sessions']> {
+    const sessions = this.api.sessions
+    if (!sessions) throw new Error('This runtime has no session registry')
+    return sessions
   }
 
   private startSearch(root: string, opts: SearchOptions, access?: FileAccessContext): string {

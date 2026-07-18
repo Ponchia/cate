@@ -430,6 +430,79 @@ export interface VcsHost {
 }
 
 // ---------------------------------------------------------------------------
+// Sessions host (persistent daemon mode) — tmux-style session registry.
+//
+// A daemon in `--listen` mode outlives any single client connection: ptys and
+// pi agents keep running when every client detaches, and any client can later
+// enumerate the live sessions and re-subscribe to their streams. The hub keeps
+// a bounded replay ring per session so an attaching client can backfill output
+// it missed while detached. On a connection-scoped daemon (stdio mode) the same
+// hub exists but detach-survival is moot — the daemon dies with its pipe.
+// ---------------------------------------------------------------------------
+
+export interface PtySessionInfo {
+  id: string
+  pid: number
+  /** Shell the host actually spawned. */
+  shell?: string
+  /** cwd requested at create (the live cwd may have drifted; use getCwd). */
+  cwd?: string
+  createdAt: number
+  /** Total output bytes emitted since create — the attach `sinceByte` cursor. */
+  bytes: number
+}
+
+export interface AgentSessionInfo {
+  id: string
+  pid: number
+  cwd?: string
+  createdAt: number
+  /** Total stdout lines emitted since start. */
+  lines: number
+}
+
+export interface PtyAttachResult {
+  /** Buffered output to backfill (from `sinceByte`, clipped to the ring). */
+  replay: string
+  /** The pty's total-bytes cursor as of this attach (pass back on re-attach). */
+  offset: number
+  info: PtySessionInfo
+}
+
+export interface AgentAttachResult {
+  /** Buffered stdout lines to backfill (from `sinceLine`, clipped to the ring). */
+  replay: string[]
+  /** The agent's total-lines cursor as of this attach. */
+  offset: number
+  info: AgentSessionInfo
+}
+
+export interface SessionsHost {
+  listPtys(): Promise<PtySessionInfo[]>
+  /**
+   * Subscribe to a live pty's output. `onData`/`onExit` mirror ProcessHost.create;
+   * the returned replay backfills output since `sinceByte` (0 → whole ring).
+   * Throws if the id names no live session. The `onData` function identity is
+   * the subscription handle — pass the same function to detachPty.
+   */
+  attachPty(
+    id: string,
+    onData: (id: string, data: string) => void,
+    onExit: (id: string, exitCode: number) => void,
+    sinceByte?: number,
+  ): Promise<PtyAttachResult>
+  detachPty(id: string, onData: (id: string, data: string) => void): Promise<void>
+  listAgents(): Promise<AgentSessionInfo[]>
+  attachAgent(
+    id: string,
+    onLine: (id: string, line: string) => void,
+    onExit: (id: string, code: number, stderr?: string) => void,
+    sinceLine?: number,
+  ): Promise<AgentAttachResult>
+  detachAgent(id: string, onLine: (id: string, line: string) => void): Promise<void>
+}
+
+// ---------------------------------------------------------------------------
 // Runtime — the resolved backend for one location. Path validation is a
 // method (not a free function) so each runtime enforces its own root set: a
 // RemoteRuntime validates against its daemon's roots, authoritatively on the
@@ -444,6 +517,10 @@ export interface Runtime {
   readonly vcs: VcsHost
   readonly server: ServerHost
   readonly tunnel: TunnelHost
+  /** Persistent-session registry (attach/list/replay). Present on every daemon
+   *  runtime; meaningfully useful when the daemon runs in `--listen` mode and
+   *  sessions outlive connections. */
+  readonly sessions?: SessionsHost
   /** Lexical + allowed-root check; returns the normalized path. When scopeId is
    *  omitted, the runtime uses its own configured root scope.
    *  NOTE: only the DAEMON's implementation validates (it alone can realpath

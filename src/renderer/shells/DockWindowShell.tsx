@@ -107,7 +107,7 @@ export default function DockWindowShell({ workspaceId: initialWorkspaceId }: Doc
       if (payload.restore) {
         for (const panel of Object.values(payload.panels)) {
           if (panel.type !== 'terminal') continue
-          terminalRegistry.setPendingRestore(panel.id, payload.terminalCwds?.[panel.id])
+          terminalRegistry.setPendingRestore(panel.id, payload.terminalCwds?.[panel.id], panel.id, payload.terminalPtys?.[panel.id])
         }
       }
       if (payload.canvasStates) {
@@ -179,7 +179,7 @@ export default function DockWindowShell({ workspaceId: initialWorkspaceId }: Doc
       // Persist every terminal's scrollback (keyed by the stable panel id, same
       // as the main window) + capture each terminal's cwd. The save promises are
       // collected so the flush path can await them before ACKing quit.
-      const { terminalCwds, savePromises } = await captureTerminalScrollbacks(currentPanels)
+      const { terminalCwds, terminalPtys, savePromises } = await captureTerminalScrollbacks(currentPanels)
 
       // Capture each canvas panel's layout (nodes + viewport) so a detached
       // canvas window restores its children on the next launch instead of
@@ -204,6 +204,7 @@ export default function DockWindowShell({ workspaceId: initialWorkspaceId }: Doc
         dockState: snapshot,
         panels: currentPanels,
         terminalCwds,
+        terminalPtys,
         canvasStates,
       })
 

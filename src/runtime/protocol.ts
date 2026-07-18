@@ -104,6 +104,17 @@ export const Methods = {
   ptyScanActivity: 'pty.scanActivity',
   ptyScanPorts: 'pty.scanPorts',
 
+  // --- sessions (persistent daemon) --- tmux-style registry: enumerate live
+  // ptys/agents that predate this connection and re-subscribe to their streams.
+  // attach returns buffered replay since a byte/line cursor; data/exit then
+  // arrive as evt frames keyed by the session id, exactly like create/start.
+  sessionsPtyList: 'sessions.ptyList',
+  sessionsPtyAttach: 'sessions.ptyAttach', // params [id, sinceByte?]
+  sessionsPtyDetach: 'sessions.ptyDetach', // params [id]
+  sessionsAgentList: 'sessions.agentList',
+  sessionsAgentAttach: 'sessions.agentAttach', // params [id, sinceLine?]
+  sessionsAgentDetach: 'sessions.agentDetach', // params [id]
+
   vcsIsRepo: 'vcs.isRepo',
   vcsFindRepos: 'vcs.findRepos',
   vcsInit: 'vcs.init',

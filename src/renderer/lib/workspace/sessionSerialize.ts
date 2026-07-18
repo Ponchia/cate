@@ -89,9 +89,13 @@ export function buildSessionFile(
   const panels: Record<string, ProjectSessionPanel> = {}
   for (const p of Object.values(snapshot.panels ?? {})) {
     const workingDirectory = snapshot.terminalCwds?.[p.id]
-    if (!p.worktreeId && !workingDirectory && !p.unsavedContent) continue
+    const ptyId = snapshot.terminalPtys?.[p.id]
+    if (!p.worktreeId && !workingDirectory && !p.unsavedContent && !ptyId) continue
     panels[p.id] = {
       panelId: p.id,
+      // Live server-side session id: lets the next launch REATTACH to a still-
+      // running pty on a persistent runtime (stale ids fall back to respawn).
+      ptyId,
       workingDirectory,
       unsavedContent: p.unsavedContent,
       worktreeId: p.worktreeId,
@@ -125,6 +129,7 @@ export function projectFilesToSnapshot(
   // with the machine-local session facts (worktree tag, unsaved scratch content).
   let panels: Record<string, PanelState> | undefined
   const terminalCwds: Record<string, string> = {}
+  const terminalPtys: Record<string, string> = {}
   if (ws.panels) {
     panels = {}
     for (const [id, ref] of Object.entries(ws.panels)) {
@@ -145,6 +150,7 @@ export function projectFilesToSnapshot(
         cwd: sp?.workingDirectory,
       }
       if (sp?.workingDirectory) terminalCwds[id] = sp.workingDirectory
+      if (sp?.ptyId) terminalPtys[id] = sp.ptyId
     }
   }
 
@@ -158,6 +164,7 @@ export function projectFilesToSnapshot(
     // ids), so it passes through verbatim.
     canvases: ws.canvases,
     terminalCwds: Object.keys(terminalCwds).length ? terminalCwds : undefined,
+    terminalPtys: Object.keys(terminalPtys).length ? terminalPtys : undefined,
     // Restore the persisted worktree registry (absolute paths) so colors/labels
     // are stable and panel.worktreeId references resolve after restart.
     worktrees: sess?.worktrees,
