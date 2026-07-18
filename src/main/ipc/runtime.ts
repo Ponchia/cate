@@ -23,6 +23,7 @@ import {
   RUNTIME_LIST,
   RUNTIME_WSL_DISTROS,
   RUNTIME_SSH_HOSTS,
+  RUNTIME_PERSISTENT_WORKSPACES,
   RUNTIME_STATUS,
   RUNTIME_LOCAL_STATUS,
   RUNTIME_RETRY_LOCAL,
@@ -132,6 +133,71 @@ export async function listSshHosts(): Promise<SshHostEntry[]> {
  *  (`ws://host:port` / `wss://…`) rather than an SSH target. */
 export function isWsHost(host: string): boolean {
   return /^wss?:\/\//i.test(host.trim())
+}
+
+// -----------------------------------------------------------------------------
+// Declarative persistent workspaces — infrastructure-as-config for the tmux
+// model. `~/.cate/persistent-workspaces.json` lists ws:// runtimes + workspace
+// paths; the renderer auto-provisions any entry that isn't already a workspace
+// at startup, so a codified setup never touches the connect dialog:
+//
+//   [{ "name": "bronto", "url": "ws://100.64.0.7:7777",
+//      "path": "/home/ubuntu/bronto", "tokenFile": "~/.cate/bronto.token" }]
+//
+// The token comes from `tokenFile` (or inline `token`); it is handed to the
+// normal connect flow, which stores it ENCRYPTED in the secret store — the
+// config file itself never needs to hold a secret.
+// -----------------------------------------------------------------------------
+
+export interface PersistentWorkspaceEntry {
+  name: string
+  /** Token-free ws:// URL — the identity/compare form (matches stored connections). */
+  host: string
+  /** The url with its token attached — what the connect flow consumes once. */
+  hostWithToken: string
+  remotePath: string
+}
+
+export async function listPersistentWorkspaces(): Promise<PersistentWorkspaceEntry[]> {
+  const file = join(homedir(), '.cate', 'persistent-workspaces.json')
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch {
+    return [] // no config — nothing declared
+  }
+  let entries: Array<{ name?: string; url?: string; path?: string; token?: string; tokenFile?: string }>
+  try {
+    const parsed = JSON.parse(raw)
+    entries = Array.isArray(parsed) ? parsed : []
+  } catch (err) {
+    log.warn('[runtime] persistent-workspaces.json is not valid JSON: %s', err instanceof Error ? err.message : String(err))
+    return []
+  }
+  const out: PersistentWorkspaceEntry[] = []
+  for (const e of entries) {
+    if (!e?.url || !e.path || !isWsHost(e.url)) continue
+    let token = e.token?.trim()
+    if (!token && e.tokenFile) {
+      const tokenPath = e.tokenFile.startsWith('~') ? join(homedir(), e.tokenFile.slice(1)) : e.tokenFile
+      try {
+        token = (await readFile(tokenPath, 'utf8')).trim()
+      } catch (err) {
+        log.warn('[runtime] persistent workspace "%s": cannot read tokenFile %s: %s', e.name ?? e.url, tokenPath, err instanceof Error ? err.message : String(err))
+        continue
+      }
+    }
+    const { url: clean } = stripWsToken(e.url)
+    const u = new URL(clean)
+    if (token) u.searchParams.set('token', token)
+    out.push({
+      name: e.name ?? clean.replace(/^wss?:\/\//, ''),
+      host: clean,
+      hostWithToken: u.toString(),
+      remotePath: e.path,
+    })
+  }
+  return out
 }
 
 /** The ws URL with any `token` query stripped — the persisted/identity form.
@@ -482,6 +548,10 @@ export function registerRuntimeHandlers(): void {
 
   ipcMain.handle(RUNTIME_SSH_HOSTS, async () => {
     return listSshHosts()
+  })
+
+  ipcMain.handle(RUNTIME_PERSISTENT_WORKSPACES, async () => {
+    return listPersistentWorkspaces()
   })
 
   // Native file picker for the SSH private key (#334) — typing the path still

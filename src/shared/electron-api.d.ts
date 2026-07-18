@@ -818,6 +818,19 @@ export interface ElectronAPI {
   /** Connectable host aliases from the user's ~/.ssh/config ([] if none). */
   runtimeSshHosts(): Promise<SshHostEntry[]>
 
+  /** Declarative persistent (ws://) workspaces from
+   *  ~/.cate/persistent-workspaces.json ([] when absent). The renderer
+   *  auto-provisions any entry not already present as a workspace at startup,
+   *  so a codified setup never needs the connect dialog. */
+  runtimePersistentWorkspaces(): Promise<Array<{
+    name: string
+    /** Token-free ws:// URL (identity form, matches stored connections). */
+    host: string
+    /** The url with its token attached — consumed once by the connect flow. */
+    hostWithToken: string
+    remotePath: string
+  }>>
+
   /** Open a native file picker for an SSH private key. Returns the chosen
    *  absolute path, or null if the dialog was cancelled. */
   runtimePickSshKey(): Promise<string | null>

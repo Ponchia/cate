@@ -30,6 +30,7 @@ import { OnboardingTour } from './onboarding/OnboardingTour'
 import PerfHud from './ui/PerfHud'
 import { initPerfClient } from './lib/perf/perfClient'
 import { loadSession, restoreMultiWorkspaceSession, restoreDetachedWindows, setupAutoSave } from './lib/workspace/session'
+import { provisionPersistentWorkspaces } from './lib/workspace/persistentWorkspaces'
 import type { MultiWorkspaceSession } from '../shared/types'
 import { createDockStore } from './stores/dockStore'
 import MainWindowShell from './shells/MainWindowShell'
@@ -280,6 +281,9 @@ function MainApp() {
         if (restoredSession) {
           await restoreDetachedWindows(restoredSession).catch((err) => log.warn('[session] detached restore failed:', err))
         }
+        // Declarative persistent (ws://) workspaces: provision anything listed
+        // in ~/.cate/persistent-workspaces.json that isn't already a workspace.
+        await provisionPersistentWorkspaces().catch((err) => log.warn('[persistent-ws] provisioning failed:', err))
         setupAutoSave()
         setupWorkspaceSync()
         log.info('Background init complete')

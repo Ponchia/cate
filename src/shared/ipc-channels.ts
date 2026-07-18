@@ -396,6 +396,7 @@ export const RUNTIME_ENSURE = 'runtime:ensure'         // renderer -> main (reco
 export const RUNTIME_LIST = 'runtime:list'             // renderer -> main
 export const RUNTIME_WSL_DISTROS = 'runtime:wsl-distros' // renderer -> main (list installed WSL distros)
 export const RUNTIME_SSH_HOSTS = 'runtime:ssh-hosts'   // renderer -> main (host aliases from ~/.ssh/config)
+export const RUNTIME_PERSISTENT_WORKSPACES = 'runtime:persistent-workspaces' // renderer -> main (declarative ws:// workspaces from ~/.cate/persistent-workspaces.json)
 export const RUNTIME_INSTALL = 'runtime:install'       // renderer -> main (explicit clean install + connect)
 export const RUNTIME_DELETE = 'runtime:delete'         // renderer -> main (rm -rf the host install, keep saved auth)
 export const RUNTIME_STATUS = 'runtime:status'         // main -> renderer (broadcast)
