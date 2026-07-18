@@ -7,6 +7,8 @@ import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useCanvasStoreContext, useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import { useAppStore, type PanelPlacement } from '../stores/appStore'
+import { useRepoContextStore } from '../stores/repoContextStore'
+import { repoDisplayName } from '../../shared/repoMatch'
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction'
 import { useAutoFocusLargestVisible } from '../hooks/useAutoFocusLargestVisible'
 import { useUIStore } from '../stores/uiStore'
@@ -505,6 +507,13 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
         } catch { /* single-root fallback */ }
       }
 
+      // Container workspaces (folder of repos): offer per-repo terminal spawns.
+      // Mutually exclusive with the worktree submenu in practice — a container
+      // root isn't a repo, so it has no worktrees.
+      const containerRepos = wsId
+        ? (useRepoContextStore.getState().reposByWorkspace[wsId]?.repos ?? []).filter((r) => r !== rootPath)
+        : []
+
       const items: Array<any> = []
       if (onCreateAtPoint) {
         if (gitWorktrees.length > 1) {
@@ -514,6 +523,18 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
               id: `new-terminal:${g.path}`,
               label: (g.branch || (g.isCurrent ? 'main' : '(detached)')) + (g.isCurrent ? ' (primary)' : ''),
             })),
+          })
+        } else if (containerRepos.length > 0) {
+          items.push({
+            label: 'New Terminal',
+            submenu: [
+              { id: 'new-terminal', label: 'Container root' },
+              { type: 'separator' as const },
+              ...containerRepos.map((repo) => ({
+                id: `new-terminal-repo:${repo}`,
+                label: repoDisplayName(repo),
+              })),
+            ],
           })
         } else {
           items.push({ id: 'new-terminal', label: 'New Terminal' })
@@ -533,6 +554,11 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
       const id = await window.electronAPI.showContextMenu(items)
       if (cancelled) return
       closeCanvasContextMenu()
+      if (id?.startsWith('new-terminal-repo:')) {
+        const repo = id.slice('new-terminal-repo:'.length)
+        useAppStore.getState().createTerminal(wsId, undefined, point, here(), repo)
+        return
+      }
       if (id?.startsWith('new-terminal:')) {
         const wtPath = id.slice('new-terminal:'.length)
         const g = gitWorktrees.find((w) => w.path === wtPath)

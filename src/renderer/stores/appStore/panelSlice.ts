@@ -49,6 +49,7 @@ type PanelSliceActions = Pick<
   | 'updatePanelTabs'
   | 'updatePanelProxy'
   | 'updatePanelBrowserMode'
+  | 'updatePanelAgentCwd'
   | 'updatePanelFilePath'
   | 'setPanelDirty'
   | 'setPanelMarkdownPreview'
@@ -286,6 +287,10 @@ export function createPanelSlice(set: AppSet, get: AppGet): PanelSliceActions {
 
     updatePanelProxy(workspaceId, panelId, proxyUrl) {
       setPanelField(set, workspaceId, panelId, (panel) => ({ ...panel, proxyUrl: proxyUrl || undefined }))
+    },
+
+    updatePanelAgentCwd(workspaceId, panelId, agentCwd) {
+      setPanelField(set, workspaceId, panelId, (panel) => ({ ...panel, agentCwd: agentCwd || undefined }))
     },
 
     updatePanelBrowserMode(workspaceId, panelId, patch) {

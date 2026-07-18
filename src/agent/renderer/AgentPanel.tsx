@@ -65,6 +65,7 @@ import type { AgentMessage as StoreMessage } from './agentStore'
 import { loadDefaultModel, clearModelPrefsForProvider } from './agentModelPrefs'
 import { useAgentReadiness, useProvidersLoaded } from '../../renderer/stores/providerReadinessStore'
 import { resolveWorktree } from '../../shared/worktrees'
+import { AgentRepoPin } from './AgentRepoPin'
 
 // -----------------------------------------------------------------------------
 // Component
@@ -72,11 +73,12 @@ import { resolveWorktree } from '../../shared/worktrees'
 
 export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
   const workspace = useAppStore((s) => s.workspaces.find((w) => w.id === workspaceId))
-  // If this panel is tagged with a worktree, prefer its path so pi spawns
-  // inside that parallel checkout instead of the workspace's primary root.
+  // Cwd precedence: worktree tag (a parallel checkout is the most specific
+  // scope) > repo pin (container workspaces — pi runs at that repo instead of
+  // the folder-of-repos root) > workspace root.
   const panelState = workspace?.panels[panelId]
   const taggedWorktree = resolveWorktree(panelState?.worktreeId, workspace?.worktrees)
-  const cwd = taggedWorktree?.path ?? workspace?.rootPath ?? ''
+  const cwd = taggedWorktree?.path ?? panelState?.agentCwd ?? workspace?.rootPath ?? ''
 
   // ---------------------------------------------------------------------------
   // Multi-chat session bookkeeping.
@@ -1013,6 +1015,7 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
             </button>
           )}
 
+          {view === 'chat' && <AgentRepoPin workspaceId={workspaceId} panelId={panelId} pinned={panelState?.agentCwd} />}
           {view === 'chat' ? (
             <div className="relative">
               <button

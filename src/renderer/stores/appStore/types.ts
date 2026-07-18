@@ -104,6 +104,8 @@ export interface AppStoreActions {
   /** Browser panels only: set/clear the per-panel proxy. Pass undefined to
    *  revert the panel to the shared (direct) browser session. */
   updatePanelProxy: (workspaceId: string, panelId: string, proxyUrl?: string) => void
+  /** Agent panels: pin pi to a repo cwd (container workspaces). */
+  updatePanelAgentCwd: (workspaceId: string, panelId: string, agentCwd?: string) => void
   /** Browser panels: live-while-unfocused + device emulation (see PanelState). */
   updatePanelBrowserMode: (
     workspaceId: string,
