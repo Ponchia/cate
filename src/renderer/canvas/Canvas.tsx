@@ -18,6 +18,8 @@ import CanvasGrid from './CanvasGrid'
 import CanvasBackgroundImage from './CanvasBackgroundImage'
 import SnapGuides from './SnapGuides'
 import GhostPlacementLayer from './GhostPlacementLayer'
+import AnnotationLayer from './annotations/AnnotationLayer'
+import AnnotationModeOverlay from './annotations/AnnotationModeOverlay'
 import PlacementVizOverlay from './placementViz/PlacementVizOverlay'
 import { WorktreeTerritoryLayer } from './worktree'
 import type { Point, PanelType } from '../../shared/types'
@@ -663,6 +665,8 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
         }}
         onClick={handleWorldClick}
       >
+        {/* Shapes + connectors — world-space, always under the panel nodes. */}
+        <AnnotationLayer />
         <SnapGuides />
         {marqueeRect && (
           <div
@@ -684,6 +688,9 @@ const Canvas: React.FC<CanvasProps> = ({ children, onCreateAtPoint, panelId }) =
         <GhostPlacementLayer />
         {(import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV && <PlacementVizOverlay />}
       </div>
+
+      {/* Transient input surface for shape-draw / connector modes. */}
+      <AnnotationModeOverlay canvasRef={canvasRef} />
 
       <PlacementHint canvasRef={canvasRef} />
     </div>

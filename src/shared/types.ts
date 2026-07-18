@@ -355,11 +355,63 @@ export interface DockWindowInitPayload {
   canvasStates?: Record<string, PanelTransferSnapshot['canvasState']>
 }
 
+// -----------------------------------------------------------------------------
+// Canvas annotations — lightweight drawn elements (shapes + connectors) that
+// live on a canvas alongside panel nodes. They are pure canvas-store state:
+// no panel records, no dock membership. Connectors anchor to a node or shape
+// by id and re-route as their endpoints move.
+// -----------------------------------------------------------------------------
+
+export type CanvasShapeKind = 'rect' | 'ellipse'
+
+export interface CanvasShapeState {
+  id: string
+  kind: CanvasShapeKind
+  origin: Point
+  size: Size
+  /** Accent color (hex). Stroke + translucent fill derive from it. */
+  color: string
+  label?: string
+  /** Stable draw order among shapes (all shapes render below panel nodes). */
+  creationIndex: number
+}
+
+export type CanvasConnectorEndpoint =
+  | { kind: 'node'; nodeId: string }
+  | { kind: 'shape'; shapeId: string }
+
+export interface CanvasConnectorState {
+  id: string
+  from: CanvasConnectorEndpoint
+  to: CanvasConnectorEndpoint
+  color: string
+  label?: string
+  dashed?: boolean
+  creationIndex: number
+}
+
+export interface CanvasAnnotations {
+  shapes: Record<string, CanvasShapeState>
+  connectors: Record<string, CanvasConnectorState>
+}
+
+/** Default palette for shapes/connectors (first entry is the default). */
+export const ANNOTATION_COLORS: ReadonlyArray<{ name: string; value: string }> = [
+  { name: 'Blue', value: '#4a9eff' },
+  { name: 'Purple', value: '#a78bfa' },
+  { name: 'Green', value: '#34d399' },
+  { name: 'Amber', value: '#fbbf24' },
+  { name: 'Rose', value: '#fb7185' },
+  { name: 'Slate', value: '#94a3b8' },
+]
+
 /** A single detached canvas panel's persisted layout (nodes + viewport). */
 export interface CanvasLayoutSnapshot {
   nodes: Record<CanvasNodeId, CanvasNodeState>
   viewportOffset: Point
   zoomLevel: number
+  /** Shapes + connectors drawn on this canvas (absent for older snapshots). */
+  annotations?: CanvasAnnotations
 }
 
 /** Snapshot of a detached dock window for session persistence */
@@ -492,6 +544,8 @@ export interface CanvasSnapshot {
   canvasNodes: Record<CanvasNodeId, CanvasNodeState>
   zoomLevel: number
   viewportOffset: Point
+  /** Shapes + connectors drawn on this canvas (absent for older snapshots). */
+  annotations?: CanvasAnnotations
 }
 
 // -----------------------------------------------------------------------------

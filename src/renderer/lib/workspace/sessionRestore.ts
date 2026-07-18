@@ -286,7 +286,7 @@ async function restoreSessionHydrate(snapshot: SessionSnapshot, workspaceId: str
     for (const [cpId, canvas] of Object.entries(snapshot.canvases)) {
       getOrCreateCanvasStoreForPanel(cpId)
         .getState()
-        .loadWorkspaceCanvas(canvas.canvasNodes, canvas.viewportOffset, canvas.zoomLevel)
+        .loadWorkspaceCanvas(canvas.canvasNodes, canvas.viewportOffset, canvas.zoomLevel, canvas.annotations)
     }
   }
 

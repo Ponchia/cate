@@ -28,6 +28,7 @@ import { createPlacementSlice } from './canvas/placementSlice'
 import { createNavigationSlice } from './canvas/navigationSlice'
 import { createSelectionSlice } from './canvas/selectionSlice'
 import { createArrangeSlice } from './canvas/arrangeSlice'
+import { createAnnotationsSlice, sanitizeLoadedAnnotations, pruneConnectors } from './canvas/annotationsSlice'
 import { focusedNodeId as focusedNodeIdOf } from './canvas/selectionModel'
 
 // Re-export the store types so existing importers (`from '.../canvasStore'`)
@@ -66,10 +67,16 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
       history: [],
       future: [],
       pendingPlacement: null,
+      shapes: {},
+      connectors: {},
+      annotationSelection: [],
+      annotationMode: null,
+      connectorDraft: null,
 
       // --- Actions (composed from focused slices) ---
       ...createHistorySlice(set, get),
       ...createNodesSlice(set, get),
+      ...createAnnotationsSlice(set, get),
       ...createViewportSlice(set, get, ctx),
       ...createPlacementSlice(set, get, ctx),
       ...createNavigationSlice(set, get, ctx),
@@ -77,7 +84,7 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
       ...createArrangeSlice(set, get),
 
       // --- Lifecycle / bulk reset (counterpart to the initial state above) ---
-      loadWorkspaceCanvas(nodes, viewportOffset, zoomLevel) {
+      loadWorkspaceCanvas(nodes, viewportOffset, zoomLevel, annotations) {
         // Persisted geometry from `.cate` is untrusted: repair/drop invalid nodes
         // so one corrupt entry (e.g. a node missing `size`) can't crash the whole
         // canvas render. See sanitizeLoadedCanvasNodes.
@@ -94,10 +101,23 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
           )
         }
 
+        // Annotations are untrusted persisted data too; drop connectors whose
+        // endpoints didn't survive the node sanitize.
+        const cleanAnnotations = sanitizeLoadedAnnotations(annotations)
+        cleanAnnotations.connectors = pruneConnectors(
+          cleanAnnotations.connectors,
+          cleanNodes,
+          cleanAnnotations.shapes,
+        )
+
         // Compute next counters from loaded data
         const nodeList = Object.values(cleanNodes)
         const maxZOrder = nodeList.reduce((max, n) => Math.max(max, n.zOrder), -1)
-        const maxCreationIndex = nodeList.reduce((max, n) => Math.max(max, n.creationIndex), -1)
+        const maxCreationIndex = [
+          ...nodeList.map((n) => n.creationIndex),
+          ...Object.values(cleanAnnotations.shapes).map((s) => s.creationIndex),
+          ...Object.values(cleanAnnotations.connectors).map((c) => c.creationIndex),
+        ].reduce((max, i) => Math.max(max, i), -1)
 
         // Ensure all loaded nodes have animationState: 'idle' so they don't animate on restore
         const idleNodes: Record<string, CanvasNodeState> = {}
@@ -118,6 +138,11 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
           history: [],
           future: [],
           pendingPlacement: null,
+          shapes: cleanAnnotations.shapes,
+          connectors: cleanAnnotations.connectors,
+          annotationSelection: [],
+          annotationMode: null,
+          connectorDraft: null,
         })
       },
     }
@@ -142,6 +167,11 @@ export function getOrCreateCanvasStoreForPanel(
   // ever shares state with another canvas.
   const store = createCanvasStore()
   session.registerCanvasStore(panelId, store)
+  // Dev-only: expose the store registry for live CDP probing/debugging.
+  if ((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV && typeof window !== 'undefined') {
+    const w = window as unknown as { __cateCanvasStores?: Map<string, StoreApi<CanvasStore>> }
+    ;(w.__cateCanvasStores ??= new Map()).set(panelId, store)
+  }
   return store
 }
 

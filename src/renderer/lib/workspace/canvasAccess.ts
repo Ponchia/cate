@@ -18,6 +18,7 @@ import type { StoreApi } from 'zustand'
 import type { CanvasStore } from '../../stores/canvasStore'
 import type { CanvasOperations } from '../canvas/canvasBridge'
 import type {
+  CanvasAnnotations,
   DockLayoutNode,
   CanvasNodeId,
   CanvasNodeState,
@@ -181,6 +182,7 @@ export interface WorkspaceCanvasSnapshot {
   nodes: Record<CanvasNodeId, CanvasNodeState>
   zoomLevel: number
   viewportOffset: Point
+  annotations?: CanvasAnnotations
 }
 
 /** Snapshot for a SPECIFIC canvas panel (multi-canvas support). Reads the LIVE
@@ -198,6 +200,7 @@ export function getCanvasSnapshotForPanel(canvasPanelId: string): WorkspaceCanva
       nodes: { ...s.nodes },
       zoomLevel: s.zoomLevel,
       viewportOffset: { ...s.viewportOffset },
+      annotations: { shapes: { ...s.shapes }, connectors: { ...s.connectors } },
     }
   }
   // Find the workspace that owns this canvas panel to read its persisted
@@ -215,6 +218,7 @@ export function getCanvasSnapshotForPanel(canvasPanelId: string): WorkspaceCanva
       nodes: { ...persisted.canvasNodes },
       zoomLevel: persisted.zoomLevel,
       viewportOffset: { ...persisted.viewportOffset },
+      annotations: persisted.annotations,
     }
   }
   return { nodes: {}, zoomLevel: ZOOM_DEFAULT, viewportOffset: { x: 0, y: 0 } }
@@ -265,6 +269,7 @@ export function captureCanvasPanel(canvasPanelId: string): CanvasLayoutSnapshot 
     nodes,
     viewportOffset: { ...state.viewportOffset },
     zoomLevel: state.zoomLevel,
+    annotations: state.annotations,
     panelIds: [...panelIds],
   }
 }

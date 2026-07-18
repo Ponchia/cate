@@ -193,7 +193,12 @@ export function createViewportSlice(set: CanvasSet, get: CanvasGet, ctx: CanvasS
 
     zoomToFit() {
       const state = get()
-      const nodeList = Object.values(state.nodes)
+      // Fit everything drawn on the canvas: panel nodes AND shapes (connectors
+      // always run between the two, so they can't extend the bounds).
+      const nodeList = [
+        ...Object.values(state.nodes),
+        ...Object.values(state.shapes),
+      ]
       if (nodeList.length === 0) return
       const cs = state.containerSize
       if (cs.width === 0 || cs.height === 0) return

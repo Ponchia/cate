@@ -74,6 +74,7 @@ export async function saveSession(): Promise<void> {
         canvasNodes: snap.nodes,
         zoomLevel: snap.zoomLevel,
         viewportOffset: snap.viewportOffset,
+        annotations: snap.annotations,
       }
     }
 

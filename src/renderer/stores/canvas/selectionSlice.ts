@@ -34,18 +34,22 @@ export function createSelectionSlice(set: CanvasSet, get: CanvasGet): SelectionA
     // looking active (halo) while sitting outside the moved set.
     selectNodes(ids, additive) {
       set((state) => {
+        // Node and annotation selection are mutually exclusive.
+        const clearAnnotations = ids.length > 0 ? { annotationSelection: [] as string[] } : {}
         if (additive) {
           let next = state.selection
           for (const id of ids) next = withLead(next, id)
-          return { selection: next, selectionActive: false }
+          return { selection: next, selectionActive: false, ...clearAnnotations }
         }
         // Dedupe while preserving the given order.
-        return { selection: [...new Set(ids)], selectionActive: false }
+        return { selection: [...new Set(ids)], selectionActive: false, ...clearAnnotations }
       })
     },
 
     clearSelection() {
-      set({ selection: [], selectionActive: false })
+      // "Clear the canvas selection" covers annotations too — every caller
+      // (empty-canvas click, Escape, marquee reset) means both kinds.
+      set({ selection: [], selectionActive: false, annotationSelection: [] })
     },
 
     selectAll() {
@@ -60,7 +64,7 @@ export function createSelectionSlice(set: CanvasSet, get: CanvasGet): SelectionA
         const next = state.selection.includes(id)
           ? state.selection.filter((x) => x !== id)
           : [...state.selection, id]
-        return { selection: next, selectionActive: false }
+        return { selection: next, selectionActive: false, annotationSelection: [] }
       })
     },
 

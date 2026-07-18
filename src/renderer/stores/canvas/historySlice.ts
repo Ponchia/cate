@@ -64,21 +64,31 @@ function snapshot(state: {
   nodes: CanvasHistoryEntry['nodes']
   selection: CanvasHistoryEntry['selection']
   selectionActive: boolean
+  shapes: NonNullable<CanvasHistoryEntry['shapes']>
+  connectors: NonNullable<CanvasHistoryEntry['connectors']>
 }): CanvasHistoryEntry {
   return {
     nodes: state.nodes,
     selection: [...state.selection],
     selectionActive: state.selectionActive,
+    shapes: state.shapes,
+    connectors: state.connectors,
   }
 }
 
 // Restore an entry, filtering its selection to ids that still exist in its own
 // nodes so no dangling ids (e.g. nodes deleted in the undone step) survive.
+// Entries created before the annotations feature restore without touching
+// annotations (shapes/connectors absent → leave current state alone).
 function restore(entry: CanvasHistoryEntry) {
   return {
     nodes: entry.nodes,
     selection: entry.selection.filter((id) => entry.nodes[id]),
     selectionActive: entry.selectionActive,
+    ...(entry.shapes ? { shapes: entry.shapes } : {}),
+    ...(entry.connectors ? { connectors: entry.connectors } : {}),
+    // A restored annotation set invalidates the live annotation selection.
+    ...(entry.shapes || entry.connectors ? { annotationSelection: [] as string[] } : {}),
   }
 }
 
@@ -111,7 +121,11 @@ export function createHistorySlice(set: CanvasSet, get: CanvasGet): HistoryActio
     commitHistoryTransaction(closedPanels) {
       if (!txSnapshot) return
       const entry = closedPanels ? { ...txSnapshot, closedPanels } : txSnapshot
-      const changed = get().nodes !== txSnapshot.nodes
+      const state = get()
+      const changed =
+        state.nodes !== txSnapshot.nodes ||
+        state.shapes !== txSnapshot.shapes ||
+        state.connectors !== txSnapshot.connectors
       txSnapshot = null
       if (changed) appendEntry(entry)
     },

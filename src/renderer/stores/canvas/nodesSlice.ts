@@ -121,13 +121,29 @@ export function createNodesSlice(set: CanvasSet, get: CanvasGet): NodesActions {
 
     finalizeRemoveNode(nodeId) {
       const { [nodeId]: _, ...rest } = get().nodes
-      set((state) => ({
-        nodes: rest,
-        // Defensive: ensure a finalized node never lingers in the selection.
-        selection: state.selection.includes(nodeId)
-          ? state.selection.filter((x) => x !== nodeId)
-          : state.selection,
-      }))
+      set((state) => {
+        // Connectors anchored to the removed node go with it. The history entry
+        // pushed by removeNode() snapshotted them, so undo restores both.
+        let connectors = state.connectors
+        let changed = false
+        for (const c of Object.values(state.connectors)) {
+          if (
+            (c.from.kind === 'node' && c.from.nodeId === nodeId) ||
+            (c.to.kind === 'node' && c.to.nodeId === nodeId)
+          ) {
+            if (!changed) { connectors = { ...state.connectors }; changed = true }
+            delete connectors[c.id]
+          }
+        }
+        return {
+          nodes: rest,
+          ...(changed ? { connectors } : {}),
+          // Defensive: ensure a finalized node never lingers in the selection.
+          selection: state.selection.includes(nodeId)
+            ? state.selection.filter((x) => x !== nodeId)
+            : state.selection,
+        }
+      })
     },
 
     setNodeAnimationState(nodeId, state) {
@@ -185,6 +201,8 @@ export function createNodesSlice(set: CanvasSet, get: CanvasGet): NodesActions {
           focusEpoch: state.focusEpoch + 1,
           // An explicit focus (click, switcher, auto-focus) ends keyboard-nav mode.
           suppressAutoFocus: false,
+          // Node and annotation selection are mutually exclusive.
+          annotationSelection: [],
         }
       })
     },

@@ -188,6 +188,18 @@ export function useShortcuts(windowCanvasStore?: StoreApi<CanvasStore>): void {
         // when focused, so its own handler can delete the multi-selection.
         if (isSidebarKeyNavFocused()) return
         const state = canvasStore()
+        // Selected annotations (shapes/connectors) — mutually exclusive with the
+        // node selection, so whichever is non-empty owns the key.
+        if (state && state.annotationSelection.length > 0) {
+          const active = document.activeElement
+          const isEditable = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active?.getAttribute('contenteditable') === 'true'
+          if (!isEditable) {
+            e.preventDefault()
+            e.stopPropagation()
+            state.removeAnnotations(state.annotationSelection)
+            return
+          }
+        }
         if (state && state.selection.length > 0) {
           // Don't delete if a text input is focused
           const active = document.activeElement

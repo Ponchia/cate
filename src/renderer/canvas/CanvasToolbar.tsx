@@ -16,6 +16,8 @@ import {
   Hand,
   X,
   ChatCircle,
+  Shapes,
+  FlowArrow,
 } from '@phosphor-icons/react'
 import Minimap from './Minimap'
 import WorktreeToolbarMenu from './WorktreeToolbarMenu'
@@ -272,6 +274,30 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const expanded = hovered || pinned || openMenu !== null
   const ToolIcon = activeTool === 'hand' ? Hand : Cursor
 
+  // Annotation modes (shape draw / connector pick). Reactive so the connector
+  // button can show its active state while the mode is armed.
+  const annotationMode = useCanvasStoreContext((s) => s.annotationMode)
+
+  const handleShapeClick = async () => {
+    // Already drawing → a second click disarms.
+    if (annotationMode?.kind === 'draw') {
+      canvasApi.getState().setAnnotationMode(null)
+      return
+    }
+    const choice = await window.electronAPI.showContextMenu([
+      { id: 'rect', label: 'Rectangle' },
+      { id: 'ellipse', label: 'Ellipse' },
+    ])
+    if (choice === 'rect' || choice === 'ellipse') {
+      canvasApi.getState().setAnnotationMode({ kind: 'draw', shape: choice })
+    }
+  }
+
+  const handleConnectorClick = () => {
+    const current = canvasApi.getState().annotationMode
+    canvasApi.getState().setAnnotationMode(current?.kind === 'connect' ? null : { kind: 'connect' })
+  }
+
   // The buttons are identical between layouts — only the tooltip side, fly-out
   // direction, and divider orientation change. Shared so the two layouts can't
   // drift apart.
@@ -315,6 +341,23 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       <ToolbarButton onClick={onNewAgent} title="Agent" size="panel" placement={place}>
         <ChatCircle size={18} />
       </ToolbarButton>
+      {divider}
+      <ModeButton
+        onClick={() => { void handleShapeClick() }}
+        title="Shape — draw a rectangle or ellipse"
+        active={annotationMode?.kind === 'draw'}
+        placement={place}
+      >
+        <Shapes size={18} />
+      </ModeButton>
+      <ModeButton
+        onClick={handleConnectorClick}
+        title="Connector — link two panels or shapes with an arrow"
+        active={annotationMode?.kind === 'connect'}
+        placement={place}
+      >
+        <FlowArrow size={18} />
+      </ModeButton>
       <ExtensionToolbarMenu
         canvasPanelId={canvasPanelId}
         workspaceId={workspaceId}

@@ -6,8 +6,13 @@
 
 import type { StoreApi } from 'zustand'
 import type {
+  CanvasAnnotations,
+  CanvasConnectorEndpoint,
   CanvasNodeId,
   CanvasNodeState,
+  CanvasShapeKind,
+  CanvasShapeState,
+  CanvasConnectorState,
   DockLayoutNode,
   PanelState,
   Point,
@@ -83,12 +88,28 @@ export interface CanvasStoreState {
   future: CanvasHistoryEntry[]
   /** Interactive ghost placement in progress (null when idle). */
   pendingPlacement: PendingPlacement | null
+
+  // --- Annotations (shapes + connectors) ---
+  shapes: Record<string, CanvasShapeState>
+  connectors: Record<string, CanvasConnectorState>
+  /** Selected annotation ids (shapes and connectors mixed). Mutually exclusive
+   *  with the node `selection` — selecting one kind clears the other. */
+  annotationSelection: string[]
+  /** Transient input mode: drawing a shape or picking connector endpoints.
+   *  null = normal interaction. */
+  annotationMode: { kind: 'draw'; shape: CanvasShapeKind } | { kind: 'connect' } | null
+  /** First endpoint picked while in connect mode (null until the first click). */
+  connectorDraft: CanvasConnectorEndpoint | null
 }
 
 export interface CanvasHistoryEntry {
   nodes: Record<CanvasNodeId, CanvasNodeState>
   selection: CanvasNodeId[]
   selectionActive: boolean
+  /** Annotation state at snapshot time. Optional so entries created before the
+   *  feature (or by older tests) restore without touching annotations. */
+  shapes?: Record<string, CanvasShapeState>
+  connectors?: Record<string, CanvasConnectorState>
   /** Panel records closed by the delete that followed this snapshot. Undo
    *  re-adds them to the workspace (so the restored nodes aren't ghosts);
    *  redo closes them again. Carried between the history and future stacks
@@ -235,11 +256,35 @@ export interface CanvasStoreActions {
    *  delete closed so undo can restore them. No-op without a begin. */
   commitHistoryTransaction: (closedPanels?: { workspaceId: string; panels: PanelState[] }) => void
 
+  // --- Annotations (shapes + connectors) ---
+  /** Create a shape; returns its id. Pushes a history step. */
+  addShape: (kind: CanvasShapeKind, origin: Point, size?: Size, color?: string) => string
+  /** Geometry update during drag/resize (no history push — callers push once
+   *  at gesture start, mirroring node moves). */
+  updateShapeGeometry: (id: string, origin: Point, size?: Size) => void
+  setShapeLabel: (id: string, label: string) => void
+  setShapeColor: (id: string, color: string) => void
+  setShapeKind: (id: string, kind: CanvasShapeKind) => void
+  /** Create a connector between two endpoints; returns its id (null when the
+   *  endpoints are invalid/identical). Pushes a history step. */
+  addConnector: (from: CanvasConnectorEndpoint, to: CanvasConnectorEndpoint, color?: string) => string | null
+  setConnectorLabel: (id: string, label: string) => void
+  setConnectorColor: (id: string, color: string) => void
+  setConnectorDashed: (id: string, dashed: boolean) => void
+  /** Delete the given shapes/connectors (connectors attached to a deleted shape
+   *  go with it). One history step. */
+  removeAnnotations: (ids: string[]) => void
+  selectAnnotations: (ids: string[], additive?: boolean) => void
+  clearAnnotationSelection: () => void
+  setAnnotationMode: (mode: CanvasStoreState['annotationMode']) => void
+  setConnectorDraft: (endpoint: CanvasConnectorEndpoint | null) => void
+
   // Bulk reset (used when switching workspaces)
   loadWorkspaceCanvas: (
     nodes: Record<CanvasNodeId, CanvasNodeState>,
     viewportOffset: Point,
     zoomLevel: number,
+    annotations?: CanvasAnnotations,
   ) => void
 }
 
