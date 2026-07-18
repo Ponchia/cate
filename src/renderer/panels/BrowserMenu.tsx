@@ -1,18 +1,26 @@
 // =============================================================================
 // BrowserMenu — the URL-bar overflow (⋮) dropdown for a browser panel: new tab,
-// toggle the bookmarks sidebar, and open the in-panel browser settings popover.
+// toggle the bookmarks sidebar, per-panel node behavior (live-while-unfocused,
+// device emulation), and open the in-panel browser settings popover.
 // =============================================================================
 import { useEffect, useRef } from 'react'
-import { Plus, BookmarkSimple, Gear, Check } from '@phosphor-icons/react'
+import { Plus, BookmarkSimple, Gear, Check, Broadcast, DeviceMobile, Desktop } from '@phosphor-icons/react'
 import { useSettingsStore } from '../stores/settingsStore'
+import type { BrowserDeviceMode } from '../../shared/types'
 
 interface Props {
   onNewTab: () => void
   onOpenSettings: () => void
   onClose: () => void
+  /** Per-panel: keep the page live while the node is unfocused (Arc-easels). */
+  live: boolean
+  onToggleLive: () => void
+  /** Per-panel device emulation. */
+  device: BrowserDeviceMode
+  onSetDevice: (device: BrowserDeviceMode) => void
 }
 
-export function BrowserMenu({ onNewTab, onOpenSettings, onClose }: Props): JSX.Element {
+export function BrowserMenu({ onNewTab, onOpenSettings, onClose, live, onToggleLive, device, onSetDevice }: Props): JSX.Element {
   const showBookmarks = useSettingsStore((s) => s.browserShowTabSidebar)
   const setSetting = useSettingsStore((s) => s.setSetting)
   const ref = useRef<HTMLDivElement>(null)
@@ -48,6 +56,22 @@ export function BrowserMenu({ onNewTab, onOpenSettings, onClose }: Props): JSX.E
         <BookmarkSimple size={14} className="text-muted" />
         <span className="flex-1">Show bookmarks</span>
         {showBookmarks && <Check size={14} className="text-agent" />}
+      </button>
+      <div className="my-1 border-t border-subtle" />
+      <button className={item} onClick={onToggleLive}>
+        <Broadcast size={14} className="text-muted" />
+        <span className="flex-1">Keep live when unfocused</span>
+        {live && <Check size={14} className="text-agent" />}
+      </button>
+      <button className={item} onClick={() => onSetDevice('desktop')}>
+        <Desktop size={14} className="text-muted" />
+        <span className="flex-1">Load as desktop</span>
+        {device === 'desktop' && <Check size={14} className="text-agent" />}
+      </button>
+      <button className={item} onClick={() => onSetDevice('phone')}>
+        <DeviceMobile size={14} className="text-muted" />
+        <span className="flex-1">Load as phone</span>
+        {device === 'phone' && <Check size={14} className="text-agent" />}
       </button>
       <div className="my-1 border-t border-subtle" />
       <button className={item} onClick={() => { onClose(); onOpenSettings() }}>

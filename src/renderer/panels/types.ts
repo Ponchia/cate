@@ -33,6 +33,10 @@ export interface BrowserPanelProps extends PanelProps {
   /** Canonical persisted navigation state. */
   tabs: BrowserTab[]
   activeTabId: string
+  /** Keep the page live (no dim/click-shield) while the node is unfocused. */
+  browserLive?: boolean
+  /** Device emulation mode ('phone' = mobile UA + viewport). */
+  browserDevice?: import('../../shared/types').BrowserDeviceMode
 }
 
 export interface ExtensionPanelProps extends PanelProps {

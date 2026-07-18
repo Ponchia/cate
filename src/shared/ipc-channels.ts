@@ -193,6 +193,7 @@ export const BROWSER_SHORTCUT = 'browser:shortcut'
  *  (renderer -> main). Awaited before the panel mounts its <webview> so the
  *  first request already goes through the proxy. */
 export const BROWSER_SET_PROXY = 'browser:setProxy'
+export const BROWSER_SET_DEVICE = 'browser:setDevice' // renderer -> main (device emulation for a webview guest)
 
 // Native context menu (renderer -> main)
 export const MENU_SHOW_CONTEXT = 'menu:showContext'

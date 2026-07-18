@@ -32,6 +32,8 @@ const PASSTHROUGH_PANEL_FIELDS = [
   'tabs',
   'activeTabId',
   'proxyUrl',
+  'browserLive',
+  'browserDevice',
   'documentType',
   'extensionId',
   'extensionPanelId',

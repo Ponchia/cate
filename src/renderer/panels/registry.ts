@@ -118,6 +118,8 @@ export const PANEL_REGISTRY: Record<PanelType, RendererPanelDefinition> = {
       proxyUrl: panel.proxyUrl,
       tabs: panel.tabs,
       activeTabId: panel.activeTabId,
+      browserLive: panel.browserLive,
+      browserDevice: panel.browserDevice,
       zoomLevel: ctx.zoomLevel ?? 1,
     }),
   },

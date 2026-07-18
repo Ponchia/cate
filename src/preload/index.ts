@@ -186,6 +186,7 @@ import {
   RUNTIME_PICK_SSH_KEY,
   WEBVIEW_SCREENSHOT,
   BROWSER_SET_PROXY,
+  BROWSER_SET_DEVICE,
   NATIVE_FILE_DRAG,
   UPDATE_STATUS,
   UPDATE_QUIT_AND_INSTALL,
@@ -465,6 +466,7 @@ const invokeForwarders = {
   // Capture / browser
   webviewScreenshot: makeInvoker<'webviewScreenshot'>(WEBVIEW_SCREENSHOT),
   browserSetProxy: makeInvoker<'browserSetProxy'>(BROWSER_SET_PROXY),
+  browserSetDevice: makeInvoker<'browserSetDevice'>(BROWSER_SET_DEVICE),
   nativeFileDrag: makeInvoker<'nativeFileDrag'>(NATIVE_FILE_DRAG),
 
   // Shell utilities

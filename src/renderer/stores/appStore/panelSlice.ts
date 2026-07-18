@@ -48,6 +48,7 @@ type PanelSliceActions = Pick<
   | 'updateBrowserActiveTabUrl'
   | 'updatePanelTabs'
   | 'updatePanelProxy'
+  | 'updatePanelBrowserMode'
   | 'updatePanelFilePath'
   | 'setPanelDirty'
   | 'setPanelMarkdownPreview'
@@ -285,6 +286,16 @@ export function createPanelSlice(set: AppSet, get: AppGet): PanelSliceActions {
 
     updatePanelProxy(workspaceId, panelId, proxyUrl) {
       setPanelField(set, workspaceId, panelId, (panel) => ({ ...panel, proxyUrl: proxyUrl || undefined }))
+    },
+
+    updatePanelBrowserMode(workspaceId, panelId, patch) {
+      setPanelField(set, workspaceId, panelId, (panel) => ({
+        ...panel,
+        ...(patch.browserLive !== undefined ? { browserLive: patch.browserLive || undefined } : {}),
+        ...(patch.browserDevice !== undefined
+          ? { browserDevice: patch.browserDevice === 'desktop' ? undefined : patch.browserDevice }
+          : {}),
+      }))
     },
 
     updatePanelFilePath(workspaceId, panelId, filePath) {

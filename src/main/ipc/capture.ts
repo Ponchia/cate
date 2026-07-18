@@ -7,7 +7,7 @@ import { grantFileAccess, validatePath } from './pathValidation'
 import { isLocalLocator } from '../runtime/locator'
 import { configureBrowserProxy } from '../browserProxy'
 import { windowFromEvent } from '../windowRegistry'
-import { WEBVIEW_SCREENSHOT, BROWSER_SET_PROXY, NATIVE_FILE_DRAG } from '../../shared/ipc-channels'
+import { WEBVIEW_SCREENSHOT, BROWSER_SET_PROXY, BROWSER_SET_DEVICE, NATIVE_FILE_DRAG } from '../../shared/ipc-channels'
 
 export function registerCaptureHandlers(): void {
   // Capture a webview's visible content, save to Desktop, return dataUrl + path.
@@ -46,6 +46,39 @@ export function registerCaptureHandlers(): void {
   // renderer before it mounts the <webview> so the first request is proxied.
   ipcMain.handle(BROWSER_SET_PROXY, wrapHandler(`[${BROWSER_SET_PROXY}]`, async (_event, partition: string, proxyUrl?: string) => {
     await configureBrowserProxy(partition, proxyUrl)
+  }))
+
+  // Device emulation for a browser panel's guest (Chrome-devtools device mode).
+  // 'phone' = mobile UA + phone viewport/DPR via enableDeviceEmulation; the
+  // renderer reloads the webview afterwards so the new UA reaches the server.
+  // Emulation persists across navigations on the same webContents, so this only
+  // needs re-issuing on mode change (or a fresh webContents). Same guest-of-
+  // caller ownership check as the screenshot handler above.
+  ipcMain.handle(BROWSER_SET_DEVICE, wrapHandler(`[${BROWSER_SET_DEVICE}]`, async (event, webContentsId: number, device: 'desktop' | 'phone') => {
+    const wc = webContents.fromId(webContentsId)
+    if (!wc || wc.isDestroyed()) return
+    const hostWc = wc.hostWebContents
+    if (!hostWc || hostWc.id !== event.sender.id) {
+      log.warn(`[${BROWSER_SET_DEVICE}] Denied: webContentsId ${webContentsId} does not belong to calling window`)
+      return
+    }
+    if (device === 'phone') {
+      wc.enableDeviceEmulation({
+        screenPosition: 'mobile',
+        screenSize: { width: 390, height: 844 },
+        viewSize: { width: 390, height: 844 },
+        viewPosition: { x: 0, y: 0 },
+        deviceScaleFactor: 3,
+        scale: 1,
+      })
+      wc.setUserAgent(
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+      )
+    } else {
+      wc.disableDeviceEmulation()
+      // Back to the session's default (desktop) user agent.
+      wc.setUserAgent(wc.session.getUserAgent())
+    }
   }))
 
   // Native file drag from renderer (for screenshot thumbnails etc.)

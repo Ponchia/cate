@@ -610,6 +610,11 @@ export interface ElectronAPI {
    *  Pass an empty/undefined proxyUrl to use a direct connection. */
   browserSetProxy(partition: string, proxyUrl?: string): Promise<void>
 
+  /** Device emulation for a browser panel's guest: 'phone' = mobile UA +
+   *  phone viewport/DPR (persists across navigations); 'desktop' resets. The
+   *  caller reloads the webview afterwards so the UA reaches the server. */
+  browserSetDevice(webContentsId: number, device: import('./types').BrowserDeviceMode): Promise<void>
+
   /** Initiate a native OS file drag from the renderer. */
   nativeFileDrag(filePath: string): Promise<void>
 

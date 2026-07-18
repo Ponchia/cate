@@ -232,6 +232,20 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
   const wsId = useAppStore((s) => s.selectedWorkspaceId)
   const currentWorkspace = useSelectedWorkspace()
 
+  // Live-browser node (Arc-easels style): a browser panel with browserLive set
+  // keeps its page interactive while UNFOCUSED, so the click-to-focus dim
+  // overlay must neither paint nor intercept for this node. Clicks then both
+  // focus the node (the content wrapper's capture handler) AND reach the page;
+  // moving the node is done by its chrome.
+  const hasLiveBrowser = useAppStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === wsId)
+    if (!ws) return false
+    return collectPanelIds(layout ?? null).some((pid) => {
+      const p = ws.panels[pid]
+      return p?.type === 'browser' && !!p.browserLive
+    })
+  })
+
   // Terminals follow the single unified theme, so node chrome is never tinted
   // per-panel any more.
   const chromeTint = null
@@ -718,10 +732,10 @@ const CanvasNode: React.FC<CanvasNodeProps> = ({
             right: 0,
             bottom: 0,
             backgroundColor: 'var(--node-dim-overlay)',
-            pointerEvents: isFocused || isDockDragging || fileDragOver ? 'none' : 'auto',
+            pointerEvents: isFocused || isDockDragging || fileDragOver || hasLiveBrowser ? 'none' : 'auto',
             cursor: isFocused ? undefined : 'default',
             zIndex: 1,
-            opacity: isFocused || isDockDragging ? 0 : 1,
+            opacity: isFocused || isDockDragging || hasLiveBrowser ? 0 : 1,
             transition: 'opacity 150ms ease',
           }}
         />

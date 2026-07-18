@@ -37,7 +37,7 @@ function injectCanvasInteractingStyle(): void {
        The visible dim itself is applied INSIDE the guest (BrowserPanel
        insertCSS) — element opacity here is visually ignored by the guest
        compositor under the canvas transform (verified live). */
-    [data-node-active="false"] webview {
+    [data-node-active="false"] webview:not([data-browser-live="true"]) {
       pointer-events: none !important;
     }
     .canvas-interacting iframe,

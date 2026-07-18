@@ -18,7 +18,7 @@ import { BrowserMenu } from './BrowserMenu'
 import { BrowserSettingsPopover } from './BrowserSettingsPopover'
 import { BrowserTabStrip } from './BrowserTabStrip'
 import { BrowserBookmarksSidebar } from './BrowserBookmarksSidebar'
-import type { BrowserTab } from '../../shared/types'
+import type { BrowserTab, BrowserDeviceMode } from '../../shared/types'
 import type { BrowserPanelProps } from './types'
 import type { BrowserShortcutAction } from '../../shared/types'
 import type { NativeContextMenuItem } from '../../shared/electron-api'
@@ -101,6 +101,8 @@ export default function BrowserPanel({
   proxyUrl,
   tabs: tabsProp,
   activeTabId: activeTabIdProp,
+  browserLive,
+  browserDevice,
 }: BrowserPanelProps) {
   const browserHomepage = useSettingsStore((s) => s.browserHomepage)
   const browserSearchEngine = useSettingsStore((s) => s.browserSearchEngine)
@@ -109,6 +111,7 @@ export default function BrowserPanel({
   const updateBrowserActiveTabUrl = useAppStore((s) => s.updateBrowserActiveTabUrl)
   const updatePanelTabs = useAppStore((s) => s.updatePanelTabs)
   const updatePanelProxy = useAppStore((s) => s.updatePanelProxy)
+  const updatePanelBrowserMode = useAppStore((s) => s.updatePanelBrowserMode)
 
   // Global browser history + bookmarks (shared across all panels/windows).
   const recordVisit = useBrowserStore((s) => s.recordVisit)
@@ -559,6 +562,12 @@ export default function BrowserPanel({
       dimKeyRef.current = null
       if (key) safeRemove(key)
     }
+    // Live mode (Arc-easels style): the page never dims — it stays a live,
+    // full-brightness site regardless of node focus.
+    if (browserLive) {
+      clearDim()
+      return () => { cancelled = true }
+    }
     if (isFocused) clearDim()
     else void applyDim()
     const onDomReady = (): void => {
@@ -571,7 +580,39 @@ export default function BrowserPanel({
       cancelled = true
       webview.removeEventListener('dom-ready', onDomReady)
     }
-  }, [isFocused, hasCanvas, partition, proxyReady])
+  }, [isFocused, hasCanvas, browserLive, partition, proxyReady])
+
+  // -------------------------------------------------------------------------
+  // Device emulation ('phone' = mobile UA + viewport, Chrome-devtools style).
+  // Emulation persists across navigations on the same webContents, so it is
+  // (re)issued only when the mode differs from what this webContents already
+  // has — tracked per webContents id, since a partition change remounts the
+  // webview with a fresh guest that starts back at desktop. The reload after
+  // switching is what makes the new user agent reach the server.
+  // -------------------------------------------------------------------------
+
+  const appliedDeviceRef = useRef<{ wcId: number; device: BrowserDeviceMode } | null>(null)
+  useEffect(() => {
+    const webview = webviewRef.current
+    if (!webview) return
+    const device: BrowserDeviceMode = browserDevice ?? 'desktop'
+    const ensure = (): void => {
+      let wcId: number
+      try { wcId = webview.getWebContentsId() } catch { return /* pre-dom-ready */ }
+      const applied = appliedDeviceRef.current
+      const current = applied && applied.wcId === wcId ? applied.device : 'desktop'
+      if (current === device) return
+      appliedDeviceRef.current = { wcId, device }
+      void window.electronAPI.browserSetDevice(wcId, device)
+        .then(() => { try { webview.reload() } catch { /* detached */ } })
+        .catch(() => { appliedDeviceRef.current = null })
+    }
+    ensure()
+    // A fresh guest (first load / partition remount) applies once dom-ready.
+    const onDomReady = (): void => ensure()
+    webview.addEventListener('dom-ready', onDomReady)
+    return () => webview.removeEventListener('dom-ready', onDomReady)
+  }, [browserDevice, partition, proxyReady])
 
   // -------------------------------------------------------------------------
   // Focus the webview when this panel becomes the focused node
@@ -874,6 +915,10 @@ export default function BrowserPanel({
           onNewTab={handleNewTab}
           onOpenSettings={() => setSettingsOpen(true)}
           onClose={() => setMenuOpen(false)}
+          live={!!browserLive}
+          onToggleLive={() => updatePanelBrowserMode(workspaceId, panelId, { browserLive: !browserLive })}
+          device={browserDevice ?? 'desktop'}
+          onSetDevice={(device) => updatePanelBrowserMode(workspaceId, panelId, { browserDevice: device })}
         />
       )}
       {settingsOpen && (
@@ -921,6 +966,9 @@ export default function BrowserPanel({
               src={webviewSrc}
               className={`w-full h-full ${loadError || crashed ? 'hidden' : ''}`}
               partition={partition}
+              // Live mode opts this webview out of the unfocused click-shield
+              // (see the [data-node-active] rule in Canvas.tsx).
+              {...(browserLive ? { 'data-browser-live': 'true' } : {})}
             />
           )
         )}

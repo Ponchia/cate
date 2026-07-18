@@ -80,6 +80,15 @@ export interface PanelState {
    *  suffix, and `pac://` PAC scripts. See `configureBrowserProxy` in
    *  `src/main/browserProxy.ts`. */
   proxyUrl?: string
+  /** Browser panels only: keep the page LIVE while its canvas node is
+   *  unfocused (Arc-easels style) — no dim, no click-shield; the page stays
+   *  interactive and the node is dragged by its chrome. Default off: the
+   *  standard first-click-focuses model. */
+  browserLive?: boolean
+  /** Browser panels only: device emulation mode. 'phone' loads pages with a
+   *  mobile user agent + phone viewport/DPR (Chrome-devtools-style device
+   *  mode); absent/'desktop' is the normal desktop rendering. */
+  browserDevice?: BrowserDeviceMode
   /** When set, EditorPanel renders as a Monaco diff editor. */
   diffMode?: 'staged' | 'working'
   /** Editor panels with a markdown file only: render the rendered preview
@@ -664,6 +673,10 @@ export interface BrowserBookmark {
   addedAt: number // epoch ms
 }
 
+/** Device emulation mode for a browser panel: 'phone' renders with a mobile
+ *  user agent + phone viewport/DPR (Chrome-devtools device mode). */
+export type BrowserDeviceMode = 'desktop' | 'phone'
+
 /** One open tab in a browser panel (light model: a single <webview> re-navigates
  *  on switch, so a background tab is just its saved url/title). */
 export interface BrowserTab {
@@ -985,6 +998,10 @@ export interface ProjectPanelRef {
   activeTabId?: string
   /** Browser panels only: per-panel proxy URL (see PanelState.proxyUrl). */
   proxyUrl?: string
+  /** Browser panels only: live-while-unfocused (see PanelState.browserLive). */
+  browserLive?: boolean
+  /** Browser panels only: device emulation (see PanelState.browserDevice). */
+  browserDevice?: BrowserDeviceMode
   /** Document panels only: sub-type discriminator for the viewer. */
   documentType?: 'pdf' | 'docx' | 'image'
   /** Extension panels only: which installed extension + which of its declared
