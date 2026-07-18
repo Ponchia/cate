@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { mintRuntimeId } from './runtime'
+import { mintRuntimeId, isWsHost, stripWsToken } from './runtime'
 
 describe('mintRuntimeId', () => {
   test('WSL ids carry the sanitized distro name as a readable prefix + a path hash', () => {
@@ -40,5 +40,33 @@ describe('mintRuntimeId', () => {
     const wslA = mintRuntimeId({ kind: 'wsl', distro: 'Ubuntu', distroPath: '/home/me/a' })
     const wslB = mintRuntimeId({ kind: 'wsl', distro: 'Ubuntu', distroPath: '/home/me/b' })
     expect(wslA).not.toBe(wslB)
+  })
+
+  // ws:// targets: ONE persistent daemon serves many roots, so the id hashes
+  // only the token-stripped URL — same URL + different paths share a runtime,
+  // and rotating the token never changes the id.
+  test('ws ids ignore the path and the token', () => {
+    const a = mintRuntimeId({ kind: 'server', host: 'ws://h:7777/?token=aaa', user: '', remotePath: '/a' })
+    const b = mintRuntimeId({ kind: 'server', host: 'ws://h:7777/?token=bbb', user: '', remotePath: '/b' })
+    const c = mintRuntimeId({ kind: 'server', host: 'ws://other:7777', user: '', remotePath: '/a' })
+    expect(a).toBe(b)
+    expect(a).not.toBe(c)
+    expect(a.startsWith('srv_')).toBe(true)
+  })
+})
+
+describe('ws host helpers', () => {
+  test('isWsHost detects ws/wss URLs only', () => {
+    expect(isWsHost('ws://h:7777')).toBe(true)
+    expect(isWsHost('wss://h/runtime')).toBe(true)
+    expect(isWsHost('h.example.com')).toBe(false)
+    expect(isWsHost('user@h:22')).toBe(false)
+  })
+
+  test('stripWsToken removes the token and returns it separately', () => {
+    const { url, token } = stripWsToken('ws://h:7777/?token=sekret&x=1')
+    expect(token).toBe('sekret')
+    expect(url).toBe('ws://h:7777/?x=1')
+    expect(stripWsToken('ws://h:7777/').token).toBeUndefined()
   })
 })

@@ -84,7 +84,14 @@ vi.mock('../extensions/workspaceCateApi', () => ({
 // cwd-routing tests can assert WHICH runtime a spawn was routed to. The real
 // (pure) locator module is used, not a mock.
 const rt = vi.hoisted(() => {
-  const state = { resolvedIds: [] as string[], cwd: null as string | null }
+  const state = {
+    resolvedIds: [] as string[],
+    cwd: null as string | null,
+    // When set, resolve() exposes a sessions capability whose attachPty
+    // succeeds for this id (returning `replay`) and throws for any other.
+    attachable: null as null | { id: string; replay: string },
+    attachCalls: [] as Array<{ id: string; sinceByte?: number }>,
+  }
   return {
     state,
     resolve: (id: string) => {
@@ -94,6 +101,13 @@ const rt = vi.hoisted(() => {
         process: {
           create: (...args: unknown[]) => (diag.ptyCreate as (...a: unknown[]) => unknown)(...args),
           getCwd: async () => state.cwd,
+        },
+        sessions: state.attachable && {
+          attachPty: async (id: string, _onData: unknown, _onExit: unknown, sinceByte?: number) => {
+            state.attachCalls.push({ id, sinceByte })
+            if (id !== state.attachable!.id) throw new Error(`No live pty session "${id}"`)
+            return { replay: state.attachable!.replay, offset: state.attachable!.replay.length, info: { id, pid: 555, createdAt: 0, bytes: state.attachable!.replay.length } }
+          },
         },
       }
     },
@@ -590,5 +604,44 @@ describe('remote terminal cwd routing', () => {
     rt.state.cwd = '/Users/u/proj'
     const cwd = await handlers.get('terminal:getCwd')!({}, ptyId)
     expect(cwd).toBe('/Users/u/proj')
+  })
+})
+
+// ===========================================================================
+// Persistent-session reattach: terminal:create with attachPtyId subscribes to
+// the surviving server-side session (returning ITS id, spawning nothing) and
+// falls back to a fresh spawn when the session is gone.
+// ===========================================================================
+describe('persistent-session reattach', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    diag.ptyCreate.mockReset()
+    rt.state.resolvedIds.length = 0
+    rt.state.attachable = null
+    rt.state.attachCalls.length = 0
+    ws.getWorkspaceInfo.mockReset()
+    cateApi.ensureEndpoint.mockResolvedValue(null)
+  })
+
+  async function create(options: Record<string, unknown>): Promise<string> {
+    diag.ptyCreate.mockResolvedValue({ id: 'pty-fresh', pid: 123, shell: '/bin/bash' })
+    const mod = await import('./terminal')
+    mod.registerHandlers()
+    return (await handlers.get('terminal:create')!({}, { cols: 80, rows: 24, ...options })) as string
+  }
+
+  it('attaches to a surviving session instead of spawning', async () => {
+    rt.state.attachable = { id: 'rpty-old-1', replay: 'restored scrollback' }
+    const id = await create({ cwd: 'cate-runtime://srv_p/home/u/w', attachPtyId: 'rpty-old-1' })
+    expect(id).toBe('rpty-old-1')
+    expect(rt.state.attachCalls).toEqual([{ id: 'rpty-old-1', sinceByte: 0 }])
+    expect(diag.ptyCreate).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a fresh spawn when the session is gone', async () => {
+    rt.state.attachable = { id: 'rpty-other', replay: '' }
+    const id = await create({ cwd: 'cate-runtime://srv_p/home/u/w', attachPtyId: 'rpty-dead' })
+    expect(id).toBe('pty-fresh')
+    expect(diag.ptyCreate).toHaveBeenCalledOnce()
   })
 })
