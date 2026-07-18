@@ -15,6 +15,8 @@ vi.hoisted(() => {
 const portalMocks = vi.hoisted(() => ({
   register: vi.fn(),
   unregister: vi.fn(),
+  registerNavigator: vi.fn(),
+  unregisterNavigator: vi.fn(),
 }))
 
 vi.mock('../lib/portalRegistry', () => ({ portalRegistry: portalMocks }))
@@ -215,9 +217,13 @@ describe('BrowserPanel component', () => {
     installWebviewMethods(webview)
     act(() => webview.dispatchEvent(event('dom-ready')))
     expect(portalMocks.register).toHaveBeenCalledWith('browser-1', webview)
+    // The navigator registers at mount (not dom-ready): it is how the reverse
+    // API reaches a panel sitting on its start page, which has no webview.
+    expect(portalMocks.registerNavigator).toHaveBeenCalledWith('browser-1', expect.any(Function))
 
     act(() => root.unmount())
     expect(portalMocks.unregister).toHaveBeenCalledWith('browser-1')
+    expect(portalMocks.unregisterNavigator).toHaveBeenCalledWith('browser-1')
     expect(unsubscribeShortcut).toHaveBeenCalledTimes(1)
 
     const persistedCalls = updateBrowserActiveTabUrl.mock.calls.length

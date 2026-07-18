@@ -15,7 +15,7 @@
 //
 // Command surface (extensible — new verbs are one GROUPS entry, mapping
 // positionals to a {method, args} pair). Each granted cate.* scope has its own
-// group — browser | ui | editor | canvas | panel (see USAGE at the bottom of
+// group — browser | ui | editor | panel | terminal (see USAGE at the bottom of
 // the file) — plus `cate version` for the host API version. There is
 // deliberately NO raw method passthrough: every reachable host method has a
 // named verb, so the CLI's help is the complete, honest surface.
@@ -30,7 +30,7 @@ import { parseArgs } from 'node:util'
 
 /** Version of the CLI tool itself (printed by --version). The API's own version
  *  is reachable via `cate version`. */
-export const CLI_VERSION = '3'
+export const CLI_VERSION = '4'
 
 /** Default request timeout (ms) when --timeout is not given. */
 export const DEFAULT_TIMEOUT_MS = 30_000
@@ -71,9 +71,10 @@ export interface Request {
   method: string
   args: Record<string, unknown>
   /** Set when `args.panelId` may be a short prefix the dispatcher should expand
-   *  to a full id via `cate.panel.list` — 'browser' restricts the match to
-   *  browser panels (for browser.* verbs), 'panel' matches any panel. */
-  resolvePanel?: 'browser' | 'panel'
+   *  to a full id via `cate.panel.list` — 'browser'/'terminal' restrict the
+   *  match to that panel type (for the browser / terminal groups' verbs),
+   *  'panel' matches any panel. */
+  resolvePanel?: 'browser' | 'terminal' | 'panel'
 }
 
 type VerbBuilder = (args: string[], flags: Flags) => Request
@@ -158,14 +159,23 @@ export const GROUPS: Record<string, Group> = {
   },
   editor: {
     // openFileAsPanel routes by file type (a PDF opens a document panel), so
-    // this one verb covers every file-backed panel — no `canvas create --file`.
+    // this one verb covers every file-backed panel — no `panel create --file`.
     open: (a) => ({ method: 'cate.editor.openFile', args: parseFileTarget(need(exact(a, 1)[0], 'path')) }),
-  },
-  canvas: {
-    create: (a) => ({ method: 'cate.canvas.createPanel', args: { type: need(exact(a, 1)[0], 'type') } }),
   },
   panel: {
     list: (a) => ({ method: 'cate.panel.list', args: noArgs(a) }),
+    // `create browser <url>` seeds the new panel with a page. Without one a
+    // browser panel sits on its start page, which `browser open` can still
+    // navigate later — but seeding up front saves that round trip. (Still the
+    // cate.canvas.createPanel host method — only the CLI surface moved; panels
+    // are what it creates, so the verb lives in the panel group.)
+    create: (a) => {
+      const type = need(exact(a, 2)[0], 'type')
+      if (a[1] !== undefined && type !== 'browser') {
+        throw new UsageError(`unexpected argument: ${a[1]} (only 'panel create browser' takes a url)`)
+      }
+      return { method: 'cate.canvas.createPanel', args: { type, ...(a[1] !== undefined ? { url: a[1] } : {}) } }
+    },
     focus: (a) => ({
       method: 'cate.panel.focus',
       args: { panelId: need(exact(a, 1)[0], 'panelId') },
@@ -180,6 +190,23 @@ export const GROUPS: Record<string, Group> = {
       method: 'cate.panel.setTitle',
       args: { title: needRest(a, 'title') },
     }),
+  },
+  terminal: {
+    // `read` defaults to the focused panel when it is a terminal (no
+    // first-terminal fallback — too ambiguous). `type`/`press` REQUIRE --panel:
+    // a misresolved read is noise, a misresolved keystroke executes in the
+    // wrong shell.
+    read: (a) => ({ method: 'cate.terminal.read', args: noArgs(a) }),
+    // Joined trailing positionals, NO trailing newline — text lands in the
+    // PTY's input but does not execute until a `press enter`.
+    type: (a, f) => {
+      if (f.panel === undefined) throw new UsageError('terminal type requires --panel <id>')
+      return { method: 'cate.terminal.type', args: { text: needRest(a, 'text') } }
+    },
+    press: (a, f) => {
+      if (f.panel === undefined) throw new UsageError('terminal press requires --panel <id>')
+      return { method: 'cate.terminal.press', args: { key: need(exact(a, 1)[0], 'key') } }
+    },
   },
   // NOTE: no `agent` or `storage` group. Those scopes are never granted to the
   // first-party terminal endpoint this CLI talks to (see workspaceCateApi
@@ -241,26 +268,38 @@ export function buildRequest(positionals: string[], flags: Flags): Request {
     req = { method: 'cate.version', args: {} }
   } else {
     const group = GROUPS[head]
-    if (!group) throw new UsageError(`unknown command: ${head}`)
+    if (!group) {
+      // The canvas group moved to `panel create` in v4 — point old callers there.
+      if (head === 'canvas') throw new UsageError('unknown command: canvas (use: cate panel create)')
+      throw new UsageError(`unknown command: ${head}`)
+    }
     const verb = need(positionals[1], 'verb')
     const builder = group[verb]
     if (!builder) throw new UsageError(`unknown ${head} verb: ${verb}`)
     req = builder(positionals.slice(2), flags)
   }
 
-  const panelFlagAllowed = req.method.startsWith('cate.browser.') || req.method === 'cate.panel.setTitle'
+  const panelFlagAllowed =
+    req.method.startsWith('cate.browser.') ||
+    req.method.startsWith('cate.terminal.') ||
+    req.method === 'cate.panel.setTitle'
   if (flags.panel !== undefined && !panelFlagAllowed) {
     throw new UsageError(`--panel is not valid for ${positionals.slice(0, 2).join(' ')}`)
   }
-  if (flags.max !== undefined && req.method !== 'cate.browser.snapshot') {
-    throw new UsageError('--max is only valid for browser snapshot')
+  if (flags.max !== undefined && req.method !== 'cate.browser.snapshot' && req.method !== 'cate.terminal.read') {
+    throw new UsageError('--max is only valid for browser snapshot and terminal read')
   }
 
-  // --panel addresses a specific target panel (args.panelId). Browser targets
-  // resolve only against browser rows; set-title accepts every panel type.
+  // --panel addresses a specific target panel (args.panelId). Browser/terminal
+  // targets resolve only against rows of their type; set-title accepts every
+  // panel type.
   if (flags.panel !== undefined) {
     req.args.panelId = flags.panel
-    req.resolvePanel = req.method.startsWith('cate.browser.') ? 'browser' : 'panel'
+    req.resolvePanel = req.method.startsWith('cate.browser.')
+      ? 'browser'
+      : req.method.startsWith('cate.terminal.')
+        ? 'terminal'
+        : 'panel'
   }
   return req
 }
@@ -305,7 +344,7 @@ export async function send(method: string, args: Record<string, unknown>, deps: 
     // terminal predates enabling it). Say how to fix it, not just what's wrong.
     throw new EnvError(
       'the cate CLI endpoint is not available in this shell (CATE_API/CATE_TOKEN unset).\n' +
-        'Enable "Command-line control (cate CLI)" in Cate Settings → Terminal, then open a new terminal.',
+        'Enable "Command-line control (cate CLI)" in Cate Settings → CLI, then open a new terminal.',
     )
   }
 
@@ -332,24 +371,25 @@ export async function send(method: string, args: Record<string, unknown>, deps: 
 }
 
 /** Resolve a possibly-abbreviated panelId (e.g. the first 8 chars shown by
- *  `panel list`) to a full one by listing panels and matching. `kind: 'browser'`
- *  restricts matching to browser panels (the browser verbs' targets). An exact
- *  full-id match wins; otherwise a unique prefix match. Throws UsageError (exit
- *  2) on no match or an ambiguous prefix. */
+ *  `panel list`) to a full one by listing panels and matching. `kind:
+ *  'browser'`/'terminal' restrict matching to panels of that type (the
+ *  browser/terminal verbs' targets). An exact full-id match wins; otherwise a
+ *  unique prefix match. Throws UsageError (exit 2) on no match or an ambiguous
+ *  prefix. */
 export async function resolvePanel(
   prefix: string,
-  kind: 'browser' | 'panel',
+  kind: 'browser' | 'terminal' | 'panel',
   deps: SendDeps,
 ): Promise<string> {
   const listed = await send('cate.panel.list', {}, deps)
   const ids = (Array.isArray(listed) ? listed : [])
     .map(asObj)
     .filter((o): o is Record<string, unknown> => o !== null)
-    .filter((o) => kind === 'panel' || o.type === 'browser')
+    .filter((o) => kind === 'panel' || o.type === kind)
     .map((o) => o.panelId)
     .filter((id): id is string => typeof id === 'string')
 
-  const what = kind === 'browser' ? 'browser panel' : 'panel'
+  const what = kind === 'panel' ? 'panel' : `${kind} panel`
   if (ids.includes(prefix)) return prefix // already a full id
   const matches = ids.filter((id) => id.startsWith(prefix))
   if (matches.length === 1) return matches[0]
@@ -390,6 +430,24 @@ function pickPath(v: unknown): string {
  *  can carry thousands of refs; an uncapped dump would swamp the exact caller
  *  (an agent context) the CLI is built for. `--max 0` lifts the cap. */
 export const SNAPSHOT_MAX_DEFAULT = 150
+
+/** Terminal-read lines printed before the human output is truncated — the TAIL
+ *  is kept (the freshest output is what a caller reads a terminal for), unlike
+ *  snapshot's head cap. Scrollback can run to thousands of lines; `--max 0`
+ *  lifts the cap. */
+export const TERMINAL_READ_MAX_DEFAULT = 200
+
+function formatTerminalRead(v: unknown, max: number): string {
+  const o = asObj(v)
+  const text = o && typeof o.text === 'string' ? o.text : renderGeneric(v)
+  if (max <= 0) return text
+  const lines = text.split('\n')
+  if (lines.length <= max) return text
+  return [
+    `(+${lines.length - max} earlier lines; rerun with --max 0 for all)`,
+    ...lines.slice(lines.length - max),
+  ].join('\n')
+}
 
 function formatSnapshot(v: unknown, max: number): string {
   const o = asObj(v)
@@ -470,7 +528,12 @@ export function formatHuman(method: string, value: unknown, opts?: { max?: numbe
     case 'cate.panel.focus':
     case 'cate.panel.setTitle':
     case 'cate.panel.close':
+    case 'cate.terminal.type':
+    case 'cate.terminal.press':
       return 'ok'
+    case 'cate.terminal.read':
+      // read resolves to { panelId, alt, text } — humans get the text tail.
+      return formatTerminalRead(value, opts?.max ?? TERMINAL_READ_MAX_DEFAULT)
     case 'cate.panel.list':
       return formatPanelList(value)
     case 'cate.editor.openFile':
@@ -501,8 +564,10 @@ Groups:
              | press [ref] <key>       (Enter, Tab, Escape, arrows, PageDown, ...)
   ui         notify <message...>
   editor     open <path[:line[:col]]>
-  canvas     create <type>
-  panel      list | focus <id> | close <id> | set-title <title...>
+  panel      list | create <type> [url] | focus <id> | close <id>
+             | set-title <title...>    (create url: browser panels only)
+  terminal   read [--max n] | type <text...> | press <key>
+             (type/press require --panel; input must be enabled in Settings)
 
 \`panel list\` enumerates every panel (editors with file paths, browsers with
 urls); its short ids feed \`panel focus\` and \`--panel\`.
@@ -510,21 +575,25 @@ urls); its short ids feed \`panel focus\` and \`--panel\`.
 Flags:
   --panel <id>     target a specific panel (sets args.panelId; short ids ok)
   --json           print the raw result as one JSON line
-  --max <n>        snapshot: max ref lines to print (default ${SNAPSHOT_MAX_DEFAULT}; 0 = all)
+  --max <n>        snapshot: max ref lines (default ${SNAPSHOT_MAX_DEFAULT}; 0 = all)
+                   terminal read: max tail lines (default ${TERMINAL_READ_MAX_DEFAULT}; 0 = all)
   --timeout <ms>   request timeout (default ${DEFAULT_TIMEOUT_MS})
   -h, --help       show this help
   --version        print the CLI version (distinct from host API version)
 
 Requires CATE_API and CATE_TOKEN in the environment. Cate injects them into new
-terminals while "Command-line control (cate CLI)" is enabled (Settings → Terminal).`
+terminals while "Command-line control (cate CLI)" is enabled (Settings → CLI,
+where per-feature toggles for browser control and terminal read/input live too).`
 
 const GROUP_USAGE: Record<string, string> = {
   browser: `Usage: cate browser open <url> | wait [ms] | reload | screenshot | snapshot\n` +
     `       cate browser click <ref> | type <ref> <text...> | press [ref] <key>`,
   ui: 'Usage: cate ui notify <message...>',
   editor: 'Usage: cate editor open <path[:line[:col]]>',
-  canvas: 'Usage: cate canvas create <type>',
-  panel: 'Usage: cate panel list | focus <id> | close <id> | set-title <title...>',
+  panel: `Usage: cate panel list | create <type> [url] | focus <id> | close <id> | set-title <title...>\n` +
+    `       (create url: browser panels only)`,
+  terminal: `Usage: cate terminal read [--max n] | type <text...> | press <key>\n` +
+    `       (type/press require --panel <id>; keys: enter, tab, esc, arrows, ctrl-<letter>, ...)`,
 }
 
 function helpFor(positionals: string[]): string {
