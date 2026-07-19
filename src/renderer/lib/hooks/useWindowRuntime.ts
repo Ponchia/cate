@@ -26,6 +26,7 @@ import {
   startAgentScreenDetector,
   stopAgentScreenDetector,
   applyRemoteAgentScreenState,
+  noteAgentHookEvent,
 } from '../agent/agentScreenDetector'
 import { isExternalFileDrag } from '../fs/importExternalEntries'
 import { revealPanel } from '../workspace/panelReveal'
@@ -59,20 +60,26 @@ export function useWindowRuntime(canvasStore?: StoreApi<CanvasStore>): void {
   // spinner alone isn't enough; resolveAgentState gates running on presence).
   useOwnedTerminalTelemetry()
 
-  // Agent-screen detector: scans this window's terminals for prompt markers and
-  // reports "needs input"/running state via IPC. The unsubscribe also applies
-  // state broadcast from other windows, so any window keeps the others in sync.
+  // Agent activity coordinator: derives running/"needs input" state from agent
+  // hook events (hook-covered CLIs) and title/body spinners (cursor/agy), and
+  // reports it via IPC. Hook events arrive only in the terminal's OWNING window
+  // (SHELL_AGENT_HOOK_EVENT), so every window feeds its own; the screen-state
+  // broadcast below mirrors the result so other windows' sidebars agree.
   // Without starting it here, detached terminals never report agent state.
   useEffect(() => {
     startAgentScreenDetector()
-    const off = window.electronAPI?.onAgentScreenStateUpdate?.(
+    const offRemote = window.electronAPI?.onAgentScreenStateUpdate?.(
       (terminalId: string, state: AgentState) => {
         applyRemoteAgentScreenState(terminalId, state)
       },
     )
+    const offHook = window.electronAPI?.onShellAgentHookEvent?.((_terminalId, event) => {
+      noteAgentHookEvent(event)
+    })
     return () => {
       stopAgentScreenDetector()
-      off?.()
+      offRemote?.()
+      offHook?.()
     }
   }, [])
 

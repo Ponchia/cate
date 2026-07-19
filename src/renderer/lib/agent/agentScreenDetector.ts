@@ -1,32 +1,57 @@
 // =============================================================================
 // Agent activity coordinator.
 //
-// Agent running-state is derived from the agent CLI's own OSC window title:
-// while a turn is in flight the title animates a braille spinner, and it drops
-// to a static marker when idle (see agentSpinner). This is an explicit signal
-// the agent emits — no byte-rate or subprocess heuristics.
+// Running/idle for the hook-covered agents (claude/codex/pi/opencode) is driven
+// by the normalized agent-hook event stream (SHELL_AGENT_HOOK_EVENT →
+// noteAgentHookEvent): turn-start flips to 'running' immediately, turn-end
+// flips back to 'waitingForInput' and fires the "needs input" notification,
+// and session-end is treated like turn-end for state (the process may keep
+// running after /clear). permission-wait (the CLI is blocked on tool approval)
+// flips to 'waitingForInput' immediately with a "needs permission"
+// notification whose body carries the blocked command; turn-resume (the
+// approval ran the tool — also re-fired on every ordinary tool call) flips
+// back to 'running' silently. The events are authoritative, so no settle
+// timer is involved.
 //
-// Three event sources feed the per-terminal state machine:
-//   - title changes      (noteAgentTitle)      → spinner in the title (claude/codex)
-//   - body spinner frames (noteAgentSpinnerByte)→ braille animating in the body (pi)
-//   - agent presence      (noteAgentPresence)   → notRunning / finished, from main's
-//                                                  process-tree scan
+// cursor/agy have no usable hook coverage outside interactive turns (cursor
+// print mode and `agy -p` emit nothing), so they keep the spinner fallback:
+// braille animating in the OSC title (noteAgentTitle) or terminal body
+// (noteAgentSpinnerByte) means running (see agentSpinner), and a settle timer
+// (WAITING_SETTLE_MS) bridges spinner-frame gaps before flipping to
+// waitingForInput and notifying. Hook-covered agents ignore spinner inputs
+// entirely — a stray braille glyph in `cat`ed output must not flip state.
 //
-// "running" = a spinner is animating in the title OR the body. A per-terminal
-// settle timer (WAITING_SETTLE_MS) bridges the gap between spinner frames so a
-// momentary idle doesn't flicker the UI, and gates the "needs input"
-// notification so it only fires after a turn genuinely ends. The settle timer
-// is armed once when the agent first looks idle and is only cleared when it
-// stops looking idle — it is NOT re-armed on every observation, so the 1 Hz
-// presence poll can't keep resetting it.
+// Presence (noteAgentPresence, fed 1 Hz from main's process-tree scan) stays
+// authoritative for EXISTENCE on both paths: hooks can't report a crash or
+// exit (codex never fires SessionEnd), so notRunning/finished always come
+// from the scan. An agent that is present but has never fired a hook event
+// shows waitingForInput (fresh launch) without notifying.
 // =============================================================================
 
 import { useStatusStore, workspaceIdForTerminal } from '../../stores/statusStore'
 import { sendOsNotification } from '../notifications/osNotificationSend'
 import { resolveAgentState, WAITING_SETTLE_MS, BODY_SPINNER_TIMEOUT_MS } from './agentScreenDetectorLogic'
+import { AGENTS, type AgentId } from '../../../shared/agents'
+import type { AgentHookEvent } from '../../../shared/agentHooks'
 import type { AgentState } from '../../../shared/types'
 
-// The Tracker holds ONLY spinner/timer/FSM-edge state. The agent name and
+/** Agents whose running/idle state comes from hook events. cursor/agy are
+ *  deliberately absent — they stay on the spinner fallback (see header). */
+const HOOK_STATUS_AGENTS: ReadonlySet<AgentId> = new Set<AgentId>([
+  'claude-code',
+  'codex',
+  'pi',
+  'opencode',
+])
+
+/** statusStore carries the agent's DISPLAY name (from the process scan);
+ *  routing needs the id. AGENTS is the single source for both, so the lookup
+ *  is a bijection. */
+const AGENT_ID_BY_DISPLAY_NAME: ReadonlyMap<string, AgentId> = new Map(
+  AGENTS.map((a) => [a.displayName, a.id]),
+)
+
+// The Tracker holds ONLY hook/spinner/timer/FSM-edge state. The agent name and
 // presence are owned by statusStore (the single home); the tracker reads them
 // from there at commit time rather than caching a second copy that two writers
 // could clobber on the same 1 Hz tick. `present/wasPresent/state` remain here
@@ -35,10 +60,22 @@ import type { AgentState } from '../../../shared/types'
 interface Tracker {
   present: boolean
   wasPresent: boolean
+  /** True when this terminal's agent is hook-covered: spinner inputs are
+   *  ignored and hookTurnActive drives running/idle. Set by the first hook
+   *  event or by presence (whichever learns the agent id first); reset when
+   *  the scan finds a fallback agent in the terminal. */
+  hookDriven: boolean
+  /** turn-start seen more recently than turn-end/session-end. */
+  hookTurnActive: boolean
+  /** The in-flight turn is parked on a permission prompt (permission-wait seen
+   *  more recently than turn-resume/turn-start/turn-end). Splits "turn active"
+   *  from "turn active but blocked" so the 1 Hz presence tick keeps showing
+   *  waitingForInput while blocked instead of flipping back to running. */
+  hookPermissionWait: boolean
   titleSpinner: boolean
   bodySpinner: boolean
   state: AgentState
-  /** Pending running→waitingForInput settle, or null when not counting down. */
+  /** Pending running→waitingForInput settle (fallback path only), or null. */
   settleTimer: ReturnType<typeof setTimeout> | null
   /** Expiry for the body spinner — refreshed on each braille frame. */
   bodyTimer: ReturnType<typeof setTimeout> | null
@@ -53,6 +90,9 @@ function trackerFor(terminalId: string): Tracker {
     t = {
       present: false,
       wasPresent: false,
+      hookDriven: false,
+      hookTurnActive: false,
+      hookPermissionWait: false,
       titleSpinner: false,
       bodySpinner: false,
       state: 'notRunning',
@@ -79,15 +119,40 @@ function clearTimers(t: Tracker): void {
   }
 }
 
+/** Flip a tracker onto the hook-driven path: spinner state (and its timers)
+ *  is dead weight from here on, so drop it rather than leaving a stale flag
+ *  that a later recompute could misread. */
+function markHookDriven(t: Tracker): void {
+  if (t.hookDriven) return
+  t.hookDriven = true
+  t.titleSpinner = false
+  t.bodySpinner = false
+  clearTimers(t)
+}
+
 function workspaceFor(terminalId: string): string | undefined {
   return workspaceIdForTerminal(terminalId)
 }
 
+/** The AgentId currently detected in a terminal, derived from the display name
+ *  the process scan wrote to statusStore (set before noteAgentPresence runs on
+ *  the same telemetry tick). */
+function agentIdForTerminal(terminalId: string): AgentId | null {
+  const workspaceId = workspaceFor(terminalId)
+  if (!workspaceId) return null
+  const name = useStatusStore.getState().workspaces[workspaceId]?.terminals[terminalId]?.agentName
+  return (name && AGENT_ID_BY_DISPLAY_NAME.get(name)) || null
+}
+
 /** Apply a resolved state to the store + mirror it to other windows. `notify`
- *  fires the OS "needs input" notification; only the settle timer passes true.
- *  The agent name is read from statusStore (its single home) at commit time —
- *  the tracker no longer caches a parallel copy. */
-function commit(terminalId: string, state: AgentState, notify: boolean): void {
+ *  fires the OS notification; the settle timer (fallback path), hook turn-end,
+ *  and permission-wait pass true. `permissionBody` switches the text to the
+ *  "needs permission" variant carrying what the agent is blocked on. The agent
+ *  name is read from statusStore (its single home) at commit time — the
+ *  tracker doesn't cache a parallel copy. Notification is transition-gated:
+ *  commit no-ops when the state didn't change, so a repeated permission-wait
+ *  without an intervening resume cannot re-notify. */
+function commit(terminalId: string, state: AgentState, notify: boolean, permissionBody?: string): void {
   const t = trackers.get(terminalId)
   if (!t || t.state === state) return
   const workspaceId = workspaceFor(terminalId)
@@ -102,22 +167,53 @@ function commit(terminalId: string, state: AgentState, notify: boolean): void {
   if (notify && state === 'waitingForInput') {
     const displayName = agentName ?? 'Agent'
     sendOsNotification({
-      title: `${displayName} needs input`,
-      body: `${displayName} is waiting for your response.`,
+      title: permissionBody ? `${displayName} needs permission` : `${displayName} needs input`,
+      body: permissionBody ?? `${displayName} is waiting for your response.`,
       action: { type: 'focusTerminal', workspaceId, terminalId },
     })
   }
 }
 
-function recompute(terminalId: string): void {
+/** Short human line for the permission notification: WHAT the agent wants,
+ *  from the per-CLI raw payload (pinned live in agentHookContracts.itest.ts). */
+function permissionBodyFor(event: AgentHookEvent): string {
+  const raw = event.raw
+  let detail: unknown
+  switch (event.agentId) {
+    case 'claude-code':
+      detail = raw.message // "Claude needs your permission"
+      break
+    case 'codex':
+      detail = (raw.tool_input as { command?: unknown } | undefined)?.command ?? raw.tool_name
+      break
+    case 'opencode':
+      detail = (raw.metadata as { command?: unknown } | undefined)?.command
+      break
+  }
+  const text = typeof detail === 'string' && detail.trim() ? detail.trim() : 'Waiting for your approval.'
+  return text.length > 120 ? `${text.slice(0, 119)}…` : text
+}
+
+/** `notifyOnIdle` is set only by hook turn-end and permission-wait: the event
+ *  is authoritative, so a resulting flip to waitingForInput notifies
+ *  immediately (commit no-ops when the state didn't actually change, so only
+ *  the running→waiting edge fires). `permissionBody` rides along for the
+ *  permission variant. The fallback path ignores both — its settle timer owns
+ *  notification. */
+function recompute(terminalId: string, notifyOnIdle = false, permissionBody?: string): void {
   const t = trackers.get(terminalId)
   if (!t || !started) return
 
   const raw = resolveAgentState({
     present: t.present,
     wasPresent: t.wasPresent,
-    spinning: t.titleSpinner || t.bodySpinner,
+    active: t.hookDriven ? t.hookTurnActive && !t.hookPermissionWait : t.titleSpinner || t.bodySpinner,
   })
+
+  if (t.hookDriven) {
+    commit(terminalId, raw, notifyOnIdle, permissionBody)
+    return
+  }
 
   if (raw === 'waitingForInput') {
     if (t.state === 'running') {
@@ -146,17 +242,73 @@ function recompute(terminalId: string): void {
   commit(terminalId, raw, false)
 }
 
-/** Title changed for a terminal — `running` is the spinner classification. */
+/** A normalized agent-hook event arrived for a terminal this window owns.
+ *  Only hook-covered agents route here — cursor/agy do fire hook events in
+ *  interactive mode, but their state is owned by the spinner fallback (one
+ *  driver per agent, no mixed signals). */
+export function noteAgentHookEvent(event: AgentHookEvent): void {
+  if (!HOOK_STATUS_AGENTS.has(event.agentId)) return
+  const t = trackerFor(event.terminalId)
+  markHookDriven(t)
+  switch (event.kind) {
+    case 'turn-start':
+      t.hookTurnActive = true
+      t.hookPermissionWait = false
+      recompute(event.terminalId)
+      break
+    case 'turn-resume':
+      // The blocked tool call resolved (or an ordinary tool call completed) —
+      // the turn is in flight again. Idempotent and silent.
+      t.hookTurnActive = true
+      t.hookPermissionWait = false
+      recompute(event.terminalId)
+      break
+    case 'turn-end':
+      // Also lands after a DENIED permission: state is already waiting then,
+      // so commit's transition gate swallows the would-be second notification.
+      t.hookTurnActive = false
+      t.hookPermissionWait = false
+      recompute(event.terminalId, true)
+      break
+    case 'session-end':
+      // Like turn-end for state (the process may keep running after /clear),
+      // but silent — only a genuine turn end notifies.
+      t.hookTurnActive = false
+      t.hookPermissionWait = false
+      recompute(event.terminalId)
+      break
+    case 'session-start':
+      // A fresh session starts idle; no turn is in flight yet.
+      t.hookTurnActive = false
+      t.hookPermissionWait = false
+      recompute(event.terminalId)
+      break
+    case 'permission-wait':
+      // Mid-turn block on the user's approval: show waiting NOW and say what
+      // is blocked. If the event races ahead of the first presence tick the
+      // notification is skipped with the state change (same pre-presence
+      // semantics as every other hook event); the model needs seconds to
+      // reach a tool call, so in practice presence always lands first.
+      t.hookPermissionWait = true
+      recompute(event.terminalId, true, permissionBodyFor(event))
+      break
+  }
+}
+
+/** Title changed for a terminal — `running` is the spinner classification.
+ *  Fallback (cursor/agy) input only; hook-covered agents ignore it. */
 export function noteAgentTitle(terminalId: string, running: boolean): void {
   const t = trackerFor(terminalId)
+  if (t.hookDriven) return
   t.titleSpinner = running
   recompute(terminalId)
 }
 
-/** A braille spinner frame was seen in the terminal body (e.g. pi's
- *  "⠋ Working…" line). Marks the agent running until the frames stop. */
+/** A braille spinner frame was seen in the terminal body. Marks a fallback
+ *  agent running until the frames stop; hook-covered agents ignore it. */
 export function noteAgentSpinnerByte(terminalId: string): void {
   const t = trackerFor(terminalId)
+  if (t.hookDriven) return
   t.bodySpinner = true
   if (t.bodyTimer) clearTimeout(t.bodyTimer)
   t.bodyTimer = setTimeout(() => {
@@ -168,12 +320,29 @@ export function noteAgentSpinnerByte(terminalId: string): void {
 }
 
 /** Main's process scan reported whether the agent CLI is present. The agent
- *  name is written to statusStore by the caller (useProcessMonitor); the
- *  tracker only carries the present/wasPresent FSM edges. */
+ *  name is written to statusStore by the caller (useProcessMonitor) BEFORE
+ *  this runs, so the hook/fallback routing derived from it here is current. */
 export function noteAgentPresence(terminalId: string, present: boolean): void {
   const t = trackerFor(terminalId)
   t.wasPresent = t.present
   t.present = present
+  if (present) {
+    const agentId = agentIdForTerminal(terminalId)
+    if (agentId && HOOK_STATUS_AGENTS.has(agentId)) {
+      markHookDriven(t)
+    } else if (agentId && t.hookDriven) {
+      // A fallback agent (cursor/agy) took over a terminal that previously ran
+      // a hook-covered one — hand state back to the spinner path.
+      t.hookDriven = false
+      t.hookTurnActive = false
+      t.hookPermissionWait = false
+    }
+  } else {
+    // The process is gone; any in-flight turn died with it. Clearing here also
+    // prevents a stale running state if the same agent relaunches later.
+    t.hookTurnActive = false
+    t.hookPermissionWait = false
+  }
   recompute(terminalId)
 }
 

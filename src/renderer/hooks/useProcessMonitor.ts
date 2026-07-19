@@ -20,10 +20,10 @@ export function forgetTerminalForProcessMonitor(_terminalId: string): void {
  * ports, and cwd. Main sends each of these only to the terminal's OWNER window
  * (sendToWindow(ownerWindowId, …) in main/ipc/shell.ts), so this must run in
  * EVERY window — not just main — or a detached panel/dock window never learns
- * its own terminals' agent presence. Crucially, the agent-screen detector gates
+ * its own terminals' agent presence. Crucially, the agent coordinator gates
  * `running` on presence (resolveAgentState returns notRunning when !present), so
  * without this a detached terminal's agent never shows the running shimmer even
- * though its spinner is detected locally. Wired once per window from
+ * though its hook events/spinner arrive locally. Wired once per window from
  * useWindowRuntime; only terminals this window owns are ever delivered here, so
  * there is no cross-window contamination.
  */
@@ -61,9 +61,11 @@ export function useOwnedTerminalTelemetry(): void {
         store().setTerminalActivity(actualWorkspaceId, terminalId, terminalActivity)
         store().setAgentPresent(actualWorkspaceId, terminalId, agentPresent)
         store().setAgentName(actualWorkspaceId, terminalId, agentName)
-        // Running-state is derived from the agent's title spinner; feed presence
-        // into the coordinator for the notRunning/finished edges. The name is
-        // already in statusStore (above), which the coordinator reads at commit.
+        // Running-state comes from hook events (claude/codex/pi/opencode) or
+        // spinners (cursor/agy); feed presence into the coordinator for the
+        // notRunning/finished edges. The name is already in statusStore (above,
+        // deliberately BEFORE this call) so the coordinator can derive the
+        // agent id for hook/fallback routing and read the name at commit.
         noteAgentPresence(terminalId, agentPresent)
 
         // Agent tab title: show the clean detected agent name (e.g. "Codex",
@@ -92,8 +94,9 @@ export function useOwnedTerminalTelemetry(): void {
     return () => { unsubscribe() }
   }, [])
 
-  // Agent-session stamps for terminal restore: main probes the agent CLI's
-  // session store while an agent runs in a terminal and sends the (deduped)
+  // Agent-session stamps for terminal restore: main derives them from the
+  // agent-hook event stream (falling back to an on-demand store probe when
+  // hooks haven't spoken — see agentSessionStamps.ts) and sends the (deduped)
   // result here; it lands on the terminal's PanelState, which persists into
   // session.json. On restore, TerminalPanel types the resume command into the
   // fresh shell. Null clears the stamp (the agent exited).

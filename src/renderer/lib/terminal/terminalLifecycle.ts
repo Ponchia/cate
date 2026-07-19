@@ -200,6 +200,8 @@ export function wireTerminalListeners(args: {
     if (id === ptyId) {
       sawOutput = true
       terminal.write(data)
+      // Body-spinner feed for the fallback agents (cursor/agy); the
+      // coordinator drops this input for hook-covered agents.
       if (outputShowsBodySpinner(data)) noteAgentSpinnerByte(ptyId)
     }
   })
@@ -224,7 +226,8 @@ export function wireTerminalListeners(args: {
 
   // OSC 0/1/2 — agent CLIs write their live status into the terminal title.
   // Forward the parsed middle segment to the panel title unless the user has
-  // manually renamed the tab.
+  // manually renamed the tab. The spinner classification feeds the fallback
+  // agents (cursor/agy) only; the coordinator drops it for hook-covered ones.
   const titleDisposable = terminal.onTitleChange((raw) => {
     const parsed = extractAgentTitleSegment(raw)
     if (!parsed) return

@@ -40,12 +40,12 @@ describe('claude spec', () => {
     cwd: '/home/u/proj',
   }
 
-  test('shim args inject --settings with the bridge on all five hook events', () => {
+  test('shim args inject --settings with the bridge on all six hook events', () => {
     const args = spec.shim!.args(ctx)
     expect(args[0]).toBe('--settings')
     const settings = JSON.parse(args[1]) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
     expect(Object.keys(settings.hooks).sort()).toEqual(
-      ['Notification', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort(),
+      ['Notification', 'PostToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort(),
     )
     for (const entries of Object.values(settings.hooks)) {
       expect(entries[0].hooks[0].command).toBe(ctx.bridgeCommand)
@@ -88,6 +88,19 @@ describe('claude spec', () => {
       norm('claude-code', { hook_event_name: 'Notification', notification_type: 'idle_prompt', ...base }),
     ).toBeNull()
   })
+
+  test('PostToolUse maps to turn-resume (approval resolution / ordinary tool call)', () => {
+    const resume = norm('claude-code', {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'touch needs-approval.txt' },
+      tool_response: { stdout: '', stderr: '', interrupted: false },
+      ...base,
+    })
+    expect(resume?.kind).toBe('turn-resume')
+    expect(resume?.sessionId).toBe(base.session_id)
+    expect(spec.shim!.args(ctx).join(' ')).toContain('PostToolUse')
+  })
 })
 
 describe('codex spec', () => {
@@ -99,7 +112,7 @@ describe('codex spec', () => {
     for (let i = 0; i < args.length; i += 2) expect(args[i]).toBe('-c')
     const values = args.filter((_, i) => i % 2 === 1)
     // CamelCase TOML keys for the hook arrays…
-    for (const toml of ['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'Stop']) {
+    for (const toml of ['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PostToolUse', 'Stop']) {
       const entry = values.find((v) => v.startsWith(`hooks.${toml}=`))
       expect(entry, `hooks.${toml}`).toBeTruthy()
       expect(entry).toContain(`command="${ctx.bridgeCommand}"`)
@@ -109,7 +122,7 @@ describe('codex spec', () => {
     // self-supplied trusted_hash (untrusted hooks are silently skipped).
     const state = values.find((v) => v.startsWith('hooks.state='))
     expect(state).toBeTruthy()
-    for (const label of ['session_start', 'user_prompt_submit', 'permission_request', 'stop']) {
+    for (const label of ['session_start', 'user_prompt_submit', 'permission_request', 'post_tool_use', 'stop']) {
       expect(state).toContain(`"/<session-flags>/config.toml:${label}:0:0"`)
       expect(state).toContain(codexTrustedHash(label, ctx.bridgeCommand, 60))
     }
@@ -136,6 +149,10 @@ describe('codex spec', () => {
     })
     expect(perm?.kind).toBe('permission-wait')
     expect(perm?.raw.turn_id).toBe('turn-1')
+    expect(
+      norm('codex', { hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'touch x' }, ...base })
+        ?.kind,
+    ).toBe('turn-resume')
     expect(norm('codex', { hook_event_name: 'Stop', ...base })?.kind).toBe('turn-end')
   })
 })
@@ -195,14 +212,19 @@ describe('opencode spec', () => {
     // The idle STATUS is redundant with the explicit session.idle event.
     expect(norm('opencode', { type: 'session.status', sessionID: 'ses_1', status: { type: 'idle' } })).toBeNull()
     expect(norm('opencode', { type: 'session.idle', sessionID: 'ses_1' })?.kind).toBe('turn-end')
-    expect(
-      norm('opencode', {
-        type: 'permission.asked',
-        sessionID: 'ses_1',
-        permission: 'bash',
-        metadata: { command: 'touch needs-approval.txt' },
-      })?.kind,
-    ).toBe('permission-wait')
+    const asked = norm('opencode', {
+      type: 'permission.asked',
+      sessionID: 'ses_1',
+      permission: 'bash',
+      metadata: { command: 'touch needs-approval.txt' },
+    })
+    expect(asked?.kind).toBe('permission-wait')
+    expect(asked?.raw.metadata).toMatchObject({ command: 'touch needs-approval.txt' })
+    // Any reply resumes the turn — even a rejection (the model receives the
+    // denial and the turn runs on to its own end), so the plugin doesn't
+    // forward the reply value at all.
+    expect(norm('opencode', { type: 'permission.replied', sessionID: 'ses_1' })?.kind).toBe('turn-resume')
+    expect(spec.env!.file.content()).toContain('permission.replied')
   })
 })
 
