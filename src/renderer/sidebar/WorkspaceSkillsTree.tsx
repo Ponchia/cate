@@ -65,6 +65,12 @@ export const WorkspaceSkillsTree: React.FC<{ workspaceId: string; rootPath: stri
 }) => {
   const [groups, setGroups] = useState<SkillTargetGroup[]>([])
   const [open, setOpen] = useState(true)
+  // Per-agent collapse state, keyed by target id. Absent = open (the default),
+  // so a freshly loaded tree shows every agent's skills expanded.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const toggleAgent = useCallback((targetId: string) => {
+    setCollapsed((c) => ({ ...c, [targetId]: !c[targetId] }))
+  }, [])
   // Refetch when the Skills dialog closes — an install/uninstall there should
   // reflect here without a manual refresh.
   const showSkillsDialog = useUIStore((s) => s.showSkillsDialog)
@@ -112,20 +118,28 @@ export const WorkspaceSkillsTree: React.FC<{ workspaceId: string; rootPath: stri
       </button>
 
       {open &&
-        groups.map((g) => (
+        groups.map((g) => {
+          const agentOpen = !collapsed[g.targetId]
+          return (
           <React.Fragment key={g.targetId}>
-            {/* Agent row */}
+            {/* Agent row — collapsible, its caret sits in the indent to the left
+                of the agent icon (mirroring the "Skills" node above). */}
             <button
               type="button"
-              onClick={openDialog}
-              title={TARGET_LABEL[g.targetId] ?? g.targetId}
-              className="flex items-center gap-1.5 h-7 pl-10 pr-2 text-[13px] text-muted hover:text-primary hover:bg-hover text-left min-w-0 focus:outline-none mx-1.5 my-0.5 rounded-lg"
+              onClick={() => toggleAgent(g.targetId)}
+              title={agentOpen ? 'Collapse skills' : 'Expand skills'}
+              className="flex items-center gap-1.5 h-7 pl-6 pr-2 text-[13px] text-muted hover:text-primary hover:bg-hover text-left min-w-0 focus:outline-none mx-1.5 my-0.5 rounded-lg"
             >
+              <CaretRight
+                size={10}
+                className={`flex-shrink-0 transition-transform ${agentOpen ? 'rotate-90' : ''}`}
+              />
               <AgentIcon targetId={g.targetId} />
               <span className="truncate min-w-0 flex-1">{TARGET_LABEL[g.targetId] ?? g.targetId}</span>
             </button>
             {/* Skills nested under the agent */}
-            {g.skills.map((s) => (
+            {agentOpen &&
+              g.skills.map((s) => (
               <button
                 key={s.skillId}
                 type="button"
@@ -137,9 +151,10 @@ export const WorkspaceSkillsTree: React.FC<{ workspaceId: string; rootPath: stri
                 <PuzzlePiece size={11} className="flex-shrink-0" style={{ opacity: 0.6 }} />
                 <span className="truncate min-w-0 flex-1">{s.name}</span>
               </button>
-            ))}
+              ))}
           </React.Fragment>
-        ))}
+          )
+        })}
     </>
   )
 }
