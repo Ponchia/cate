@@ -31,9 +31,11 @@ import { skillPathSegments } from './skillPath'
 
 interface SkillsManifest {
   skills: InstalledSkill[]
-  /** Auto-seed markers ("<skillId>:<targetId>"). A bundled skill is seeded at
-   *  most once per target per workspace, so a later user uninstall sticks and
-   *  an edited copy is never overwritten by the next workspace open. */
+  /** Auto-seed markers ("<skillId>:<targetId>@<contentHash>"; older manifests
+   *  carry hash-less "<skillId>:<targetId>" markers). The hash records WHICH
+   *  bundle version was seeded, so a newer app can refresh an unedited copy
+   *  while a user uninstall still sticks and a user-edited copy is never
+   *  overwritten (see seedCateCliSkill for the policy). */
   seeded?: string[]
 }
 
@@ -70,11 +72,15 @@ export async function readSeededMarkers(runtime: Runtime, runtimeId: string, hos
   return (await readManifestData(runtime, runtimeId, hostCwd)).seeded ?? []
 }
 
-/** Record that a bundled skill was seeded for a target in this workspace. */
-export async function addSeededMarker(runtime: Runtime, runtimeId: string, hostCwd: string, marker: string): Promise<void> {
+/** Record that a bundled skill was seeded for a target in this workspace,
+ *  replacing any earlier marker for the same skill+target (the part before the
+ *  optional `@<hash>` version suffix). */
+export async function setSeededMarker(runtime: Runtime, runtimeId: string, hostCwd: string, marker: string): Promise<void> {
+  const base = marker.split('@')[0]
   const manifest = await readManifestData(runtime, runtimeId, hostCwd)
   if (manifest.seeded?.includes(marker)) return
-  await writeManifest(runtime, runtimeId, hostCwd, { ...manifest, seeded: [...(manifest.seeded ?? []), marker] })
+  const seeded = (manifest.seeded ?? []).filter((m) => m !== base && !m.startsWith(`${base}@`))
+  await writeManifest(runtime, runtimeId, hostCwd, { ...manifest, seeded: [...seeded, marker] })
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +203,7 @@ async function readDirRec(runtime: Runtime, runtimeId: string, dir: string, base
   return out
 }
 
-async function readWorkspaceSkillFiles(
+export async function readWorkspaceSkillFiles(
   runtime: Runtime,
   runtimeId: string,
   hostCwd: string,

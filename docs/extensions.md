@@ -66,7 +66,8 @@ cate.panel.focus(panelId)                      // reveal/focus a panel (`panel` 
 cate.panel.close(panelId)                      // close without revealing first (`panel` scope)
 cate.workspace.get()                           // { rootPath, branch, worktree }  (branch/worktree null for now)
 cate.theme.get()                               // { id, type, app, terminal } theme tokens
-cate.editor.openFile(path, { line?, column? }) // path is confined to the workspace root
+cate.editor.openFile(path, { line?, column? }) // path is confined to the workspace root and must exist
+                                               // ('file-not-found' / 'path is a directory' errors; never creates)
 cate.canvas.createPanel(type, {                // type: 'browser' | 'editor' | 'extension'
   position?, url?, filePath?,                  // filePath confined to the workspace root
   extensionId?, extensionPanelId? })           // 'extension': panelId required, id defaults to caller
@@ -81,7 +82,7 @@ cate.agent.dispose(sessionId)                   // tear down the live session (i
 cate.agent.cancel()                             // abort this extension's in-flight turn
 cate.browser.open({ url, panelId? }) => { panelId, url }         // point a panel at url (or open one)
 cate.browser.reload({ panelId? }) => { ok: true }               // reload a panel
-cate.browser.screenshot({ panelId? }) => { path }               // host filesystem path
+cate.browser.screenshot({ panelId? }) => { path }               // host filesystem path (OS temp dir)
 cate.browser.snapshot({ panelId? }) => { url, title, refs: [{ ref, role, name, value? }] }
 cate.browser.click({ ref, panelId? }) => { ok: true }           // ref is from a recent snapshot
 cate.browser.type({ ref, text, panelId? }) => { ok: true }
@@ -107,6 +108,8 @@ does not resolve until its webview is registered, so an automation loop can
 immediately continue with `wait` and `snapshot`.
 
 `cateApi` scopes in the manifest declare which namespaces an extension uses; the host enforces them (default-deny) and Cate surfaces them as the extension's permissions in Settings → Extensions.
+
+One host namespace is deliberately **not** extension-reachable: `cate.terminal.*` (read a terminal panel's screen, send keystrokes) serves the first-party `cate` CLI only, gated by per-feature toggles in Settings → CLI. Declaring a `terminal` scope does nothing — calls return `{ error: 'terminal-first-party-only' }`. If a real extension use case appears, it will get a consent story first.
 
 ### Agent (`agent` scope)
 

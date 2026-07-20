@@ -22,6 +22,7 @@ import {
 import {
   setWindowPanels,
   upsertWindowPanel,
+  removeWindowPanel,
   getWindowPanels,
   revealWindowPanel,
   closeWindowPanel,
@@ -176,6 +177,22 @@ describe('cross-window panel discovery (main)', () => {
 
     setWindowPanels(143, [report('existing', 'terminal', 'Terminal')])
     expect(getWindowPanels().map((panel) => panel.panelId)).toEqual(['existing'])
+  })
+
+  it('evicts a closed panel immediately, before the owner\'s next full report', () => {
+    // The close-side mirror of the provisional upsert: without eviction, a
+    // close-then-list caller sees the stale union row for a whole report
+    // interval and reads the panel as still open.
+    const main = open(144, 'main', 'ws-A')
+    setWindowPanels(144, [report('keep', 'terminal', 'Terminal'), report('doomed', 'browser', 'Web')])
+
+    const before = broadcastsTo(main).length
+    removeWindowPanel('doomed')
+    expect(getWindowPanels().map((panel) => panel.panelId)).toEqual(['keep'])
+    expect(broadcastsTo(main).length).toBeGreaterThan(before)
+
+    removeWindowPanel('unknown') // absent id: no change, no broadcast
+    expect(getWindowPanels().map((panel) => panel.panelId)).toEqual(['keep'])
   })
 
   it('passes through the panel worktreeId so the overview can tint detached rows', () => {

@@ -1441,6 +1441,21 @@ export interface AppSettings {
    *  uninstall sticks. Turning this off stops future installs; it does not
    *  remove an already-installed skill. */
   cliSkillInstallEnabled: boolean
+  /** Per-feature CLI gates (Settings → CLI). Each guards one `cate` command
+   *  group at main-process dispatch; when off, that group returns a stable
+   *  error naming the toggle. cliEnabled above is the master switch — off, no
+   *  endpoint exists and these never come into play. */
+  /** `cate browser *` — drive the browser panel (navigate, click, type,
+   *  screenshot, snapshot), which acts on the user's live logged-in session.
+   *  On by default (the CLI's original core feature). */
+  cliBrowserControlEnabled: boolean
+  /** `cate terminal read` — read other terminal panels' screens/scrollback,
+   *  which may contain printed secrets. On by default. */
+  cliTerminalReadEnabled: boolean
+  /** `cate terminal type` / `press` — SEND INPUT to terminal panels. Off by
+   *  default: injecting keystrokes into a live shell is a bigger grant than
+   *  reading it, so it is a separate opt-in. */
+  cliTerminalInputEnabled: boolean
 
   // Browser
   browserHomepage: string
@@ -1572,6 +1587,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoSuspendIdleTerminals: true,
   cliEnabled: true,
   cliSkillInstallEnabled: true,
+  cliBrowserControlEnabled: true,
+  cliTerminalReadEnabled: true,
+  cliTerminalInputEnabled: false,
 
   // Browser
   browserHomepage: '',
