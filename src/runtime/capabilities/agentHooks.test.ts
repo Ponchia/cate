@@ -122,10 +122,12 @@ describe('agentHooks capability', () => {
     // every app restart. Two setup cycles over the same stable dir must
     // yield byte-identical bridge locations.
     const stable = tmpDir('stable-reuse')
+    // The wrapper is a .cmd on win32, a bare sh script on POSIX.
+    const wrapperName = posix ? 'cate-hook-bridge-codex' : 'cate-hook-bridge-codex.cmd'
     const cap1 = createAgentHooksCapability({ hooksDir: stable })
     const { dir: dir1 } = await cap1.endpoint()
     expect(dir1).toBe(stable)
-    const bridge1 = path.join(dir1, 'cate-hook-bridge-codex')
+    const bridge1 = path.join(dir1, wrapperName)
     expect(existsSync(bridge1)).toBe(true)
     cap1.dispose()
     // dispose keeps the dir — the embedded paths must survive restarts.
@@ -135,7 +137,7 @@ describe('agentHooks capability', () => {
     cleanups.push(() => cap2.dispose())
     const { dir: dir2 } = await cap2.endpoint()
     expect(dir2).toBe(dir1)
-    expect(existsSync(path.join(dir2, 'cate-hook-bridge-codex'))).toBe(true)
+    expect(existsSync(path.join(dir2, wrapperName))).toBe(true)
   })
 
   test('ingestion: valid posts emit normalized events; bad token / unknown payloads do not', async () => {
