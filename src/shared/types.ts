@@ -1419,12 +1419,17 @@ export interface AppSettings {
    *  uninstall sticks. Turning this off stops future installs; it does not
    *  remove an already-installed skill. */
   cliSkillInstallEnabled: boolean
-  /** Per-feature CLI gates (Settings → CLI). Each guards one `cate` command
-   *  group at main-process dispatch; when off, that group returns a stable
-   *  error naming the toggle. cliEnabled above is the master switch — off, no
-   *  endpoint exists and these never come into play. */
-  /** `cate browser *` — drive the browser panel (navigate, click, type,
-   *  screenshot, snapshot), which acts on the user's live logged-in session.
+  /** CLI permission matrix (Settings → CLI): surface × access, Read observes and
+   *  Control acts. Each guards one half of one `cate` command group at
+   *  main-process dispatch; when off, those verbs return a stable error naming
+   *  the cell. cliEnabled above is the master switch — off, no endpoint exists
+   *  and these never come into play. The rows and the method → cell mapping live
+   *  in shared/cliPermissions.ts. */
+  /** Read half of `cate browser *` — screenshot, snapshot, list, current, wait.
+   *  Sees whatever the user's live logged-in session is showing. On by default. */
+  cliBrowserReadEnabled: boolean
+  /** Control half of `cate browser *` — open/back/forward/reload plus click,
+   *  type and press, which act on the user's live logged-in session.
    *  On by default (the CLI's original core feature). */
   cliBrowserControlEnabled: boolean
   /** `cate terminal read` — read other terminal panels' screens/scrollback,
@@ -1432,8 +1437,21 @@ export interface AppSettings {
   cliTerminalReadEnabled: boolean
   /** `cate terminal type` / `press` — SEND INPUT to terminal panels. Off by
    *  default: injecting keystrokes into a live shell is a bigger grant than
-   *  reading it, so it is a separate opt-in. */
+   *  reading it, so it is a separate opt-in. (Terminal → Control in the matrix;
+   *  the key keeps its original name so existing settings.json files apply.) */
   cliTerminalInputEnabled: boolean
+  /** `cate panel list` — enumerate open panels across windows (browser rows
+   *  carry their url). On by default. */
+  cliPanelReadEnabled: boolean
+  /** `cate panel create / focus / close / set-title` — add, focus, close and
+   *  rename panels. On by default. */
+  cliPanelControlEnabled: boolean
+  /** Read the active editor panel's file. On by default. */
+  cliEditorReadEnabled: boolean
+  /** `cate editor open` — open a file in an editor/document panel. On by default. */
+  cliEditorControlEnabled: boolean
+  /** `cate notify` — post a desktop notification. On by default. */
+  cliNotifyEnabled: boolean
 
   // Browser
   browserHomepage: string
@@ -1565,9 +1583,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoSuspendIdleTerminals: true,
   cliEnabled: true,
   cliSkillInstallEnabled: true,
+  cliBrowserReadEnabled: true,
   cliBrowserControlEnabled: true,
   cliTerminalReadEnabled: true,
   cliTerminalInputEnabled: false,
+  cliPanelReadEnabled: true,
+  cliPanelControlEnabled: true,
+  cliEditorReadEnabled: true,
+  cliEditorControlEnabled: true,
+  cliNotifyEnabled: true,
 
   // Browser
   browserHomepage: '',
