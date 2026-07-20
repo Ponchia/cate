@@ -70,8 +70,11 @@ export interface AgentHooksCapability {
   /** The full spawn env for a PTY: hook endpoint + this terminal's derived
    *  token, CATE_TERMINAL_ID=ptyId, and ambient per-agent vars. Lazily boots
    *  the ingestion endpoint + hooks dir on first use. Returns `env` unchanged
-   *  when hook setup fails (a plain shell is always spawnable). */
-  envForPty(ptyId: string, env: Record<string, string>): Promise<Record<string, string>>
+   *  when hook setup fails (a plain shell is always spawnable). `config` carries
+   *  the workspace's per-agent tri-state: an env-only agent (opencode) set to
+   *  'off' has its ambient vars withheld, which is how it is turned off (it
+   *  writes no repo files to strip). */
+  envForPty(ptyId: string, env: Record<string, string>, config?: AgentHookConfig): Promise<Record<string, string>>
   /** Write (or, for 'off', remove) workspace-scoped hook files for the PTY's
    *  cwd and keep the ones we wrote out of git status via .git/info/exclude.
    *  `config` carries per-agent tri-state overrides: 'auto' (default) injects
@@ -114,8 +117,10 @@ interface HookState {
   /** Per-boot secret the per-terminal bearer tokens derive from. */
   secret: string
   server: http.Server
-  /** Ambient env vars (spec.env), applied only where the key isn't set yet. */
-  ambientVars: Record<string, string>
+  /** Ambient env vars (spec.env) per owning agent, applied only where the key
+   *  isn't set yet. Keyed by agent so an env-only agent set to 'off' can have
+   *  its vars withheld (its sole injection channel — see envForPty). */
+  ambientVarsByAgent: Map<AgentId, Record<string, string>>
   /** Per-agent injection context (bridge wrapper + support file paths). */
   contexts: Map<AgentId, HookInjectionContext>
 }
@@ -288,7 +293,7 @@ export function createAgentHooksCapability(deps: AgentHooksDeps = {}): AgentHook
 
     const secret = randomBytes(32).toString('hex')
     const contexts = new Map<AgentId, HookInjectionContext>()
-    const ambientVars: Record<string, string> = {}
+    const ambientVarsByAgent = new Map<AgentId, Record<string, string>>()
 
     for (const agent of AGENTS) {
       const spec: AgentHookSpec = AGENT_HOOK_SPECS[agent.id]
@@ -317,7 +322,7 @@ export function createAgentHooksCapability(deps: AgentHooksDeps = {}): AgentHook
       const ctx: HookInjectionContext = { bridgeCommand: wrapper, filePath }
       contexts.set(agent.id, ctx)
 
-      if (spec.env) Object.assign(ambientVars, spec.env.vars(ctx))
+      if (spec.env) ambientVarsByAgent.set(agent.id, spec.env.vars(ctx))
     }
 
     const server = http.createServer((req, res) => handleRequest(req, res, secret))
@@ -326,11 +331,11 @@ export function createAgentHooksCapability(deps: AgentHooksDeps = {}): AgentHook
       server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port))
     })
     server.unref()
-    return { dir, url: `http://127.0.0.1:${port}`, secret, server, ambientVars, contexts }
+    return { dir, url: `http://127.0.0.1:${port}`, secret, server, ambientVarsByAgent, contexts }
   }
 
   return {
-    async envForPty(ptyId, env) {
+    async envForPty(ptyId, env, config) {
       if (disposed) return env
       let state: HookState
       try {
@@ -339,9 +344,14 @@ export function createAgentHooksCapability(deps: AgentHooksDeps = {}): AgentHook
         return env // hook setup failed — spawn a plain shell
       }
       const out = { ...env }
-      // Ambient per-agent vars never clobber a value the caller/user set.
-      for (const [k, v] of Object.entries(state.ambientVars)) {
-        if (out[k] === undefined) out[k] = v
+      // Ambient per-agent vars never clobber a value the caller/user set. An
+      // env-only agent set to 'off' has its vars withheld: env is its sole
+      // injection channel, so this is what turns it off.
+      for (const [agentId, vars] of state.ambientVarsByAgent) {
+        if (resolveAgentHookMode(config, agentId) === 'off') continue
+        for (const [k, v] of Object.entries(vars)) {
+          if (out[k] === undefined) out[k] = v
+        }
       }
       out[CATE_HOOK_ENDPOINT_ENV] = state.url
       out[CATE_HOOK_TOKEN_ENV] = hookTokenForTerminal(state.secret, ptyId)

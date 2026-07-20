@@ -162,7 +162,7 @@ export interface ProcessDeps {
    * tests without hook support spawn plain shells.
    */
   hooks?: {
-    envForPty(ptyId: string, env: Record<string, string>): Promise<Record<string, string>>
+    envForPty(ptyId: string, env: Record<string, string>, config?: AgentHookConfig): Promise<Record<string, string>>
     prepareWorkspace(cwd: string, config?: AgentHookConfig): Promise<void>
   }
   /**
@@ -264,7 +264,7 @@ export function createProcessCapability(deps: ProcessDeps): ProcessCapability {
       // must never fail to open over hooks.
       if (deps.hooks && opts.agentHooks) {
         try {
-          env = await deps.hooks.envForPty(id, env)
+          env = await deps.hooks.envForPty(id, env, opts.agentHookConfig)
           await deps.hooks.prepareWorkspace(cwd, opts.agentHookConfig)
         } catch { /* hook injection unavailable */ }
       }

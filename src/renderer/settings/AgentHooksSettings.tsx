@@ -1,9 +1,10 @@
 // =============================================================================
-// Agent hooks settings — per-workspace, per-agent control over Cate's repo-local
-// hook-file injection (the push-based agent status/session events). Each coding
-// agent CLI gets a tri-state: Auto (inject only when the agent's own config
-// folder is already in the repo), Always on, or Off. Env-only agents (opencode)
-// are always on and write no repo files, so they have no control here.
+// Agent hooks settings — per-workspace, per-agent control over Cate's hook
+// injection (the push-based agent status/session events). File-injecting agents
+// (claude, codex, cursor, pi) get a tri-state: Auto (inject only when the
+// agent's own config folder is already in the repo), On, or Off. Env-only
+// agents (opencode) inject via an ambient var and write no repo files, so they
+// get a plain On/Off — 'Off' withholds that var.
 //
 // Overrides live in settings.agentHookInjection keyed by workspace id and are
 // applied by the terminal layer on the NEXT terminal spawn (injection is a
@@ -14,15 +15,20 @@
 import { useEffect, useState } from 'react'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSelectedWorkspace } from '../stores/appStore'
-import { SettingRow, Select, SearchableBlock } from './SettingsComponents'
+import { SearchableBlock } from './SettingsComponents'
 import type { AgentId } from '../../shared/agents'
 import type { AgentHookAgentState, AgentHookMode } from '../../shared/agentHooks'
 
-const MODE_OPTIONS = [
+// Tri-state for file-injecting agents; env-only agents use the last two.
+const FILE_OPTIONS = [
   { value: 'auto', label: 'Auto' },
-  { value: 'on', label: 'Always on' },
+  { value: 'on', label: 'On' },
   { value: 'off', label: 'Off' },
-]
+] as const
+const ENV_OPTIONS = [
+  { value: 'on', label: 'On' },
+  { value: 'off', label: 'Off' },
+] as const
 
 export function AgentHooksSettings() {
   const store = useSettingsStore()
@@ -63,41 +69,78 @@ export function AgentHooksSettings() {
 
   return (
     <div className="flex flex-col gap-1">
-      <SearchableBlock keywords="agent hooks injection claude codex cursor pi opencode status presence">
+      <SearchableBlock keywords="agent hooks injection claude codex cursor pi opencode status presence auto on off">
         <p className="text-xs text-muted py-2 leading-relaxed">
-          Cate writes small, git-ignored hook files into a repo so agent CLIs report their
-          session and turn status back to Cate. <span className="text-secondary">Auto</span> injects
-          only when an agent&apos;s own config folder (e.g. <code className="text-secondary">.claude</code>)
-          already exists here. Changes apply to terminals you open after saving.
+          Cate writes tiny git-ignored hook files so agent CLIs report session and turn status
+          back to it. <span className="text-secondary">Auto</span> injects only where an agent&apos;s
+          config folder already exists. Changes apply to terminals opened after saving.
         </p>
       </SearchableBlock>
 
-      {(agents ?? []).map((a) => {
-        if (!a.fileInjecting) {
-          return (
-            <SettingRow key={a.agentId} label={a.displayName} description="Always on — injected via env, writes no repo files">
-              <span className="text-xs text-muted">Always on</span>
-            </SettingRow>
-          )
-        }
-        const mode: AgentHookMode = overrides[a.agentId] ?? 'auto'
-        return (
-          <SettingRow key={a.agentId} label={a.displayName} description={stateText(a, mode)}>
-            <Select value={mode} options={MODE_OPTIONS} onChange={(v) => setMode(a.agentId, v as AgentHookMode)} />
-          </SettingRow>
-        )
-      })}
+      {agents === null && <p className="text-xs text-muted py-3">Loading…</p>}
 
-      {agents === null && <p className="text-xs text-muted py-2">Loading…</p>}
+      <div className="flex flex-col">
+        {(agents ?? []).map((a) => {
+          const mode: AgentHookMode = overrides[a.agentId] ?? 'auto'
+          // The one "looks on but does nothing" state we can detect: Auto with
+          // no config folder present, so Auto silently skips injection here.
+          const dormant = a.fileInjecting && mode === 'auto' && !a.folderPresent
+          return (
+            <div key={a.agentId} className="flex items-center gap-3 py-2.5 border-b border-subtle">
+              <div className="flex flex-col flex-1 min-w-0">
+                <span className="text-sm text-primary truncate">{a.displayName}</span>
+                {dormant && (
+                  <span className="text-xs text-muted mt-0.5">Auto skips here: no config folder yet.</span>
+                )}
+              </div>
+              {a.fileInjecting ? (
+                <Segmented
+                  value={mode}
+                  options={FILE_OPTIONS}
+                  onChange={(v) => setMode(a.agentId, v as AgentHookMode)}
+                />
+              ) : (
+                <Segmented
+                  value={mode === 'off' ? 'off' : 'on'}
+                  options={ENV_OPTIONS}
+                  onChange={(v) => setMode(a.agentId, v === 'off' ? 'off' : 'auto')}
+                />
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
-/** The per-agent state line: current on-disk facts, plus what 'auto' would do
- *  here. Kept terse — the row's control carries the choice. */
-function stateText(a: { folderPresent: boolean; injected: boolean }, mode: AgentHookMode): string {
-  const folder = a.folderPresent ? 'config folder present' : 'no config folder'
-  const injected = a.injected ? 'injected' : 'not injected'
-  const autoNote = mode === 'auto' ? (a.folderPresent ? ' — auto injects' : ' — auto skips') : ''
-  return `${folder} · ${injected}${autoNote}`
+// -----------------------------------------------------------------------------
+// Segmented control - compact inline pill group; the selected value is filled.
+// -----------------------------------------------------------------------------
+
+interface SegmentedProps {
+  value: string
+  options: ReadonlyArray<{ value: string; label: string }>
+  onChange: (value: string) => void
+}
+
+function Segmented({ value, options, onChange }: SegmentedProps) {
+  return (
+    <div className="inline-flex flex-shrink-0 rounded-md bg-surface-5 border border-subtle p-0.5">
+      {options.map((opt) => {
+        const active = opt.value === value
+        return (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className={`px-2.5 py-1 text-xs rounded transition-colors ${
+              active ? 'bg-focus-blue text-white' : 'text-secondary hover:text-primary'
+            }`}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
 }

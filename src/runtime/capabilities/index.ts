@@ -215,7 +215,7 @@ export function buildDaemonRuntime(config: DaemonRuntimeConfig): DaemonRuntime {
     getEnv: cleanEnv,
     idleSuspend: config.idleSuspend,
     hooks: {
-      envForPty: (ptyId, env) => agentHooks.envForPty(ptyId, env),
+      envForPty: (ptyId, env, config) => agentHooks.envForPty(ptyId, env, config),
       prepareWorkspace: (cwd, config) => agentHooks.prepareWorkspace(cwd, config),
     },
     agentPresence,

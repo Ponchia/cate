@@ -96,6 +96,20 @@ describe('agentHooks capability', () => {
     expect(env2.CATE_HOOK_TOKEN).not.toBe(env.CATE_HOOK_TOKEN)
   })
 
+  test("config 'off' for an env-only agent withholds its ambient var", async () => {
+    const cap = makeCap()
+    // Off: the opencode plugin var is its only injection channel, so it is
+    // withheld — but the shared hook env stays (it leaves no repo trace).
+    const off = await cap.envForPty('rpty-off', { PATH: '/bin' }, { opencode: 'off' })
+    expect(off.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+    expect(off.CATE_HOOK_ENDPOINT).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+    expect(off.CATE_TERMINAL_ID).toBe('rpty-off')
+
+    // 'on' (and the default absent → 'auto') both inject it.
+    const on = await cap.envForPty('rpty-on', { PATH: '/bin' }, { opencode: 'on' })
+    expect(on.OPENCODE_CONFIG_CONTENT).toBeDefined()
+  })
+
   test('a failed setup yields a plain shell, then a retry on the same dir succeeds', async () => {
     // Fail setup at the endpoint bind — the last setup step, so the stable
     // dir is already partially built. That partial dir is harmless (stale
