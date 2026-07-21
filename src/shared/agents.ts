@@ -22,7 +22,6 @@
 export type AgentId =
   | 'claude-code'
   | 'codex'
-  | 'antigravity'
   | 'cursor'
   | 'opencode'
   | 'pi'
@@ -32,8 +31,7 @@ export interface AgentDef {
   /** Label shown in panel titles / tooltips. */
   displayName: string
   /** The CLI command that launches this agent in a terminal — usually the same
-   *  as the detected process name, but not always (Antigravity installs as
-   *  `agy`, Cursor's agent as `cursor-agent`). Used by the Cate Agent orchestrator. */
+   *  as the detected process name. Used by the Cate Agent orchestrator. */
   command: string
   /** True when a shell child process with this (already-lowercased) name means
    *  this agent is the one running in that terminal. */
@@ -48,9 +46,15 @@ export const AGENTS: readonly AgentDef[] = [
     matchProcess: (n) => n === 'claude' || n === 'claude-code' || n.startsWith('claude'),
   },
   { id: 'codex', displayName: 'Codex', command: 'codex', matchProcess: (n) => n === 'codex' },
-  // Antigravity's CLI installs as `agy` (`antigravity` is the GUI IDE).
-  { id: 'antigravity', displayName: 'Antigravity', command: 'agy', matchProcess: (n) => n === 'agy' },
-  { id: 'cursor', displayName: 'Cursor', command: 'cursor-agent', matchProcess: (n) => n === 'cursor' || n === 'cursor-agent' },
+  // The install script links ~/.local/bin/cursor-agent; the CLI keeps the
+  // invoked name as its process title (comm is the full launcher path, which
+  // the process scan basenames), so both spellings show up in the wild.
+  {
+    id: 'cursor',
+    displayName: 'Cursor',
+    command: 'cursor-agent',
+    matchProcess: (n) => n === 'cursor-agent' || n === 'cursor',
+  },
   { id: 'opencode', displayName: 'OpenCode', command: 'opencode', matchProcess: (n) => n === 'opencode' },
   // @earendil-works/pi-coding-agent — runs as the `pi` binary.
   { id: 'pi', displayName: 'PI Agent', command: 'pi', matchProcess: (n) => n === 'pi' },
@@ -61,12 +65,49 @@ export function launchCommandForAgent(id: string): string | null {
   return AGENTS.find((a) => a.id === id)?.command ?? null
 }
 
-/** Display name of the agent whose process name matches, or null if none.
- *  Matching is case-insensitive (the name is lowercased before the rules run). */
-export function matchAgentProcess(procName: string): string | null {
+/** The agent whose process name matches, or null if none. Matching is
+ *  case-insensitive (the name is lowercased before the rules run). */
+export function matchAgentDef(procName: string): AgentDef | null {
   const lower = procName.toLowerCase()
   for (const a of AGENTS) {
-    if (a.matchProcess(lower)) return a.displayName
+    if (a.matchProcess(lower)) return a
   }
   return null
+}
+
+/** Display name of the agent whose process name matches, or null if none. */
+export function matchAgentProcess(procName: string): string | null {
+  return matchAgentDef(procName)?.displayName ?? null
+}
+
+// Session-resume argv per agent, used by terminal session-restore: the command
+// typed into a restored terminal's shell to re-attach the agent to the session
+// it was running at save time. Every resume contract here is pinned live by
+// agentHookContracts.itest.ts. The session id is
+// interpolated into a shell command line, so it is validated to be a bare
+// token first (uuids / opencode ses_* ids; never quoting-sensitive).
+const RESUME_ARGS: Record<AgentId, (sessionId: string) => string[]> = {
+  'claude-code': (sid) => ['--resume', sid],
+  codex: (sid) => ['resume', sid],
+  // --resume ADOPTS an unknown id (fresh chat under that id, exit 0) rather
+  // than failing — a stale stamp degrades to a fresh session, never a wrong one.
+  cursor: (sid) => ['--resume', sid],
+  // pi's --resume is an interactive picker; --session takes an exact id.
+  pi: (sid) => ['--session', sid],
+  opencode: (sid) => ['--session', sid],
+}
+
+// First char must be alphanumeric: session ids originate from hook posts any
+// terminal process can forge, and a dash-led "id" (`--dangerously-skip-
+// permissions`) would otherwise be joined into the resume command as a flag.
+// Real ids are uuids / opencode `ses_*` — never dash-led.
+const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+
+/** The full shell command that resumes `sessionId` for `agentId`, or null when
+ *  the agent id is unknown (or the id isn't a bare token). */
+export function resumeCommandForAgent(agentId: string, sessionId: string): string | null {
+  const def = AGENTS.find((a) => a.id === agentId)
+  const args = RESUME_ARGS[agentId as AgentId] as ((sessionId: string) => string[]) | undefined
+  if (!def || !args || !SAFE_SESSION_ID.test(sessionId)) return null
+  return [def.command, ...args(sessionId)].join(' ')
 }
