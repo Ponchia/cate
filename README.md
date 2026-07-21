@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  Mission control for your coding agents: an infinite canvas for terminals, editors, browsers, and docs.
+  An infinite canvas IDE for parallel coding agents.
 </p>
 
 <p align="center">
@@ -43,15 +43,13 @@ Download a prebuilt release. Don't build from source for daily use.
 
 ## What's inside
 
-- **Agent-aware terminals:** Cate detects coding agents (Claude Code, Codex, and others) running in any terminal. Tabs show live agent state: running, finished, or waiting for input, with an OS notification when an agent needs you. Terminals survive restarts and window moves with scrollback, colors, and full-screen TUIs intact.
-- **Parallel work:** describe what you're working on and Cate creates a git worktree with its own branch, color, and territory on the canvas. Check out a PR straight into a worktree, and symlink `.env` or `node_modules` into every new one automatically.
-- **Agent-drivable browser:** built-in browser panels that agents can control from the shell via the `cate` CLI: open pages, take screenshots, read accessibility snapshots, click and type.
-- **In-app agent chat:** an embedded coding agent (Pi) with chat threads and per-chat model memory. Connect Anthropic, OpenAI Codex, GitHub Copilot, Gemini, OpenRouter, Groq, Mistral, DeepSeek, and more via OAuth or API key.
-- **Canvas & layout:** infinite zoom and pan, docking into tabs and splits across four zones, detachable windows, saved layouts, and multi-project session restore.
-- **Editors & docs:** Monaco editors with syntax highlighting, multi-cursor, diffs, and Markdown preview; document panels for PDFs, DOCX, and images.
-- **Git:** git-aware file tree with live watching, plus a source-control sidebar for staging, branches, worktrees, history, and inline diffs. Full-text search.
-- **Remote workspaces:** connect to a machine over SSH and work on it like a local folder. Terminals, agents, and search run remotely through a lightweight runtime daemon.
-- **Navigation:** canvas-wide search across files, terminal scrollback, and panel titles; command palette; panel-to-panel keyboard navigation.
+- **Agent-aware terminals.** Cate hooks the agent CLIs it supports (Claude Code, Codex, Cursor, OpenCode, Pi), so the agent itself reports turn start, turn end, and permission prompts. That drives the panel's running / waiting / finished state and the notification you get when one needs an answer. An agent that posts no hooks shows no status.
+- **Agent sessions survive restarts.** The hook stream carries each CLI's session id. Reopen the project and terminals return with their scrollback, and the agent is reattached with its own resume command. A stale id falls back to a plain shell rather than resuming the wrong conversation.
+- **Worktrees for parallel branches.** Type what you're working on and Cate creates a worktree and branch, based on a local or remote branch or an open PR. Each gets a color that follows it through the sidebar, dock tabs, and a territory drawn behind its panels on the canvas.
+- **Panels on a canvas or in a dock.** Terminals, Monaco editors, browsers, PDF/image/DOCX viewers, extension webviews, nested canvases. Float them on the canvas, dock them into tabs and splits, or drag them into their own window. Layout persists per project.
+- **Git and search.** Source-control sidebar for staging, commits, branches, stash, and history across multiple repos; git badges in the file tree; side-by-side diffs. Ripgrep search over the workspace, and `Cmd+K` for commands, panels, and files.
+- **A CLI agents can call.** In a Cate terminal, `cate` drives a browser panel (`open`, `screenshot`, `snapshot`, `click`, `type`), reads another terminal, opens files, manages panels. Settings → CLI gates each surface separately for Read and Control.
+- **Local and remote are the same path.** One runtime daemon serves every workspace. Point Cate at a host over SSH or WSL and terminals, git, search, and agents run there; editors, browser, and canvas stay local.
 
 ## Extensions
 
