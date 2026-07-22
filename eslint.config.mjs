@@ -33,6 +33,7 @@ export default tseslint.config(
       'cate-extensions/**',
       // Gitignored generated output / local worktrees — never app source.
       'dist-runtime/**',
+      'dist-web/**',
       '.cate/**',
     ],
   },

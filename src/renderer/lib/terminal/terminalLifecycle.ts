@@ -41,13 +41,16 @@ import { useStatusStore } from '../../stores/statusStore'
 import { awaitWorkspaceSync, useAppStore } from '../../stores/appStore'
 import { replayTerminalLog } from '../workspace/session'
 import { extractAgentTitleSegment, shellTitleBasename } from '../agent/agentTitleParser'
-import { titleIndicatesRunning, outputShowsBodySpinner } from '../agent/agentSpinner'
-import { noteAgentTitle, noteAgentSpinnerByte } from '../agent/agentScreenDetector'
 
 interface CreateOpts {
   workspaceId: string
   cwd?: string
   initialInput?: string
+  /** Terminal session-restore: a full agent resume command (e.g.
+   *  `claude --resume <id>`) typed into the fresh shell right after spawn, via
+   *  the real PTY input path. One-shot — the persisted stamp it came from is
+   *  cleared as soon as it is written. */
+  resumeCommand?: string
 }
 
 // A freshly-spawned shell that exits cleanly (code 0) within this window WITHOUT
@@ -195,7 +198,6 @@ export function wireTerminalListeners(args: {
     if (id === ptyId) {
       sawOutput = true
       terminal.write(data)
-      if (outputShowsBodySpinner(data)) noteAgentSpinnerByte(ptyId)
     }
   })
   cleanupListeners.push(removeDataListener)
@@ -223,12 +225,10 @@ export function wireTerminalListeners(args: {
   const titleDisposable = terminal.onTitleChange((raw) => {
     const parsed = extractAgentTitleSegment(raw)
     if (!parsed) return
-    const running = titleIndicatesRunning(parsed)
     // Defer to a microtask so OSC sequences arriving during xterm.write()
     // (e.g. scrollback replay on attach) don't run set() inside React's
     // commit phase, which would trip "Maximum update depth".
     queueMicrotask(() => {
-      noteAgentTitle(ptyId, running)
       applyOscTitleIfNoAgent(ptyId, opts.workspaceId, panelId, parsed)
     })
   })
@@ -383,6 +383,17 @@ export async function getOrCreate(panelId: string, opts: CreateOpts): Promise<Re
     //     fragile (slow systems) and unnecessary.
     if (opts.initialInput) {
       terminal.write(opts.initialInput)
+    }
+
+    // 11b. A surviving server-side PTY is the strongest restore source: it
+    //      already contains the live agent process, so never type a second
+    //      resume command into it. When reattach falls back to a fresh PTY,
+    //      resume the persisted agent session through the real input path and
+    //      clear the one-shot stamp. A successful resume will be re-stamped by
+    //      the upstream hook stream.
+    if (opts.resumeCommand && !reattached) {
+      void electronAPI.terminalWrite(ptyId, opts.resumeCommand + '\r')
+      useAppStore.getState().setPanelAgentSession(opts.workspaceId, panelId, null)
     }
 
     // 12. Replay scrollback log if this terminal was restored from a session.
