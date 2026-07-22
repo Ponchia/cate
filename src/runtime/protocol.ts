@@ -10,6 +10,7 @@
 // =============================================================================
 
 import type { SearchFileResult, SearchStats } from '../shared/types'
+import type { AgentHookEvent } from '../shared/agentHooks'
 
 /** Bumped only on a wire-incompatible change. A mismatch is a hard failure. */
 export const RUNTIME_PROTOCOL_VERSION = 1
@@ -115,6 +116,13 @@ export const Methods = {
   sessionsAgentAttach: 'sessions.agentAttach', // params [id, sinceLine?]
   sessionsAgentDetach: 'sessions.agentDetach', // params [id]
 
+  // --- agent hooks (normalized push events from the daemon's hook ingestion) ---
+  // subscribe returns a streamId; AgentHookEvtPayload frames arrive as evts.
+  agentHooksSubscribe: 'agentHooks.subscribe',
+  agentHooksUnsubscribe: 'agentHooks.unsubscribe',
+  // inspect a workspace's per-agent hook-file injection state (Settings UI).
+  agentHooksInspect: 'agentHooks.inspect',
+
   vcsIsRepo: 'vcs.isRepo',
   vcsFindRepos: 'vcs.findRepos',
   vcsInit: 'vcs.init',
@@ -198,6 +206,11 @@ export interface FsWatchEvtPayload {
 export type AgentEvtPayload =
   | { kind: 'line'; line: string }
   | { kind: 'exit'; code: number; stderr?: string }
+
+/** Payload carried by an `agentHooks.subscribe` stream's evt frames: one
+ *  normalized agent-CLI hook event (session identity / turn status /
+ *  permission-wait), already correlated to a pty id daemon-side. */
+export type AgentHookEvtPayload = AgentHookEvent
 
 /** Payload carried by a `pty.create` stream's evt frames (keyed by the pty id). */
 export type PtyEvtPayload =

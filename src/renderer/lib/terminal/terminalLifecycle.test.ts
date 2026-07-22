@@ -75,6 +75,7 @@ vi.mock('@xterm/addon-web-links', () => ({
 
 const statusRegisterTerminal = vi.fn()
 const statusUnregisterTerminal = vi.fn()
+const setPanelAgentSession = vi.fn()
 vi.mock('../../stores/statusStore', () => ({
   useStatusStore: {
     getState: () => ({
@@ -102,7 +103,11 @@ vi.mock('../../stores/settingsStore', () => ({
 vi.mock('../../stores/appStore', () => ({
   awaitWorkspaceSync: async () => {},
   useAppStore: {
-    getState: () => ({ workspaces: [], updatePanelTitleFromAgent: vi.fn() }),
+    getState: () => ({
+      workspaces: [],
+      updatePanelTitleFromAgent: vi.fn(),
+      setPanelAgentSession,
+    }),
   },
 }))
 const replayTerminalLog = vi.fn(async () => {})
@@ -115,8 +120,6 @@ vi.mock('./terminalFileLinkProvider', () => ({
   resolveLinkRoot: () => undefined,
 }))
 vi.mock('../agent/agentScreenDetector', () => ({
-  noteAgentTitle: vi.fn(),
-  noteAgentSpinnerByte: vi.fn(),
   noteAgentPresence: vi.fn(),
   forgetAgentTracker: vi.fn(),
 }))
@@ -213,6 +216,7 @@ beforeEach(() => {
   onTerminalExit.mockImplementation(captureExitListener)
   statusRegisterTerminal.mockClear()
   statusUnregisterTerminal.mockClear()
+  setPanelAgentSession.mockClear()
   replayTerminalLog.mockClear()
   replayTerminalLog.mockImplementation(async () => {})
 })
@@ -287,6 +291,38 @@ describe('spawn → wire → dispose happy path', () => {
     )
     expect(replayTerminalLog).toHaveBeenCalledWith('panel-restored')
     LC.dispose('panel-restored')
+  })
+
+  it('reattaches a live persistent PTY without resuming the agent a second time', async () => {
+    LC.setPendingRestore('panel-live', '/tmp/live-project', 'pty-live', 'pty-live')
+    terminalCreate.mockResolvedValueOnce('pty-live')
+
+    await LC.getOrCreate('panel-live', {
+      workspaceId: 'ws-1',
+      resumeCommand: 'codex resume session-live',
+    })
+
+    expect(terminalCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ attachPtyId: 'pty-live' }),
+    )
+    expect(terminalWrite).not.toHaveBeenCalled()
+    expect(setPanelAgentSession).not.toHaveBeenCalled()
+    expect(replayTerminalLog).toHaveBeenCalledWith('panel-live')
+    LC.dispose('panel-live')
+  })
+
+  it('resumes the agent when a stale persistent PTY falls back to a fresh shell', async () => {
+    LC.setPendingRestore('panel-stale', '/tmp/stale-project', 'pty-stale', 'pty-stale')
+    terminalCreate.mockResolvedValueOnce('pty-fresh')
+
+    await LC.getOrCreate('panel-stale', {
+      workspaceId: 'ws-1',
+      resumeCommand: 'codex resume session-stale',
+    })
+
+    expect(terminalWrite).toHaveBeenCalledWith('pty-fresh', 'codex resume session-stale\r')
+    expect(setPanelAgentSession).toHaveBeenCalledWith('ws-1', 'panel-stale', null)
+    LC.dispose('panel-stale')
   })
 
   it('marks the entry dead (not removed) and prints the exit line when the PTY exits on its own', async () => {

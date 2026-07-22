@@ -71,7 +71,7 @@ const MIME: Record<string, string> = {
  *  index so client-side routing / bookmarked URLs work. */
 function serveStatic(webRoot: string, req: http.IncomingMessage, res: http.ServerResponse): void {
   const url = new URL(req.url ?? '/', 'http://localhost')
-  let target = path.resolve(webRoot, '.' + path.posix.normalize(url.pathname))
+  const target = path.resolve(webRoot, '.' + path.posix.normalize(url.pathname))
   if (!target.startsWith(path.resolve(webRoot))) {
     res.writeHead(403).end()
     return
